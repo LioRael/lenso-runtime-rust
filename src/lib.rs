@@ -46,8 +46,10 @@ impl RuntimeDriver for TokioDriver {
     }
 
     fn sleep_until(&self, deadline: Duration) -> futures::future::LocalBoxFuture<'static, ()> {
-        let sleep_for = deadline.saturating_sub(self.now());
-        Box::pin(async move { tokio::time::sleep(sleep_for).await })
+        let target = self.started_at + deadline;
+        Box::pin(async move {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(target)).await;
+        })
     }
 
     fn yield_now(&self) -> futures::future::LocalBoxFuture<'static, ()> {
