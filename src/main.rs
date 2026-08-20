@@ -1,12 +1,20 @@
 use lenso_app_plan::ResolvedAppPlan;
-use lenso_kernel::Kernel;
-use lenso_runner::TokioDriver;
+use lenso_kernel::ExecutionAdapterCatalog;
+use lenso_runner::{TokioDriver, run};
+use std::time::Duration;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let local = tokio::task::LocalSet::new();
+    let driver = TokioDriver::new();
+    driver.request_shutdown();
     let outcome = local
-        .run_until(async { Kernel::boot(ResolvedAppPlan::empty(), TokioDriver::new()).await })
+        .run_until(run(
+            ResolvedAppPlan::empty(),
+            driver,
+            ExecutionAdapterCatalog::new(),
+            Duration::from_secs(1),
+        ))
         .await;
 
     match outcome {

@@ -2,13 +2,14 @@
 
 use std::{
     cell::Cell,
+    panic::AssertUnwindSafe,
     rc::Rc,
     time::{Duration, Instant},
 };
 
 use futures::{
     channel::oneshot,
-    future::{AbortHandle, Abortable},
+    future::{AbortHandle, Abortable, FutureExt},
 };
 use lenso_app_plan::{PlanResolutionError, ResolvedAppPlan};
 use lenso_kernel::{
@@ -85,10 +86,13 @@ impl RuntimeDriver for TokioDriver {
         let (abort, registration) = AbortHandle::new_pair();
         let (completed, completion) = oneshot::channel();
         tokio::task::spawn_local(async move {
-            let outcome = if Abortable::new(task, registration).await.is_ok() {
-                TaskOutcome::Completed
-            } else {
-                TaskOutcome::Cancelled
+            let outcome = match AssertUnwindSafe(Abortable::new(task, registration))
+                .catch_unwind()
+                .await
+            {
+                Ok(Ok(())) => TaskOutcome::Completed,
+                Ok(Err(_)) => TaskOutcome::Cancelled,
+                Err(_) => TaskOutcome::Failed,
             };
             let _ = completed.send(outcome);
         });
@@ -126,8 +130,18 @@ pub async fn run<D: RuntimeDriver>(
         driver.yield_now().await;
     }
     if let Some(error) = app.terminal_failure() {
-        let _ = app.shutdown(shutdown_timeout).await;
-        return Ok(TerminalOutcome::RuntimeFailure { error });
+        return Ok(match app.shutdown(shutdown_timeout).await {
+            ShutdownOutcome::Clean => TerminalOutcome::RuntimeFailure { error },
+            ShutdownOutcome::RuntimeFailure {
+                error: cleanup_error,
+            } => TerminalOutcome::RuntimeFailureDuringShutdown {
+                error,
+                cleanup_error,
+            },
+            ShutdownOutcome::Timeout => {
+                TerminalOutcome::RuntimeFailureWithShutdownTimeout { error }
+            }
+        });
     }
     Ok(match app.shutdown(shutdown_timeout).await {
         ShutdownOutcome::Clean => TerminalOutcome::CleanShutdown,
