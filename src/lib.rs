@@ -12,7 +12,7 @@ use futures::{
 };
 use lenso_app_plan::{PlanResolutionError, ResolvedAppPlan};
 use lenso_kernel::{
-    DriverTask, LocalTask, NativeExecutionAdapter, PlanValidationError, RuntimeDriver,
+    DriverTask, ExecutionAdapterCatalog, LocalTask, PlanValidationError, RuntimeDriver,
     ShutdownOutcome, TaskOutcome, TerminalOutcome,
 };
 
@@ -100,11 +100,11 @@ impl RuntimeDriver for TokioDriver {
     }
 }
 
-/// Runs a native App until the Runtime Driver requests shutdown or supervision fails.
-pub async fn run_native<D: RuntimeDriver, A: NativeExecutionAdapter>(
+/// Runs an App through the Runner-assembled Adapter catalog until shutdown or failure.
+pub async fn run<D: RuntimeDriver>(
     plan: ResolvedAppPlan,
     driver: D,
-    adapter: A,
+    adapters: ExecutionAdapterCatalog,
     shutdown_timeout: Duration,
 ) -> Result<TerminalOutcome, PlanValidationError> {
     if let Err(error) = plan.validate() {
@@ -118,7 +118,7 @@ pub async fn run_native<D: RuntimeDriver, A: NativeExecutionAdapter>(
         });
     }
 
-    let app = match lenso_kernel::Kernel::start_native(plan, driver.clone(), adapter).await {
+    let app = match lenso_kernel::Kernel::start(plan, driver.clone(), adapters).await {
         Ok(app) => app,
         Err(error) => return Ok(TerminalOutcome::StartupFailure { error }),
     };
