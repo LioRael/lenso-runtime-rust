@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, rc::Rc};
 use lenso_app_plan::ResolvedAppPlan;
 use lenso_kernel::{
     ModuleLifecycle, NativeExecutionAdapter, NativeRequestEndpoint, NoopModuleLifecycle,
-    PreparedNativeApp, RuntimeFailure,
+    PreparedNativeApp, PreparedNativeModule, RuntimeFailure,
 };
 
 /// Endpoints created for one statically linked Module Instance generation.
@@ -35,6 +35,11 @@ impl NativeModuleInstance {
     /// Returns the lifecycle Interface for this generation.
     pub fn lifecycle(&self) -> Rc<dyn ModuleLifecycle> {
         self.lifecycle.clone()
+    }
+
+    /// Returns the exact endpoint set created for this generation.
+    pub fn endpoints(&self) -> &[Rc<dyn NativeRequestEndpoint>] {
+        &self.endpoints
     }
 }
 
@@ -79,7 +84,7 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
             })?;
 
         let mut instances = BTreeMap::new();
-        let mut modules = BTreeMap::new();
+        let mut generations = BTreeMap::new();
         for expected in plan.module_instances() {
             let matching_factories: Vec<_> = self
                 .factories
@@ -108,6 +113,13 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
                 &generation.endpoints,
             )?;
             let lifecycle = generation.lifecycle();
+            generations.insert(
+                expected.instance_key().to_owned(),
+                PreparedNativeModule::with_lifecycle(
+                    generation.endpoints.clone(),
+                    lifecycle.clone(),
+                ),
+            );
             if instances
                 .insert(expected.instance_key().to_owned(), generation)
                 .is_some()
@@ -117,7 +129,6 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
                     expected.instance_key()
                 ));
             }
-            modules.insert(expected.instance_key().to_owned(), lifecycle);
         }
 
         let mut bindings = BTreeMap::new();
@@ -154,7 +165,51 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
                 .or_insert_with(Vec::new)
                 .push(endpoint);
         }
-        Ok(PreparedNativeApp::with_modules(bindings, modules))
+        Ok(PreparedNativeApp::with_generations(bindings, generations))
+    }
+
+    fn recreate(
+        &self,
+        plan: &ResolvedAppPlan,
+        instance_key: &str,
+    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+        let expected = plan
+            .module_instances()
+            .iter()
+            .find(|instance| instance.instance_key() == instance_key)
+            .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("unknown Module Instance `{instance_key}`"),
+            })?;
+        let matching_factories: Vec<_> = self
+            .factories
+            .iter()
+            .filter(|factory| factory.package_id() == expected.package_id())
+            .collect();
+        let factory = match matching_factories.as_slice() {
+            [] => {
+                return Err(RuntimeFailure::MissingModuleFactory {
+                    instance: expected.instance_key().to_owned(),
+                    package_id: expected.package_id().to_owned(),
+                });
+            }
+            [factory] => *factory,
+            _ => {
+                return invalid(format!(
+                    "multiple statically linked factories declare package `{}`",
+                    expected.package_id()
+                ));
+            }
+        };
+        let generation = factory.instantiate(instance_key)?;
+        validate_endpoint_set(
+            instance_key,
+            expected.provided_capabilities(),
+            generation.endpoints(),
+        )?;
+        Ok(PreparedNativeModule::with_lifecycle(
+            generation.endpoints.clone(),
+            generation.lifecycle(),
+        ))
     }
 }
 
