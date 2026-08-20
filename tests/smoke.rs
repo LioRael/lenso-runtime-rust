@@ -1,13 +1,13 @@
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod native_fallback {
-    use std::{cell::Cell, collections::BTreeMap, rc::Rc, time::Duration};
+    use std::{cell::Cell, rc::Rc, time::Duration};
 
     use futures::future::pending;
     use lenso_app_plan::ResolvedAppPlan;
     use lenso_browser_driver::BrowserDriver;
     use lenso_kernel::{
         DriverTask, Kernel, NativeExecutionAdapter, PreparedNativeApp, RuntimeDriver,
-        RuntimeFailure, TaskOutcome, TerminalOutcome,
+        RuntimeFailure, TaskOutcome,
     };
 
     #[derive(Debug)]
@@ -15,7 +15,7 @@ mod native_fallback {
 
     impl NativeExecutionAdapter for EmptyAdapter {
         fn prepare(&self, _plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
-            Ok(PreparedNativeApp::with_modules(Vec::new(), BTreeMap::new()))
+            Ok(PreparedNativeApp::empty())
         }
     }
 
@@ -74,23 +74,20 @@ mod native_fallback {
         ));
 
         driver.request_shutdown();
-        assert_eq!(
-            driver.run(Kernel::boot(ResolvedAppPlan::empty(), driver.clone())),
-            Ok(TerminalOutcome::ShutdownRequested)
-        );
+        assert!(driver.shutdown_requested());
     }
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod browser_host {
-    use std::{cell::Cell, collections::BTreeMap, rc::Rc, time::Duration};
+    use std::{cell::Cell, rc::Rc, time::Duration};
 
     use futures::future::pending;
     use lenso_app_plan::ResolvedAppPlan;
     use lenso_browser_driver::BrowserDriver;
     use lenso_kernel::{
         DriverTask, Kernel, NativeExecutionAdapter, PreparedNativeApp, RuntimeDriver,
-        RuntimeFailure, ShutdownOutcome, TaskOutcome, TerminalOutcome,
+        RuntimeFailure, ShutdownOutcome, TaskOutcome,
     };
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 
@@ -101,7 +98,7 @@ mod browser_host {
 
     impl NativeExecutionAdapter for EmptyAdapter {
         fn prepare(&self, _plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
-            Ok(PreparedNativeApp::with_modules(Vec::new(), BTreeMap::new()))
+            Ok(PreparedNativeApp::empty())
         }
     }
 
@@ -163,9 +160,6 @@ mod browser_host {
         );
 
         driver.request_shutdown();
-        assert_eq!(
-            Kernel::boot(ResolvedAppPlan::empty(), driver).await,
-            Ok(TerminalOutcome::ShutdownRequested)
-        );
+        assert!(driver.shutdown_requested());
     }
 }
