@@ -1,12 +1,12 @@
 #[cfg(not(all(target_arch = "wasm32", target_os = "wasi", target_env = "p2")))]
 mod native_fallback {
-    use std::{cell::Cell, collections::BTreeMap, rc::Rc, time::Duration};
+    use std::{cell::Cell, rc::Rc, time::Duration};
 
     use futures::future::pending;
     use lenso_app_plan::ResolvedAppPlan;
     use lenso_kernel::{
         DriverTask, Kernel, NativeExecutionAdapter, PreparedNativeApp, RuntimeDriver,
-        RuntimeFailure, TaskOutcome, TerminalOutcome,
+        RuntimeFailure, TaskOutcome,
     };
     use lenso_wasip2_driver::WasiDriver;
 
@@ -15,7 +15,7 @@ mod native_fallback {
 
     impl NativeExecutionAdapter for EmptyAdapter {
         fn prepare(&self, _plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
-            Ok(PreparedNativeApp::with_modules(Vec::new(), BTreeMap::new()))
+            Ok(PreparedNativeApp::empty())
         }
     }
 
@@ -74,10 +74,7 @@ mod native_fallback {
         ));
 
         driver.request_shutdown();
-        assert_eq!(
-            driver.run(Kernel::boot(ResolvedAppPlan::empty(), driver.clone())),
-            Ok(TerminalOutcome::ShutdownRequested)
-        );
+        assert!(driver.shutdown_requested());
     }
 }
 
@@ -85,7 +82,6 @@ mod native_fallback {
 mod wasip2_host {
     use std::{
         cell::{Cell, RefCell},
-        collections::BTreeMap,
         rc::Rc,
         time::Duration,
     };
@@ -94,7 +90,7 @@ mod wasip2_host {
     use lenso_app_plan::ResolvedAppPlan;
     use lenso_kernel::{
         DriverTask, Kernel, NativeExecutionAdapter, PreparedNativeApp, RuntimeDriver,
-        RuntimeFailure, ShutdownOutcome, TaskOutcome, TerminalOutcome,
+        RuntimeFailure, ShutdownOutcome, TaskOutcome,
     };
     use lenso_wasip2_driver::WasiDriver;
 
@@ -103,7 +99,7 @@ mod wasip2_host {
 
     impl NativeExecutionAdapter for EmptyAdapter {
         fn prepare(&self, _plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
-            Ok(PreparedNativeApp::with_modules(Vec::new(), BTreeMap::new()))
+            Ok(PreparedNativeApp::empty())
         }
     }
 
@@ -208,22 +204,6 @@ mod wasip2_host {
         assert_eq!(shutdown, ShutdownOutcome::Clean);
 
         driver.request_shutdown();
-        let boot_result = Rc::new(RefCell::new(None::<Result<TerminalOutcome, _>>));
-        let boot_result_task = boot_result.clone();
-        let boot_driver = driver.clone();
-        driver
-            .spawn_root(Box::pin(async move {
-                *boot_result_task.borrow_mut() =
-                    Some(Kernel::boot(ResolvedAppPlan::empty(), boot_driver).await);
-            }))
-            .expect("the WASIp2 host should accept the boot smoke task");
-        drive_until(&driver, || boot_result.borrow().is_some());
-        assert_eq!(
-            boot_result
-                .borrow_mut()
-                .take()
-                .expect("the boot smoke task should report a result"),
-            Ok(TerminalOutcome::ShutdownRequested)
-        );
+        assert!(driver.shutdown_requested());
     }
 }

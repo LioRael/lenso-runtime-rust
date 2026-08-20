@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     future::Future,
+    panic::AssertUnwindSafe,
     pin::Pin,
     rc::Rc,
     task::{Context, Poll},
@@ -10,7 +11,7 @@ use std::{
 use futures::{
     channel::oneshot,
     executor::{LocalPool, LocalSpawner},
-    future::{AbortHandle, Abortable, LocalBoxFuture},
+    future::{AbortHandle, Abortable, FutureExt, LocalBoxFuture},
     task::{LocalSpawnExt, SpawnError},
 };
 use lenso_kernel::{DriverTask, LocalTask, RuntimeDriver, TaskOutcome};
@@ -241,10 +242,13 @@ impl RuntimeDriver for WasiDriver {
         let (abort, registration) = AbortHandle::new_pair();
         let (completed, completion) = oneshot::channel();
         self.state.spawner.spawn_local(async move {
-            let outcome = if Abortable::new(task, registration).await.is_ok() {
-                TaskOutcome::Completed
-            } else {
-                TaskOutcome::Cancelled
+            let outcome = match AssertUnwindSafe(Abortable::new(task, registration))
+                .catch_unwind()
+                .await
+            {
+                Ok(Ok(())) => TaskOutcome::Completed,
+                Ok(Err(_)) => TaskOutcome::Cancelled,
+                Err(_) => TaskOutcome::Failed,
             };
             let _ = completed.send(outcome);
         })?;
