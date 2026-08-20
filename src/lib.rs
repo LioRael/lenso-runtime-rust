@@ -54,7 +54,43 @@ pub trait NativeModuleFactory: std::fmt::Debug + 'static {
     /// Package identity selected by the Resolved App Plan.
     fn package_id(&self) -> &'static str;
     /// Creates a fresh Module Instance generation.
-    fn instantiate(&self, instance_key: &str) -> Result<NativeModuleInstance, RuntimeFailure>;
+    fn instantiate(
+        &self,
+        context: NativeModuleFactoryContext<'_>,
+    ) -> Result<NativeModuleInstance, RuntimeFailure>;
+}
+
+/// Immutable Plan input supplied when a native factory creates one generation.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeModuleFactoryContext<'a> {
+    instance_key: &'a str,
+    entrypoint: &'a str,
+    configuration: &'a str,
+}
+
+impl<'a> NativeModuleFactoryContext<'a> {
+    fn from_plan(instance: &'a lenso_app_plan::ModuleInstancePlan) -> Self {
+        Self {
+            instance_key: instance.instance_key(),
+            entrypoint: instance.entrypoint(),
+            configuration: instance.configuration(),
+        }
+    }
+
+    /// Returns the App-local Module Instance key.
+    pub const fn instance_key(self) -> &'a str {
+        self.instance_key
+    }
+
+    /// Returns the exact package entrypoint selected before boot.
+    pub const fn entrypoint(self) -> &'a str {
+        self.entrypoint
+    }
+
+    /// Returns opaque Module-owned configuration selected before boot.
+    pub const fn configuration(self) -> &'a str {
+        self.configuration
+    }
 }
 
 /// Statically linked native Module factories available to an App binary.
@@ -110,12 +146,8 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
                     ));
                 }
             };
-            let generation = factory.instantiate(expected.instance_key())?;
-            validate_endpoint_set(
-                expected.instance_key(),
-                expected.provided_capabilities(),
-                &generation.endpoints,
-            )?;
+            let generation =
+                factory.instantiate(NativeModuleFactoryContext::from_plan(expected))?;
             let lifecycle = generation.lifecycle();
             generations.insert(
                 expected.instance_key().to_owned(),
@@ -163,7 +195,7 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
                 endpoint,
             ));
         }
-        Ok(PreparedNativeApp::with_generations(bindings, generations))
+        Ok(PreparedNativeApp::new(bindings, generations))
     }
 
     fn recreate(
@@ -198,66 +230,12 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
                 ));
             }
         };
-        let generation = factory.instantiate(instance_key)?;
-        validate_endpoint_set(
-            instance_key,
-            expected.provided_capabilities(),
-            generation.endpoints(),
-        )?;
+        let generation = factory.instantiate(NativeModuleFactoryContext::from_plan(expected))?;
         Ok(PreparedNativeModule::with_lifecycle(
             generation.endpoints.clone(),
             generation.lifecycle(),
         ))
     }
-}
-
-fn validate_endpoint_set(
-    instance_key: &str,
-    expected: &[lenso_app_plan::CapabilityEndpointPlan],
-    actual: &[Rc<dyn NativeRequestEndpoint>],
-) -> Result<(), RuntimeFailure> {
-    if expected.len() != actual.len() {
-        return invalid(format!(
-            "Module Instance `{instance_key}` prepared {} endpoints; expected {}",
-            actual.len(),
-            expected.len()
-        ));
-    }
-    for descriptor in expected {
-        let matching: Vec<_> = actual
-            .iter()
-            .filter(|endpoint| endpoint.capability_id() == descriptor.capability_id())
-            .collect();
-        if matching.len() != 1 {
-            return invalid(format!(
-                "Module Instance `{instance_key}` prepared {} endpoints for Capability `{}`",
-                matching.len(),
-                descriptor.capability_id()
-            ));
-        }
-        let endpoint = matching[0];
-        let actual_operations: Vec<_> = endpoint.operations().to_vec();
-        let expected_operations: Vec<_> =
-            descriptor.operations().iter().map(String::as_str).collect();
-        if endpoint.descriptor_version() != descriptor.descriptor_version()
-            || actual_operations != expected_operations
-        {
-            return invalid(format!(
-                "Module Instance `{instance_key}` endpoint `{}` differs from its resolved Descriptor",
-                descriptor.capability_id()
-            ));
-        }
-        let mut unique = actual_operations.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        if unique.len() != actual_operations.len() {
-            return invalid(format!(
-                "Module Instance `{instance_key}` endpoint `{}` has duplicate Operations",
-                descriptor.capability_id()
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn invalid<T>(detail: String) -> Result<T, RuntimeFailure> {
