@@ -2,10 +2,10 @@
 
 use std::{collections::BTreeMap, rc::Rc};
 
-use lenso_app_plan::ResolvedAppPlan;
+use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
 use lenso_kernel::{
     ModuleLifecycle, NativeExecutionAdapter, NativeRequestEndpoint, NoopModuleLifecycle,
-    PreparedNativeApp, PreparedNativeModule, RuntimeFailure,
+    PreparedBinding, PreparedNativeApp, PreparedNativeModule, RuntimeFailure,
 };
 
 /// Endpoints created for one statically linked Module Instance generation.
@@ -85,7 +85,11 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
 
         let mut instances = BTreeMap::new();
         let mut generations = BTreeMap::new();
-        for expected in plan.module_instances() {
+        for expected in plan
+            .module_instances()
+            .iter()
+            .filter(|instance| instance.execution_class() == &ExecutionClassId::native_rust())
+        {
             let matching_factories: Vec<_> = self
                 .factories
                 .iter()
@@ -131,14 +135,10 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
             }
         }
 
-        let mut bindings = BTreeMap::new();
+        let mut bindings = Vec::new();
         for binding in plan.capability_bindings() {
-            if !instances.contains_key(binding.consumer_instance()) {
-                return invalid(format!(
-                    "Capability `{}` names missing consumer `{}`",
-                    binding.capability_id(),
-                    binding.consumer_instance()
-                ));
+            if !instances.contains_key(binding.provider_instance()) {
+                continue;
             }
             let endpoint = instances
                 .get(binding.provider_instance())
@@ -157,13 +157,11 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
                         binding.provider_instance()
                     ),
                 })?;
-            bindings
-                .entry((
-                    binding.consumer_instance().to_owned(),
-                    endpoint.capability_id(),
-                ))
-                .or_insert_with(Vec::new)
-                .push(endpoint);
+            bindings.push(PreparedBinding::new(
+                binding.consumer_instance(),
+                binding.provider_instance(),
+                endpoint,
+            ));
         }
         Ok(PreparedNativeApp::with_generations(bindings, generations))
     }
