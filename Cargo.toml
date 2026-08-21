@@ -9,7 +9,13 @@ publish.workspace = true
 futures.workspace = true
 lenso-app-plan = { path = "../lenso-app-plan" }
 lenso-kernel = { path = "../lenso-kernel" }
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+cpu-time = "1.0"
+
+[dev-dependencies]
+lenso-capability-greeting = { path = "../lenso-capability-greeting" }
+lenso-native-adapter = { path = "../lenso-native-adapter" }
+lenso-native-greeter = { path = "../../fixtures/vnext-native-greeter" }
 
 [lints]
 workspace = true

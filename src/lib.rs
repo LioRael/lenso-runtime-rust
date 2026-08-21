@@ -17,6 +17,13 @@ use lenso_kernel::{
     ShutdownOutcome, TaskOutcome, TerminalOutcome,
 };
 
+mod replicated;
+
+pub use replicated::{
+    CrossLaneRequestCatalog, LaneCancellationToken, LaneDiagnosticsSnapshot, LaneInvocationOptions,
+    ReplicatedNativeApp, ReplicatedRunnerError,
+};
+
 /// Tokio-backed Runtime Driver used by the native App Runner.
 #[derive(Clone, Debug)]
 pub struct TokioDriver {
@@ -28,7 +35,10 @@ pub struct TokioDriver {
 impl TokioDriver {
     /// Creates a Driver bound to the current Tokio local task context.
     pub fn new() -> Self {
-        let started_at = Instant::now();
+        Self::with_epoch(Instant::now())
+    }
+
+    pub(crate) fn with_epoch(started_at: Instant) -> Self {
         Self {
             started_at,
             shutdown_requested: Rc::new(Cell::new(false)),
