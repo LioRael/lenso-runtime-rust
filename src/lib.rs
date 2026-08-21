@@ -109,6 +109,10 @@ impl Default for NativeModuleInstance {
 pub trait NativeModuleFactory: std::fmt::Debug + 'static {
     /// Package identity selected by the Resolved App Plan.
     fn package_id(&self) -> &'static str;
+    /// Exact statically linked Cargo package version.
+    fn package_version(&self) -> &'static str {
+        ""
+    }
     /// Creates a fresh Module Instance generation.
     fn instantiate(
         &self,
@@ -163,6 +167,15 @@ type NativeBindings = (
     Vec<PreparedEventBinding>,
 );
 
+fn factory_matches(
+    factory: &dyn NativeModuleFactory,
+    expected: &lenso_app_plan::ModuleInstancePlan,
+) -> bool {
+    factory.package_id() == expected.package_id()
+        && (expected.package_revision().is_empty()
+            || factory.package_version() == expected.package_revision())
+}
+
 impl NativeModuleRegistry {
     /// Creates an empty linked-factory registry.
     pub fn new() -> Self {
@@ -189,7 +202,7 @@ impl NativeModuleRegistry {
             let matching_factories: Vec<_> = self
                 .factories
                 .iter()
-                .filter(|factory| factory.package_id() == expected.package_id())
+                .filter(|factory| factory_matches(factory.as_ref(), expected))
                 .collect();
             let factory = match matching_factories.as_slice() {
                 [] => {
@@ -258,7 +271,7 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
         let matching_factories: Vec<_> = self
             .factories
             .iter()
-            .filter(|factory| factory.package_id() == expected.package_id())
+            .filter(|factory| factory_matches(factory.as_ref(), expected))
             .collect();
         let factory = match matching_factories.as_slice() {
             [] => {

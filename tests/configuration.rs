@@ -15,6 +15,9 @@ impl NativeModuleFactory for RecordingFactory {
     fn package_id(&self) -> &'static str {
         "test.configured"
     }
+    fn package_version(&self) -> &'static str {
+        "1.0.0"
+    }
 
     fn instantiate(
         &self,
@@ -27,6 +30,26 @@ impl NativeModuleFactory for RecordingFactory {
         ));
         Ok(NativeModuleInstance::default())
     }
+}
+
+#[test]
+fn native_factory_version_must_match_the_authoring_resolved_version() {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let plan = ResolvedAppPlan::new(
+        vec![
+            ModuleInstancePlan::new("configured", "test.configured").with_package_revision("2.0.0"),
+        ],
+        vec![],
+    );
+    let driver = DeterministicDriver::new();
+    let error = driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativeModuleRegistry::new().with_factory(RecordingFactory { observed }),
+        ))
+        .expect_err("a differently linked Cargo package must be rejected");
+    assert!(matches!(error, RuntimeFailure::MissingModuleFactory { .. }));
 }
 
 #[test]
