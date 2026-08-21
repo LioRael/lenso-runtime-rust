@@ -4,14 +4,16 @@ use std::{collections::BTreeMap, rc::Rc};
 
 use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
 use lenso_kernel::{
-    ModuleLifecycle, NativeExecutionAdapter, NativeRequestEndpoint, NoopModuleLifecycle,
-    PreparedBinding, PreparedNativeApp, PreparedNativeModule, RuntimeFailure,
+    ModuleLifecycle, NativeExecutionAdapter, NativeRequestEndpoint, NativeStreamEndpoint,
+    NoopModuleLifecycle, PreparedBinding, PreparedNativeApp, PreparedNativeModule,
+    PreparedStreamBinding, RuntimeFailure,
 };
 
 /// Endpoints created for one statically linked Module Instance generation.
 #[derive(Debug)]
 pub struct NativeModuleInstance {
     endpoints: Vec<Rc<dyn NativeRequestEndpoint>>,
+    stream_endpoints: Vec<Rc<dyn NativeStreamEndpoint>>,
     lifecycle: Rc<dyn ModuleLifecycle>,
 }
 
@@ -28,8 +30,30 @@ impl NativeModuleInstance {
     ) -> Self {
         Self {
             endpoints,
+            stream_endpoints: Vec::new(),
             lifecycle: Rc::new(lifecycle),
         }
+    }
+
+    /// Creates a generation with request and bidirectional stream endpoints.
+    pub fn with_endpoints(
+        endpoints: Vec<Rc<dyn NativeRequestEndpoint>>,
+        stream_endpoints: Vec<Rc<dyn NativeStreamEndpoint>>,
+        lifecycle: impl ModuleLifecycle,
+    ) -> Self {
+        Self {
+            endpoints,
+            stream_endpoints,
+            lifecycle: Rc::new(lifecycle),
+        }
+    }
+
+    /// Creates a generation containing only bidirectional stream endpoints.
+    pub fn with_stream_endpoints(
+        stream_endpoints: Vec<Rc<dyn NativeStreamEndpoint>>,
+        lifecycle: impl ModuleLifecycle,
+    ) -> Self {
+        Self::with_endpoints(Vec::new(), stream_endpoints, lifecycle)
     }
 
     /// Returns the lifecycle Interface for this generation.
@@ -40,6 +64,11 @@ impl NativeModuleInstance {
     /// Returns the exact endpoint set created for this generation.
     pub fn endpoints(&self) -> &[Rc<dyn NativeRequestEndpoint>] {
         &self.endpoints
+    }
+
+    /// Returns the exact bidirectional stream endpoint set created for this generation.
+    pub fn stream_endpoints(&self) -> &[Rc<dyn NativeStreamEndpoint>] {
+        &self.stream_endpoints
     }
 }
 
@@ -151,8 +180,9 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
             let lifecycle = generation.lifecycle();
             generations.insert(
                 expected.instance_key().to_owned(),
-                PreparedNativeModule::with_lifecycle(
+                PreparedNativeModule::with_endpoints_lifecycle(
                     generation.endpoints.clone(),
+                    generation.stream_endpoints.clone(),
                     lifecycle.clone(),
                 ),
             );
@@ -168,34 +198,69 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
         }
 
         let mut bindings = Vec::new();
+        let mut stream_bindings = Vec::new();
         for binding in plan.capability_bindings() {
             if !instances.contains_key(binding.provider_instance()) {
                 continue;
             }
-            let endpoint = instances
-                .get(binding.provider_instance())
-                .and_then(|instance| {
-                    instance.endpoints.iter().find(|endpoint| {
-                        endpoint.capability_id() == binding.capability_id()
-                            && endpoint.descriptor_version() == binding.descriptor_version()
+            let provider = plan
+                .module_instance(binding.provider_instance())
+                .expect("validated binding provider should exist");
+            let descriptor = provider
+                .provided_capabilities()
+                .iter()
+                .find(|descriptor| descriptor.capability_id() == binding.capability_id())
+                .expect("validated binding descriptor should exist");
+            if !descriptor.request_operations().is_empty() {
+                let endpoint = instances
+                    .get(binding.provider_instance())
+                    .and_then(|instance| {
+                        instance.endpoints.iter().find(|endpoint| {
+                            endpoint.capability_id() == binding.capability_id()
+                                && endpoint.descriptor_version() == binding.descriptor_version()
+                        })
                     })
-                })
-                .cloned()
-                .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
-                    detail: format!(
-                        "Capability `{}` version `{}` has no endpoint on provider `{}`",
-                        binding.capability_id(),
-                        binding.descriptor_version(),
-                        binding.provider_instance()
-                    ),
-                })?;
-            bindings.push(PreparedBinding::new(
-                binding.consumer_instance(),
-                binding.provider_instance(),
-                endpoint,
-            ));
+                    .cloned()
+                    .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                        detail: format!(
+                            "Capability `{}` version `{}` has no request endpoint on provider `{}`",
+                            binding.capability_id(),
+                            binding.descriptor_version(),
+                            binding.provider_instance()
+                        ),
+                    })?;
+                bindings.push(PreparedBinding::new(
+                    binding.consumer_instance(),
+                    binding.provider_instance(),
+                    endpoint,
+                ));
+            }
+            if !descriptor.stream_operations().is_empty() {
+                let endpoint = instances
+                    .get(binding.provider_instance())
+                    .and_then(|instance| {
+                        instance.stream_endpoints.iter().find(|endpoint| {
+                            endpoint.capability_id() == binding.capability_id()
+                                && endpoint.descriptor_version() == binding.descriptor_version()
+                        })
+                    })
+                    .cloned()
+                    .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                        detail: format!(
+                            "Capability `{}` version `{}` has no stream endpoint on provider `{}`",
+                            binding.capability_id(),
+                            binding.descriptor_version(),
+                            binding.provider_instance()
+                        ),
+                    })?;
+                stream_bindings.push(PreparedStreamBinding::new(
+                    binding.consumer_instance(),
+                    binding.provider_instance(),
+                    endpoint,
+                ));
+            }
         }
-        Ok(PreparedNativeApp::new(bindings, generations))
+        Ok(PreparedNativeApp::new(bindings, generations).with_stream_bindings(stream_bindings))
     }
 
     fn recreate(
@@ -231,8 +296,9 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
             }
         };
         let generation = factory.instantiate(NativeModuleFactoryContext::from_plan(expected))?;
-        Ok(PreparedNativeModule::with_lifecycle(
+        Ok(PreparedNativeModule::with_endpoints_lifecycle(
             generation.endpoints.clone(),
+            generation.stream_endpoints.clone(),
             generation.lifecycle(),
         ))
     }
