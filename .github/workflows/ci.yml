@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo check --locked --workspace --all-targets
+      - run: cargo test --locked --workspace
+      - name: Check browser Driver
+        run: cargo check --locked -p lenso-browser-driver --all-targets --target wasm32-unknown-unknown
+      - name: Check WASIp2 Driver
+        run: cargo check --locked -p lenso-wasip2-driver --all-targets --target wasm32-wasip2

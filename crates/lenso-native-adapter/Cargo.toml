@@ -8,8 +8,8 @@ repository.workspace = true
 description = "Native Rust Execution Adapter for Lenso vNext."
 
 [dependencies]
-lenso-app-plan = { path = "../lenso-app-plan", version = "0.1.0" }
-lenso-kernel = { path = "../lenso-kernel", version = "0.1.1" }
+lenso-app-plan = "0.1.0"
+lenso-kernel = "0.1.1"
 
 [lints]
 workspace = true
