@@ -1,0 +1,26 @@
+[package]
+name = "lenso-browser-driver"
+version = "0.1.1"
+edition.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+description = "Browser Runtime Driver for the Lenso vNext runtime."
+
+[dependencies]
+futures.workspace = true
+lenso-kernel = { path = "../lenso-kernel", version = "0.1.1" }
+
+[dev-dependencies]
+lenso-app-plan = { path = "../lenso-app-plan" }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Performance", "Window"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true
