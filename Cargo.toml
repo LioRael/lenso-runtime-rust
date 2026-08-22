@@ -15,9 +15,7 @@ tokio = { workspace = true, features = ["sync"] }
 cpu-time = "1.0"
 
 [dev-dependencies]
-lenso-capability-greeting = { path = "../lenso-capability-greeting" }
-lenso-native-adapter = { path = "../lenso-native-adapter" }
-lenso-native-greeter = { path = "../../fixtures/vnext-native-greeter" }
+lenso-runtime-conformance = { path = "../lenso-runtime-conformance", version = "0.1.0" }
 
 [lints]
 workspace = true

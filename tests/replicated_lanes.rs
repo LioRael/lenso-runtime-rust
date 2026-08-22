@@ -5,40 +5,36 @@ use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
     ExecutionLaneId, ExecutionLanePlan, ModuleInstancePlan,
 };
-use lenso_capability_greeting::{
-    GREET_OPERATION, GreetError, GreetRequest, GreetResponse, Greeting, GreetingEndpoint,
-    GreetingInvocationError, GreetingProvider,
-};
 use lenso_kernel::{
     ActivateContext, ExecutionAdapterCatalog, InvocationContext, ModuleLifecycle, RuntimeFailure,
-};
-use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
-};
-use lenso_native_greeter::{
-    CONSUMER_PACKAGE_ID, ConsumerFactory, GREETER_PACKAGE_ID, GreeterFactory,
 };
 use lenso_runner::{
     CrossLaneRequestCatalog, LaneCancellationToken, LaneInvocationOptions, ReplicatedNativeApp,
     ReplicatedRunnerError,
 };
+use lenso_runtime_conformance::{
+    ConformanceExecutionAdapter, ConformanceModule, ConformanceModuleFactory, PROBE_CAPABILITY_ID,
+    PROBE_CONSUMER_PACKAGE_ID, PROBE_DESCRIPTOR_VERSION, PROBE_OPERATION,
+    PROBE_PROVIDER_PACKAGE_ID, Probe, ProbeConsumerFactory, ProbeEndpoint, ProbeError,
+    ProbeInvocationError, ProbeProvider, ProbeProviderFactory, ProbeRequest, ProbeResponse,
+};
 
-const EMPTY_CONSUMER_PACKAGE_ID: &str = "fixture.empty-consumer";
-const SLOW_GREETER_PACKAGE_ID: &str = "fixture.slow-greeter";
+const EMPTY_PROBE_CONSUMER_PACKAGE_ID: &str = "fixture.empty-consumer";
+const SLOW_PROBE_PROVIDER_PACKAGE_ID: &str = "fixture.slow-provider";
 
 #[derive(Debug)]
 struct EmptyConsumerFactory;
 
-impl NativeModuleFactory for EmptyConsumerFactory {
+impl ConformanceModuleFactory for EmptyConsumerFactory {
     fn package_id(&self) -> &'static str {
-        EMPTY_CONSUMER_PACKAGE_ID
+        EMPTY_PROBE_CONSUMER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::default())
+        _instance: &ModuleInstancePlan,
+    ) -> Result<ConformanceModule, RuntimeFailure> {
+        Ok(ConformanceModule::default())
     }
 }
 
@@ -47,16 +43,16 @@ struct ReportingConsumerFactory {
     reported: mpsc::Sender<String>,
 }
 
-impl NativeModuleFactory for ReportingConsumerFactory {
+impl ConformanceModuleFactory for ReportingConsumerFactory {
     fn package_id(&self) -> &'static str {
-        CONSUMER_PACKAGE_ID
+        PROBE_CONSUMER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::with_lifecycle(
+        _instance: &ModuleInstancePlan,
+    ) -> Result<ConformanceModule, RuntimeFailure> {
+        Ok(ConformanceModule::with_lifecycle(
             Vec::new(),
             ReportingConsumerLifecycle {
                 reported: self.reported.clone(),
@@ -73,54 +69,54 @@ struct ReportingConsumerLifecycle {
 impl ModuleLifecycle for ReportingConsumerLifecycle {
     fn activate(&self, context: ActivateContext) -> lenso_kernel::ModuleFuture {
         let client =
-            lenso_capability_greeting::GreetingClient::from_dependencies(context.dependencies());
+            lenso_runtime_conformance::ProbeClient::from_dependencies(context.dependencies());
         let reported = self.reported.clone();
         Box::pin(async move {
             let response = client?
-                .greet(GreetRequest {
-                    name: "module-client".to_owned(),
+                .probe(ProbeRequest {
+                    value: "module-client".to_owned(),
                 })
                 .await
                 .map_err(|error| RuntimeFailure::ModuleFailure {
-                    detail: format!("generated cross-lane client failed: {error:?}"),
+                    detail: format!("typed cross-lane client failed: {error:?}"),
                 })?;
-            let _ = reported.send(response.message);
+            let _ = reported.send(response.value);
             Ok(())
         })
     }
 }
 
 #[derive(Debug)]
-struct SlowGreeterFactory;
+struct SlowProbeProviderFactory;
 
-impl NativeModuleFactory for SlowGreeterFactory {
+impl ConformanceModuleFactory for SlowProbeProviderFactory {
     fn package_id(&self) -> &'static str {
-        SLOW_GREETER_PACKAGE_ID
+        SLOW_PROBE_PROVIDER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::new(vec![Rc::new(
-            GreetingEndpoint::new(SlowGreeter),
-        )]))
+        _instance: &ModuleInstancePlan,
+    ) -> Result<ConformanceModule, RuntimeFailure> {
+        Ok(ConformanceModule::new(vec![Rc::new(ProbeEndpoint::new(
+            SlowProbeProvider,
+        ))]))
     }
 }
 
 #[derive(Debug)]
-struct SlowGreeter;
+struct SlowProbeProvider;
 
-impl GreetingProvider for SlowGreeter {
-    fn greet(
+impl ProbeProvider for SlowProbeProvider {
+    fn probe(
         &self,
         _context: InvocationContext,
-        request: GreetRequest,
-    ) -> LocalBoxFuture<'static, Result<GreetResponse, GreetingInvocationError>> {
+        request: ProbeRequest,
+    ) -> LocalBoxFuture<'static, Result<ProbeResponse, ProbeInvocationError>> {
         Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            Ok(GreetResponse {
-                message: format!("Hello, {}!", request.name),
+            Ok(ProbeResponse {
+                value: format!("Echo: {}", request.value),
             })
         })
     }
@@ -129,23 +125,27 @@ impl GreetingProvider for SlowGreeter {
 fn two_lane_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("consumer", CONSUMER_PACKAGE_ID)
+            ModuleInstancePlan::new("consumer", PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
-                    "example.greeting@1",
-                    "1.0.0",
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("provider", GREETER_PACKAGE_ID)
+            ModuleInstancePlan::new("provider", PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
-                    CapabilityEndpointPlan::new("example.greeting@1", "1.0.0", ["greet"])
-                        .with_cross_lane_transfer(),
+                    CapabilityEndpointPlan::new(
+                        PROBE_CAPABILITY_ID,
+                        PROBE_DESCRIPTOR_VERSION,
+                        [PROBE_OPERATION],
+                    )
+                    .with_cross_lane_transfer(),
                 ),
         ],
         vec![CapabilityBinding::new(
             "consumer",
-            "example.greeting@1",
-            "1.0.0",
+            PROBE_CAPABILITY_ID,
+            PROBE_DESCRIPTOR_VERSION,
             "provider",
         )],
     )
@@ -160,42 +160,50 @@ fn two_lane_plan() -> lenso_app_plan::ResolvedAppPlan {
 fn same_and_cross_lane_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("same-consumer", CONSUMER_PACKAGE_ID)
+            ModuleInstancePlan::new("same-consumer", PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
-                    "example.greeting@1",
-                    "1.0.0",
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("same-provider", GREETER_PACKAGE_ID)
+            ModuleInstancePlan::new("same-provider", PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_capability(
-                    CapabilityEndpointPlan::new("example.greeting@1", "1.0.0", ["greet"])
-                        .with_cross_lane_transfer(),
+                    CapabilityEndpointPlan::new(
+                        PROBE_CAPABILITY_ID,
+                        PROBE_DESCRIPTOR_VERSION,
+                        [PROBE_OPERATION],
+                    )
+                    .with_cross_lane_transfer(),
                 ),
-            ModuleInstancePlan::new("cross-consumer", CONSUMER_PACKAGE_ID)
+            ModuleInstancePlan::new("cross-consumer", PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
-                    "example.greeting@1",
-                    "1.0.0",
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("cross-provider", GREETER_PACKAGE_ID)
+            ModuleInstancePlan::new("cross-provider", PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
-                    CapabilityEndpointPlan::new("example.greeting@1", "1.0.0", ["greet"])
-                        .with_cross_lane_transfer(),
+                    CapabilityEndpointPlan::new(
+                        PROBE_CAPABILITY_ID,
+                        PROBE_DESCRIPTOR_VERSION,
+                        [PROBE_OPERATION],
+                    )
+                    .with_cross_lane_transfer(),
                 ),
         ],
         vec![
             CapabilityBinding::new(
                 "same-consumer",
-                "example.greeting@1",
-                "1.0.0",
+                PROBE_CAPABILITY_ID,
+                PROBE_DESCRIPTOR_VERSION,
                 "same-provider",
             ),
             CapabilityBinding::new(
                 "cross-consumer",
-                "example.greeting@1",
-                "1.0.0",
+                PROBE_CAPABILITY_ID,
+                PROBE_DESCRIPTOR_VERSION,
                 "cross-provider",
             ),
         ],
@@ -208,62 +216,70 @@ fn same_and_cross_lane_plan() -> lenso_app_plan::ResolvedAppPlan {
     .expect("same/cross conformance fixture should resolve")
 }
 
-fn greeting_adapters(lane: &ExecutionLaneId) -> ExecutionAdapterCatalog {
+fn probe_adapters(lane: &ExecutionLaneId) -> ExecutionAdapterCatalog {
     let registry = match lane.as_str() {
-        "frontend" => NativeModuleRegistry::new()
-            .with_factory(ConsumerFactory)
-            .with_factory(GreeterFactory),
-        "workers" => NativeModuleRegistry::new().with_factory(GreeterFactory),
+        "frontend" => ConformanceExecutionAdapter::new()
+            .with_factory(ProbeConsumerFactory)
+            .with_factory(ProbeProviderFactory),
+        "workers" => ConformanceExecutionAdapter::new().with_factory(ProbeProviderFactory),
         other => panic!("unexpected lane {other}"),
     };
     ExecutionAdapterCatalog::single(registry)
 }
 
-fn greeting_transfers() -> CrossLaneRequestCatalog {
-    CrossLaneRequestCatalog::new().with_request::<Greeting>(&[GREET_OPERATION])
+fn probe_transfers() -> CrossLaneRequestCatalog {
+    CrossLaneRequestCatalog::new().with_request::<Probe>(&[PROBE_OPERATION])
 }
 
 fn slow_conformance_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("same-consumer", EMPTY_CONSUMER_PACKAGE_ID)
+            ModuleInstancePlan::new("same-consumer", EMPTY_PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
-                    "example.greeting@1",
-                    "1.0.0",
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("same-provider", SLOW_GREETER_PACKAGE_ID)
+            ModuleInstancePlan::new("same-provider", SLOW_PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_capability(
-                    CapabilityEndpointPlan::new("example.greeting@1", "1.0.0", ["greet"])
-                        .with_limits(0, 1)
-                        .with_cross_lane_transfer(),
+                    CapabilityEndpointPlan::new(
+                        PROBE_CAPABILITY_ID,
+                        PROBE_DESCRIPTOR_VERSION,
+                        [PROBE_OPERATION],
+                    )
+                    .with_limits(0, 1)
+                    .with_cross_lane_transfer(),
                 ),
-            ModuleInstancePlan::new("cross-consumer", EMPTY_CONSUMER_PACKAGE_ID)
+            ModuleInstancePlan::new("cross-consumer", EMPTY_PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
-                    "example.greeting@1",
-                    "1.0.0",
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("cross-provider", SLOW_GREETER_PACKAGE_ID)
+            ModuleInstancePlan::new("cross-provider", SLOW_PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
-                    CapabilityEndpointPlan::new("example.greeting@1", "1.0.0", ["greet"])
-                        .with_limits(0, 1)
-                        .with_cross_lane_transfer(),
+                    CapabilityEndpointPlan::new(
+                        PROBE_CAPABILITY_ID,
+                        PROBE_DESCRIPTOR_VERSION,
+                        [PROBE_OPERATION],
+                    )
+                    .with_limits(0, 1)
+                    .with_cross_lane_transfer(),
                 ),
         ],
         vec![
             CapabilityBinding::new(
                 "same-consumer",
-                "example.greeting@1",
-                "1.0.0",
+                PROBE_CAPABILITY_ID,
+                PROBE_DESCRIPTOR_VERSION,
                 "same-provider",
             ),
             CapabilityBinding::new(
                 "cross-consumer",
-                "example.greeting@1",
-                "1.0.0",
+                PROBE_CAPABILITY_ID,
+                PROBE_DESCRIPTOR_VERSION,
                 "cross-provider",
             ),
         ],
@@ -278,10 +294,10 @@ fn slow_conformance_plan() -> lenso_app_plan::ResolvedAppPlan {
 
 fn slow_adapters(lane: &ExecutionLaneId) -> ExecutionAdapterCatalog {
     let registry = match lane.as_str() {
-        "frontend" => NativeModuleRegistry::new()
+        "frontend" => ConformanceExecutionAdapter::new()
             .with_factory(EmptyConsumerFactory)
-            .with_factory(SlowGreeterFactory),
-        "workers" => NativeModuleRegistry::new().with_factory(SlowGreeterFactory),
+            .with_factory(SlowProbeProviderFactory),
+        "workers" => ConformanceExecutionAdapter::new().with_factory(SlowProbeProviderFactory),
         other => panic!("unexpected lane {other}"),
     };
     ExecutionAdapterCatalog::single(registry)
@@ -294,15 +310,17 @@ async fn one_plan_runs_two_kernel_lanes_and_invokes_across_them() {
         two_lane_plan(),
         move |lane| {
             let registry = match lane.as_str() {
-                "frontend" => NativeModuleRegistry::new().with_factory(ReportingConsumerFactory {
-                    reported: reported.clone(),
-                }),
-                "workers" => NativeModuleRegistry::new().with_factory(GreeterFactory),
+                "frontend" => {
+                    ConformanceExecutionAdapter::new().with_factory(ReportingConsumerFactory {
+                        reported: reported.clone(),
+                    })
+                }
+                "workers" => ConformanceExecutionAdapter::new().with_factory(ProbeProviderFactory),
                 other => panic!("unexpected lane {other}"),
             };
             ExecutionAdapterCatalog::single(registry)
         },
-        greeting_transfers(),
+        probe_transfers(),
     )
     .expect("both Kernel lanes should start");
 
@@ -310,21 +328,21 @@ async fn one_plan_runs_two_kernel_lanes_and_invokes_across_them() {
     assert_eq!(
         report
             .recv_timeout(Duration::from_secs(1))
-            .expect("the Module's generated client should invoke across lanes"),
-        "Hello, module-client!"
+            .expect("the Module's typed client should invoke across lanes"),
+        "Echo: module-client"
     );
     let response = app
-        .invoke::<Greeting>(
+        .invoke::<Probe>(
             "consumer",
-            "greet",
-            GreetRequest {
-                name: "Ada".to_owned(),
+            PROBE_OPERATION,
+            ProbeRequest {
+                value: "Ada".to_owned(),
             },
         )
         .await
         .expect("cross-lane invocation should reach the provider")
         .expect("provider should return success");
-    assert_eq!(response.message, "Hello, Ada!");
+    assert_eq!(response.value, "Echo: Ada");
 
     app.shutdown(Duration::from_secs(1))
         .await
@@ -340,7 +358,7 @@ fn cross_lane_request_requires_a_registered_send_transfer() {
     assert_eq!(
         failure,
         ReplicatedRunnerError::MissingCrossLaneRequestTransfer {
-            capability: "example.greeting@1".to_owned(),
+            capability: PROBE_CAPABILITY_ID.to_owned(),
         }
     );
 }
@@ -349,23 +367,23 @@ fn cross_lane_request_requires_a_registered_send_transfer() {
 async fn domain_errors_are_identical_on_same_and_cross_lane_bindings() {
     let app = ReplicatedNativeApp::start_with_transfers(
         same_and_cross_lane_plan(),
-        greeting_adapters,
-        greeting_transfers(),
+        probe_adapters,
+        probe_transfers(),
     )
     .expect("both Kernel lanes should start");
 
     for caller in ["same-consumer", "cross-consumer"] {
         let outcome = app
-            .invoke::<Greeting>(
+            .invoke::<Probe>(
                 caller,
-                "greet",
-                GreetRequest {
-                    name: String::new(),
+                PROBE_OPERATION,
+                ProbeRequest {
+                    value: String::new(),
                 },
             )
             .await
             .expect("transport should preserve a Domain Error");
-        assert_eq!(outcome, Err(GreetError::EmptyName));
+        assert_eq!(outcome, Err(ProbeError::EmptyValue));
     }
 
     app.shutdown(Duration::from_secs(1))
@@ -378,17 +396,17 @@ async fn deadlines_are_identical_on_same_and_cross_lane_bindings() {
     let app = ReplicatedNativeApp::start_with_transfers(
         slow_conformance_plan(),
         slow_adapters,
-        greeting_transfers(),
+        probe_transfers(),
     )
     .expect("both Kernel lanes should start");
 
     for caller in ["same-consumer", "cross-consumer"] {
         let failure = app
-            .invoke_with_options::<Greeting>(
+            .invoke_with_options::<Probe>(
                 caller,
-                "greet",
-                GreetRequest {
-                    name: "Ada".to_owned(),
+                PROBE_OPERATION,
+                ProbeRequest {
+                    value: "Ada".to_owned(),
                 },
                 LaneInvocationOptions::new().with_timeout(Duration::from_millis(1)),
             )
@@ -407,18 +425,18 @@ async fn cancellation_is_identical_on_same_and_cross_lane_bindings() {
     let app = ReplicatedNativeApp::start_with_transfers(
         slow_conformance_plan(),
         slow_adapters,
-        greeting_transfers(),
+        probe_transfers(),
     )
     .expect("both Kernel lanes should start");
 
     for caller in ["same-consumer", "cross-consumer"] {
         let cancellation = LaneCancellationToken::new();
         let cancel_after_dispatch = cancellation.clone();
-        let invoke = app.invoke_with_options::<Greeting>(
+        let invoke = app.invoke_with_options::<Probe>(
             caller,
-            "greet",
-            GreetRequest {
-                name: "Ada".to_owned(),
+            PROBE_OPERATION,
+            ProbeRequest {
+                value: "Ada".to_owned(),
             },
             LaneInvocationOptions::new().with_cancellation(cancellation),
         );
@@ -446,23 +464,23 @@ async fn resource_exhaustion_is_identical_on_same_and_cross_lane_bindings() {
     let app = ReplicatedNativeApp::start_with_transfers(
         slow_conformance_plan(),
         slow_adapters,
-        greeting_transfers(),
+        probe_transfers(),
     )
     .expect("both Kernel lanes should start");
 
     for caller in ["same-consumer", "cross-consumer"] {
-        let first = app.invoke::<Greeting>(
+        let first = app.invoke::<Probe>(
             caller,
-            "greet",
-            GreetRequest {
-                name: "first".to_owned(),
+            PROBE_OPERATION,
+            ProbeRequest {
+                value: "first".to_owned(),
             },
         );
-        let second = app.invoke::<Greeting>(
+        let second = app.invoke::<Probe>(
             caller,
-            "greet",
-            GreetRequest {
-                name: "second".to_owned(),
+            PROBE_OPERATION,
+            ProbeRequest {
+                value: "second".to_owned(),
             },
         );
         let (first, second) = tokio::join!(first, second);
@@ -488,8 +506,8 @@ async fn resource_exhaustion_is_identical_on_same_and_cross_lane_bindings() {
 async fn diagnostics_expose_lane_cpu_queue_depth_and_cross_lane_share() {
     let app = ReplicatedNativeApp::start_with_transfers(
         same_and_cross_lane_plan(),
-        greeting_adapters,
-        greeting_transfers(),
+        probe_adapters,
+        probe_transfers(),
     )
     .expect("both Kernel lanes should start");
 
@@ -497,11 +515,11 @@ async fn diagnostics_expose_lane_cpu_queue_depth_and_cross_lane_share() {
     let baseline = app.diagnostics_snapshot();
 
     for caller in ["same-consumer", "cross-consumer"] {
-        app.invoke::<Greeting>(
+        app.invoke::<Probe>(
             caller,
-            "greet",
-            GreetRequest {
-                name: "Ada".to_owned(),
+            PROBE_OPERATION,
+            ProbeRequest {
+                value: "Ada".to_owned(),
             },
         )
         .await

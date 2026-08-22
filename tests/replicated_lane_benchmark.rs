@@ -10,62 +10,60 @@ use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
     ExecutionLaneId, ExecutionLanePlan, ModuleInstancePlan,
 };
-use lenso_capability_greeting::{
-    GreetRequest, GreetResponse, Greeting, GreetingEndpoint, GreetingInvocationError,
-    GreetingProvider,
-};
 use lenso_kernel::{ExecutionAdapterCatalog, InvocationContext, RuntimeFailure};
-use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
-};
 use lenso_runner::ReplicatedNativeApp;
+use lenso_runtime_conformance::{
+    ConformanceExecutionAdapter, ConformanceModule, ConformanceModuleFactory, PROBE_CAPABILITY_ID,
+    PROBE_DESCRIPTOR_VERSION, PROBE_OPERATION, Probe, ProbeEndpoint, ProbeInvocationError,
+    ProbeProvider, ProbeRequest, ProbeResponse,
+};
 
 const EMPTY_CONSUMER_PACKAGE_ID: &str = "fixture.empty-consumer";
-const CPU_GREETER_PACKAGE_ID: &str = "fixture.cpu-greeter";
+const CPU_PROBE_PACKAGE_ID: &str = "fixture.cpu-probe";
 
 #[derive(Debug)]
 struct EmptyConsumerFactory;
 
-impl NativeModuleFactory for EmptyConsumerFactory {
+impl ConformanceModuleFactory for EmptyConsumerFactory {
     fn package_id(&self) -> &'static str {
         EMPTY_CONSUMER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::default())
+        _instance: &ModuleInstancePlan,
+    ) -> Result<ConformanceModule, RuntimeFailure> {
+        Ok(ConformanceModule::default())
     }
 }
 
 #[derive(Debug)]
-struct CpuGreeterFactory;
+struct CpuProbeFactory;
 
-impl NativeModuleFactory for CpuGreeterFactory {
+impl ConformanceModuleFactory for CpuProbeFactory {
     fn package_id(&self) -> &'static str {
-        CPU_GREETER_PACKAGE_ID
+        CPU_PROBE_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::new(vec![Rc::new(
-            GreetingEndpoint::new(CpuGreeter),
-        )]))
+        _instance: &ModuleInstancePlan,
+    ) -> Result<ConformanceModule, RuntimeFailure> {
+        Ok(ConformanceModule::new(vec![Rc::new(ProbeEndpoint::new(
+            CpuProbe,
+        ))]))
     }
 }
 
 #[derive(Debug)]
-struct CpuGreeter;
+struct CpuProbe;
 
-impl GreetingProvider for CpuGreeter {
-    fn greet(
+impl ProbeProvider for CpuProbe {
+    fn probe(
         &self,
         _context: InvocationContext,
-        request: GreetRequest,
-    ) -> LocalBoxFuture<'static, Result<GreetResponse, GreetingInvocationError>> {
+        request: ProbeRequest,
+    ) -> LocalBoxFuture<'static, Result<ProbeResponse, ProbeInvocationError>> {
         Box::pin(async move {
             let cpu_started = ThreadTime::now();
             let mut accumulator = 0_u64;
@@ -73,8 +71,8 @@ impl GreetingProvider for CpuGreeter {
                 accumulator = black_box(accumulator.wrapping_mul(31).wrapping_add(7));
             }
             black_box(accumulator);
-            Ok(GreetResponse {
-                message: request.name,
+            Ok(ProbeResponse {
+                value: request.value,
             })
         })
     }
@@ -93,23 +91,23 @@ fn shared_nothing_plan(lane_count: usize) -> lenso_app_plan::ResolvedAppPlan {
             ModuleInstancePlan::new(&consumer, EMPTY_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new(&lane))
                 .with_requirement(CapabilityRequirementPlan::one(
-                    "example.greeting@1",
-                    "1.0.0",
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
                 )),
         );
         instances.push(
-            ModuleInstancePlan::new(&provider, CPU_GREETER_PACKAGE_ID)
+            ModuleInstancePlan::new(&provider, CPU_PROBE_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new(&lane))
                 .with_capability(CapabilityEndpointPlan::new(
-                    "example.greeting@1",
-                    "1.0.0",
-                    ["greet"],
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
+                    [PROBE_OPERATION],
                 )),
         );
         bindings.push(CapabilityBinding::new(
             consumer,
-            "example.greeting@1",
-            "1.0.0",
+            PROBE_CAPABILITY_ID,
+            PROBE_DESCRIPTOR_VERSION,
             provider,
         ));
     }
@@ -121,9 +119,9 @@ fn shared_nothing_plan(lane_count: usize) -> lenso_app_plan::ResolvedAppPlan {
 
 fn cpu_adapters(_lane: &ExecutionLaneId) -> ExecutionAdapterCatalog {
     ExecutionAdapterCatalog::single(
-        NativeModuleRegistry::new()
+        ConformanceExecutionAdapter::new()
             .with_factory(EmptyConsumerFactory)
-            .with_factory(CpuGreeterFactory),
+            .with_factory(CpuProbeFactory),
     )
 }
 
@@ -137,11 +135,11 @@ async fn measure_shared_nothing_throughput(lane_count: usize, requests: usize) -
         async move {
             let caller = format!("consumer-{index}");
             for request in 0..requests_per_lane {
-                app.invoke::<Greeting>(
+                app.invoke::<Probe>(
                     &caller,
-                    "greet",
-                    GreetRequest {
-                        name: request.to_string(),
+                    PROBE_OPERATION,
+                    ProbeRequest {
+                        value: request.to_string(),
                     },
                 )
                 .await
