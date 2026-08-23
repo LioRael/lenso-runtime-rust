@@ -1,0 +1,7 @@
+[workspace]
+# A merged release PR is the only publication boundary. Packages must also opt
+# in through `publish = true` in their manifest.
+release_always = false
+changelog_update = false
+git_tag_name = "{{ package }}-v{{ version }}"
+pr_labels = ["release"]

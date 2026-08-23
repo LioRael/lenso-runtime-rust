@@ -24,6 +24,9 @@ use lenso_runtime_conformance::{
 const EMPTY_CONSUMER_PACKAGE_ID: &str = "fixture.empty-consumer";
 const CPU_PROBE_PACKAGE_ID: &str = "fixture.cpu-probe";
 const BENCHMARK_CONSUMER_PACKAGE_ID: &str = "fixture.benchmark-consumer";
+const CROSS_LANE_SAMPLE_ORDER: [bool; 10] = [
+    false, true, true, false, true, false, false, true, false, true,
+];
 
 #[derive(Debug)]
 struct EmptyConsumerFactory;
@@ -398,6 +401,60 @@ async fn measure_request_throughput(cross_lane: bool, requests: usize) -> f64 {
         / elapsed.as_secs_f64()
 }
 
+async fn measure_interleaved_module_samples(
+    requests: usize,
+    concurrency: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut same_lane = Vec::with_capacity(5);
+    let mut cross_lane = Vec::with_capacity(5);
+    for cross_lane_sample in CROSS_LANE_SAMPLE_ORDER {
+        let throughput =
+            measure_module_request_throughput(cross_lane_sample, requests, concurrency).await;
+        if cross_lane_sample {
+            cross_lane.push(throughput);
+        } else {
+            same_lane.push(throughput);
+        }
+    }
+    (same_lane, cross_lane)
+}
+
+async fn measure_interleaved_external_samples(requests: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut same_lane = Vec::with_capacity(5);
+    let mut cross_lane = Vec::with_capacity(5);
+    for cross_lane_sample in CROSS_LANE_SAMPLE_ORDER {
+        let throughput = measure_request_throughput(cross_lane_sample, requests).await;
+        if cross_lane_sample {
+            cross_lane.push(throughput);
+        } else {
+            same_lane.push(throughput);
+        }
+    }
+    (same_lane, cross_lane)
+}
+
+fn median(samples: &[f64]) -> f64 {
+    let mut ordered = samples.to_vec();
+    ordered.sort_by(f64::total_cmp);
+    ordered[ordered.len() / 2]
+}
+
+fn print_interleaved_report(
+    requests: usize,
+    concurrency: Option<usize>,
+    same_lane_samples: &[f64],
+    cross_lane_samples: &[f64],
+) {
+    let same_lane = median(same_lane_samples);
+    let cross_lane = median(cross_lane_samples);
+    let concurrency =
+        concurrency.map_or_else(String::new, |value| format!("\"concurrency\":{value},"));
+    println!(
+        "{{\"requests_per_sample\":{requests},\"samples_per_path\":5,{concurrency}\"cross_lane_sample_order\":{CROSS_LANE_SAMPLE_ORDER:?},\"same_lane_samples_per_second\":{same_lane_samples:?},\"cross_lane_samples_per_second\":{cross_lane_samples:?},\"same_lane_median_per_second\":{same_lane:.3},\"cross_lane_median_per_second\":{cross_lane:.3},\"cross_lane_ratio\":{:.3}}}",
+        cross_lane / same_lane,
+    );
+}
+
 /// Reproducible evidence command:
 /// `cargo test -p lenso-runner --test replicated_lane_benchmark lane_scaling_benchmark -- --ignored --nocapture`
 #[tokio::test(flavor = "current_thread")]
@@ -422,20 +479,9 @@ async fn lane_scaling_benchmark() {
 #[ignore = "module request transfer benchmark; run explicitly when changing lane scheduling"]
 async fn request_transfer_benchmark() {
     let requests = 100_000;
-    let mut same_lane_samples = Vec::with_capacity(5);
-    let mut cross_lane_samples = Vec::with_capacity(5);
-    for _ in 0..5 {
-        same_lane_samples.push(measure_module_request_throughput(false, requests, 1).await);
-        cross_lane_samples.push(measure_module_request_throughput(true, requests, 1).await);
-    }
-    same_lane_samples.sort_by(f64::total_cmp);
-    cross_lane_samples.sort_by(f64::total_cmp);
-    let same_lane = same_lane_samples[same_lane_samples.len() / 2];
-    let cross_lane = cross_lane_samples[cross_lane_samples.len() / 2];
-    println!(
-        "{{\"requests_per_sample\":{requests},\"samples\":5,\"same_lane_per_second\":{same_lane:.3},\"cross_lane_per_second\":{cross_lane:.3},\"cross_lane_ratio\":{:.3}}}",
-        cross_lane / same_lane,
-    );
+    let (same_lane_samples, cross_lane_samples) =
+        measure_interleaved_module_samples(requests, 1).await;
+    print_interleaved_report(requests, Some(1), &same_lane_samples, &cross_lane_samples);
 }
 
 /// Reproducible evidence command:
@@ -445,21 +491,13 @@ async fn request_transfer_benchmark() {
 async fn concurrent_request_transfer_benchmark() {
     let requests = 100_000;
     let concurrency = 64;
-    let mut same_lane_samples = Vec::with_capacity(5);
-    let mut cross_lane_samples = Vec::with_capacity(5);
-    for _ in 0..5 {
-        same_lane_samples
-            .push(measure_module_request_throughput(false, requests, concurrency).await);
-        cross_lane_samples
-            .push(measure_module_request_throughput(true, requests, concurrency).await);
-    }
-    same_lane_samples.sort_by(f64::total_cmp);
-    cross_lane_samples.sort_by(f64::total_cmp);
-    let same_lane = same_lane_samples[same_lane_samples.len() / 2];
-    let cross_lane = cross_lane_samples[cross_lane_samples.len() / 2];
-    println!(
-        "{{\"requests_per_sample\":{requests},\"samples\":5,\"concurrency\":{concurrency},\"same_lane_per_second\":{same_lane:.3},\"cross_lane_per_second\":{cross_lane:.3},\"cross_lane_ratio\":{:.3}}}",
-        cross_lane / same_lane,
+    let (same_lane_samples, cross_lane_samples) =
+        measure_interleaved_module_samples(requests, concurrency).await;
+    print_interleaved_report(
+        requests,
+        Some(concurrency),
+        &same_lane_samples,
+        &cross_lane_samples,
     );
 }
 
@@ -469,18 +507,7 @@ async fn concurrent_request_transfer_benchmark() {
 #[ignore = "external request routing benchmark; run explicitly when changing lane scheduling"]
 async fn external_request_routing_benchmark() {
     let requests = 100_000;
-    let mut same_lane_samples = Vec::with_capacity(5);
-    let mut cross_lane_samples = Vec::with_capacity(5);
-    for _ in 0..5 {
-        same_lane_samples.push(measure_request_throughput(false, requests).await);
-        cross_lane_samples.push(measure_request_throughput(true, requests).await);
-    }
-    same_lane_samples.sort_by(f64::total_cmp);
-    cross_lane_samples.sort_by(f64::total_cmp);
-    let same_lane = same_lane_samples[same_lane_samples.len() / 2];
-    let cross_lane = cross_lane_samples[cross_lane_samples.len() / 2];
-    println!(
-        "{{\"requests_per_sample\":{requests},\"samples\":5,\"same_lane_per_second\":{same_lane:.3},\"cross_lane_per_second\":{cross_lane:.3},\"cross_lane_ratio\":{:.3}}}",
-        cross_lane / same_lane,
-    );
+    let (same_lane_samples, cross_lane_samples) =
+        measure_interleaved_external_samples(requests).await;
+    print_interleaved_report(requests, None, &same_lane_samples, &cross_lane_samples);
 }

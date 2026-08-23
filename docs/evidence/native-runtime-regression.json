@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "captured_on": "2026-08-24",
   "decision": "ADR-0063",
   "purpose": "verify lane terminal propagation and interaction-complete transfer do not regress the optimized Request paths",
@@ -12,6 +12,11 @@
   "method": {
     "requests_per_sample": 100000,
     "samples_per_reported_median": 5,
+    "cross_lane_sample_order": [false, true, true, false, true, false, false, true, false, true],
+    "raw_sample_files": [
+      "docs/evidence/native-request-transfer.json",
+      "docs/evidence/native-request-routing.json"
+    ],
     "comparison_policy": "rerun any median more than 10 percent below the pre-change capture; classify a regression only when the lower result repeats",
     "command": "cargo test --release -p lenso-runner --test replicated_lane_benchmark -- --ignored --nocapture"
   },
@@ -63,5 +68,10 @@
       }
     ]
   },
-  "result": "no repeatable regression; lane scaling and concurrent transfer matched or exceeded the pre-change capture, sequential cross-lane transfer stayed within 10 percent, and the initially low external routing median recovered above the capture on the required rerun"
+  "interleaved_follow_up": {
+    "module_request_sequential_cross_lane_per_second": 61070.283,
+    "module_request_concurrency_64_cross_lane_per_second": 442561.673,
+    "external_request_routing_cross_lane_per_second": 102647.668
+  },
+  "result": "no repeatable regression; interleaved raw samples confirm the uncontrolled Request path remains above the prior capture while deadline and cancellation admission use a separate controlled path"
 }
