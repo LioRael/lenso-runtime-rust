@@ -10,12 +10,11 @@ use std::{
 };
 
 use cpu_time::ThreadTime;
-use futures::{channel::oneshot, future::Either, future::LocalBoxFuture};
+use futures::{channel::oneshot, future::Either};
 use lenso_app_plan::{CapabilityBinding, ExecutionLaneId, ResolvedAppPlan};
 use lenso_kernel::{
-    CancellationToken, DiagnosticEvent, DiagnosticFilter, DiagnosticSource,
-    ExecutionAdapterCatalog, NativeApp, NativeRequestHandle, RequestCapability, RuntimeDiagnostics,
-    RuntimeFailure, ShutdownOutcome,
+    CancellationToken, ExecutionAdapterCatalog, NativeApp, NativeRequestHandle, RequestCapability,
+    RuntimeDiagnostics, RuntimeFailure, ShutdownOutcome,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -26,7 +25,7 @@ mod projection;
 mod transfer;
 
 pub use diagnostics::LaneDiagnosticsSnapshot;
-use diagnostics::LaneDiagnosticsState;
+use diagnostics::{LaneDiagnosticsState, LaneInvocationProbe};
 use projection::{LaneProxyAdapter, project_lane};
 pub use transfer::CrossLaneRequestCatalog;
 
@@ -105,7 +104,7 @@ impl LaneCancellationToken {
     }
 }
 
-type LaneTask = Box<dyn FnOnce(LaneRuntime) -> LocalBoxFuture<'static, ()> + Send + 'static>;
+type LaneTask = Box<dyn FnOnce(LaneRuntime) + Send + 'static>;
 type LaneSender = mpsc::Sender<LaneTask>;
 type LaneRoute = mpsc::WeakSender<LaneTask>;
 
@@ -238,6 +237,7 @@ impl ReplicatedNativeApp {
     }
 
     /// Starts replicated lanes with generated request types allowed to cross them.
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
     pub fn start_with_transfers<F>(
         plan: ResolvedAppPlan,
         adapters: F,
@@ -437,7 +437,7 @@ impl ReplicatedNativeApp {
         let (completed, completion) = oneshot::channel();
         lane.commands
             .send(Box::new(move |lane| {
-                Box::pin(async move {
+                tokio::task::spawn_local(async move {
                     let handle = match lane.request_handle::<C>(&caller_instance) {
                         Ok(handle) => handle,
                         Err(error) => {
@@ -472,7 +472,7 @@ impl ReplicatedNativeApp {
                         invocation.await
                     };
                     let _ = completed.send(result);
-                })
+                });
             }))
             .await
             .map_err(|_| RuntimeFailure::Internal {
@@ -574,6 +574,7 @@ fn singular_binding<'a, C: RequestCapability>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_lane<F>(
     lane: ExecutionLaneId,
     plan: ResolvedAppPlan,
@@ -608,10 +609,9 @@ fn run_lane<F>(
             }
         };
         let driver = TokioDriver::with_epoch(epoch);
-        let runtime_diagnostics = RuntimeDiagnostics::new();
-        let observer = runtime_diagnostics
-            .subscribe(DiagnosticFilter::only(DiagnosticSource::Invocation), 2048)
-            .expect("diagnostics capacity is positive");
+        let runtime_diagnostics = RuntimeDiagnostics::new().with_invocation_probe(Rc::new(
+            LaneInvocationProbe::new(Arc::clone(&diagnostics), lane.clone()),
+        ));
         let app = match lenso_kernel::Kernel::start_with_diagnostics(
             plan,
             driver,
@@ -647,23 +647,13 @@ fn run_lane<F>(
                     break;
                 }
                 command = commands.recv() => if let Some(task) = command {
-                    tokio::task::spawn_local(task(lane_runtime.clone()));
+                    task(lane_runtime.clone());
                 } else {
                     let _ = app.shutdown(Duration::from_secs(1)).await;
                     break;
                 },
                 _ = sample_interval.tick() => {
                     diagnostics.publish_lane(&lane, &app, cpu_started.elapsed());
-                }
-            }
-            while let Some(record) = observer.try_recv() {
-                if let DiagnosticEvent::InvocationStarted {
-                    caller_instance: Some(caller),
-                    provider_instance: Some(provider),
-                    ..
-                } = record.event
-                {
-                    diagnostics.record_invocation(&lane, &caller, &provider);
                 }
             }
         }

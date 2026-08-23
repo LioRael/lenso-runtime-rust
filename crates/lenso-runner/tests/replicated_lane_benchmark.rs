@@ -153,7 +153,8 @@ async fn measure_shared_nothing_throughput(lane_count: usize, requests: usize) -
     app.shutdown(Duration::from_secs(2))
         .await
         .expect("benchmark lanes should stop cleanly");
-    requests as f64 / elapsed.as_secs_f64()
+    f64::from(u32::try_from(requests).expect("benchmark request count fits u32"))
+        / elapsed.as_secs_f64()
 }
 
 fn request_transfer_plan(cross_lane: bool) -> lenso_app_plan::ResolvedAppPlan {
@@ -230,7 +231,8 @@ async fn measure_request_throughput(cross_lane: bool, requests: usize) -> f64 {
     app.shutdown(Duration::from_secs(2))
         .await
         .expect("benchmark lanes should stop cleanly");
-    requests as f64 / elapsed.as_secs_f64()
+    f64::from(u32::try_from(requests).expect("benchmark request count fits u32"))
+        / elapsed.as_secs_f64()
 }
 
 /// Reproducible evidence command:
@@ -256,11 +258,19 @@ async fn lane_scaling_benchmark() {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "request transport benchmark; run explicitly when changing lane scheduling"]
 async fn request_transfer_benchmark() {
-    let requests = 10_000;
-    let same_lane = measure_request_throughput(false, requests).await;
-    let cross_lane = measure_request_throughput(true, requests).await;
+    let requests = 100_000;
+    let mut same_lane_samples = Vec::with_capacity(5);
+    let mut cross_lane_samples = Vec::with_capacity(5);
+    for _ in 0..5 {
+        same_lane_samples.push(measure_request_throughput(false, requests).await);
+        cross_lane_samples.push(measure_request_throughput(true, requests).await);
+    }
+    same_lane_samples.sort_by(f64::total_cmp);
+    cross_lane_samples.sort_by(f64::total_cmp);
+    let same_lane = same_lane_samples[same_lane_samples.len() / 2];
+    let cross_lane = cross_lane_samples[cross_lane_samples.len() / 2];
     println!(
-        "{{\"requests\":{requests},\"same_lane_per_second\":{same_lane:.3},\"cross_lane_per_second\":{cross_lane:.3},\"cross_lane_ratio\":{:.3}}}",
+        "{{\"requests_per_sample\":{requests},\"samples\":5,\"same_lane_per_second\":{same_lane:.3},\"cross_lane_per_second\":{cross_lane:.3},\"cross_lane_ratio\":{:.3}}}",
         cross_lane / same_lane,
     );
 }

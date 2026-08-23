@@ -5,7 +5,8 @@ use std::{
 use futures::future::LocalBoxFuture;
 use lenso_app_plan::ResolvedAppPlan;
 use lenso_kernel::{
-    CancellationToken, InvocationContext, NativeRequestEndpoint, RequestCapability, RuntimeFailure,
+    CancellationToken, InvocationContext, NativeRequestEndpoint, NativeRequestFuture,
+    RequestCapability, RuntimeFailure, TypedNativeRequestEndpoint,
 };
 use tokio::sync::watch;
 
@@ -37,11 +38,31 @@ where
     C::DomainError: Send,
 {
     fn endpoint(&self, provider_lane: LaneRoute, epoch: Instant) -> Rc<dyn NativeRequestEndpoint> {
+        let typed_provider_lane = provider_lane.clone();
+        let operations = self.operations;
         Rc::new(CrossLaneRequestEndpoint::<C> {
             operations: self.operations,
-            provider_lane,
-            epoch,
-            capability: PhantomData,
+            typed: TypedNativeRequestEndpoint::new(move |operation, request, context| {
+                let Some(operation) = operations
+                    .iter()
+                    .copied()
+                    .find(|candidate| *candidate == operation)
+                else {
+                    return Box::pin(futures::future::ready(Err(
+                        RuntimeFailure::UnknownOperation {
+                            capability: C::ID,
+                            operation: operation.to_owned(),
+                        },
+                    )));
+                };
+                invoke_cross_lane::<C>(
+                    typed_provider_lane.clone(),
+                    epoch,
+                    operation,
+                    request,
+                    context,
+                )
+            }),
         })
     }
 }
@@ -125,9 +146,7 @@ impl CrossLaneRequestCatalog {
 
 struct CrossLaneRequestEndpoint<C: RequestCapability> {
     operations: &'static [&'static str],
-    provider_lane: LaneRoute,
-    epoch: Instant,
-    capability: PhantomData<fn() -> C>,
+    typed: TypedNativeRequestEndpoint<C>,
 }
 
 impl<C: RequestCapability> fmt::Debug for CrossLaneRequestEndpoint<C> {
@@ -158,6 +177,10 @@ where
         self.operations
     }
 
+    fn typed_endpoint(&self) -> Option<&dyn Any> {
+        Some(&self.typed)
+    }
+
     fn invoke(
         &self,
         operation: &str,
@@ -169,112 +192,122 @@ where
                 RuntimeFailure::ProtocolViolation { capability: C::ID },
             )));
         };
-        let provider_lane = self.provider_lane.clone();
-        let operation = operation.to_owned();
-        let epoch = self.epoch;
+        let invocation = self.typed.invoke(operation, *request, context);
         Box::pin(async move {
-            let provider_lane = provider_lane.upgrade().ok_or_else(lane_unavailable::<C>)?;
-            let caller_instance = context
-                .caller_instance()
-                .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
-                    detail: format!("cross-lane invocation of `{}` has no planned caller", C::ID),
-                })?
-                .to_owned();
-            let cancellation = context.cancellation();
-            let deadline = context.deadline();
-            let request_id = context.request_id();
-            let (transferred, cancellation_signal) =
-                TransferredInvocationContext::capture(&context);
-            let (completed, completion) = futures::channel::oneshot::channel();
-            let command: LaneTask = Box::new(move |lane| {
-                Box::pin(async move {
-                    let local_cancellation = CancellationToken::new();
-                    let (context, mut transferred_cancellation) =
-                        transferred.restore(local_cancellation.clone());
-                    if *transferred_cancellation.borrow() {
-                        local_cancellation.cancel();
-                    }
-                    let handle = match lane.request_handle::<C>(&caller_instance) {
-                        Ok(handle) => handle,
-                        Err(error) => {
-                            let _ = completed.send(Err(error));
-                            return;
-                        }
-                    };
-                    let invocation = handle.invoke_with_context(&operation, context, *request);
-                    tokio::pin!(invocation);
-                    let result = if local_cancellation.is_cancelled() {
-                        invocation.await
-                    } else {
-                        tokio::select! {
-                            result = &mut invocation => result,
-                            () = wait_for_cancellation(&mut transferred_cancellation) => {
-                                local_cancellation.cancel();
-                                invocation.await
-                            }
-                        }
-                    };
-                    let _ = completed.send(result);
-                })
-            });
-
-            let send = provider_lane.send(command);
-            tokio::pin!(send);
-            let cancelled = cancellation.cancelled();
-            tokio::pin!(cancelled);
-            let result = match deadline {
-                Some(deadline) => {
-                    let sleep = tokio::time::sleep_until((epoch + deadline).into());
-                    tokio::pin!(sleep);
-                    tokio::select! {
-                        result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
-                        () = &mut cancelled => {
-                            cancellation_signal.send_replace(true);
-                            return Err(RuntimeFailure::Cancelled { request_id });
-                        }
-                        () = &mut sleep => {
-                            cancellation_signal.send_replace(true);
-                            return Err(RuntimeFailure::DeadlineExceeded { request_id });
-                        }
-                    }
-                    tokio::select! {
-                        biased;
-                        result = completion => result.map_err(|_| lane_unavailable::<C>())?,
-                        () = &mut cancelled => {
-                            cancellation_signal.send_replace(true);
-                            return Err(RuntimeFailure::Cancelled { request_id });
-                        }
-                        () = &mut sleep => {
-                            cancellation_signal.send_replace(true);
-                            return Err(RuntimeFailure::DeadlineExceeded { request_id });
-                        }
-                    }
-                }
-                None => {
-                    tokio::select! {
-                        result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
-                        () = &mut cancelled => {
-                            cancellation_signal.send_replace(true);
-                            return Err(RuntimeFailure::Cancelled { request_id });
-                        }
-                    }
-                    tokio::select! {
-                        biased;
-                        result = completion => result.map_err(|_| lane_unavailable::<C>())?,
-                        () = &mut cancelled => {
-                            cancellation_signal.send_replace(true);
-                            return Err(RuntimeFailure::Cancelled { request_id });
-                        }
-                    }
-                }
-            };
-            result.map(|domain| {
-                domain
-                    .map(|response| Box::new(response) as Box<dyn Any>)
-                    .map_err(|error| Box::new(error) as Box<dyn Any>)
-            })
+            let result = invocation.await?;
+            Ok(result
+                .map(|response| Box::new(response) as Box<dyn Any>)
+                .map_err(|error| Box::new(error) as Box<dyn Any>))
         })
     }
+}
+
+fn invoke_cross_lane<C>(
+    provider_lane: LaneRoute,
+    epoch: Instant,
+    operation: &'static str,
+    request: C::Request,
+    context: InvocationContext,
+) -> NativeRequestFuture<C>
+where
+    C: RequestCapability,
+    C::Request: Send,
+    C::Response: Send,
+    C::DomainError: Send,
+{
+    Box::pin(async move {
+        let provider_lane = provider_lane.upgrade().ok_or_else(lane_unavailable::<C>)?;
+        let caller_instance = context
+            .caller_instance()
+            .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("cross-lane invocation of `{}` has no planned caller", C::ID),
+            })?
+            .to_owned();
+        let cancellation = context.cancellation();
+        let deadline = context.deadline();
+        let request_id = context.request_id();
+        let (transferred, cancellation_signal) = TransferredInvocationContext::capture(&context);
+        let (completed, completion) = futures::channel::oneshot::channel();
+        let command: LaneTask = Box::new(move |lane| {
+            tokio::task::spawn_local(async move {
+                let local_cancellation = CancellationToken::new();
+                let (context, mut transferred_cancellation) =
+                    transferred.restore(local_cancellation.clone());
+                if *transferred_cancellation.borrow() {
+                    local_cancellation.cancel();
+                }
+                let handle = match lane.request_handle::<C>(&caller_instance) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        let _ = completed.send(Err(error));
+                        return;
+                    }
+                };
+                let invocation = handle.invoke_with_context(operation, context, request);
+                tokio::pin!(invocation);
+                let result = if local_cancellation.is_cancelled() {
+                    invocation.await
+                } else {
+                    tokio::select! {
+                        result = &mut invocation => result,
+                        () = wait_for_cancellation(&mut transferred_cancellation) => {
+                            local_cancellation.cancel();
+                            invocation.await
+                        }
+                    }
+                };
+                let _ = completed.send(result);
+            });
+        });
+
+        let send = provider_lane.send(command);
+        tokio::pin!(send);
+        let cancelled = cancellation.cancelled();
+        tokio::pin!(cancelled);
+        if let Some(deadline) = deadline {
+            let sleep = tokio::time::sleep_until((epoch + deadline).into());
+            tokio::pin!(sleep);
+            tokio::select! {
+                result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
+                () = &mut cancelled => {
+                    cancellation_signal.send_replace(true);
+                    return Err(RuntimeFailure::Cancelled { request_id });
+                }
+                () = &mut sleep => {
+                    cancellation_signal.send_replace(true);
+                    return Err(RuntimeFailure::DeadlineExceeded { request_id });
+                }
+            }
+            tokio::select! {
+                biased;
+                result = completion => result.map_err(|_| lane_unavailable::<C>())?,
+                () = &mut cancelled => {
+                    cancellation_signal.send_replace(true);
+                    Err(RuntimeFailure::Cancelled { request_id })
+                }
+                () = &mut sleep => {
+                    cancellation_signal.send_replace(true);
+                    Err(RuntimeFailure::DeadlineExceeded { request_id })
+                }
+            }
+        } else {
+            tokio::select! {
+                result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
+                () = &mut cancelled => {
+                    cancellation_signal.send_replace(true);
+                    return Err(RuntimeFailure::Cancelled { request_id });
+                }
+            }
+            tokio::select! {
+                biased;
+                result = completion => result.map_err(|_| lane_unavailable::<C>())?,
+                () = &mut cancelled => {
+                    cancellation_signal.send_replace(true);
+                    Err(RuntimeFailure::Cancelled { request_id })
+                }
+            }
+        }
+    })
 }
 
 fn lane_unavailable<C: RequestCapability>() -> RuntimeFailure {
