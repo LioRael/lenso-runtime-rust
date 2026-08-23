@@ -1,14 +1,5 @@
 use std::{
-    any::Any,
-    collections::BTreeMap,
-    fmt,
-    marker::PhantomData,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Instant,
+    any::Any, collections::BTreeMap, fmt, marker::PhantomData, rc::Rc, sync::Arc, time::Instant,
 };
 
 use futures::future::LocalBoxFuture;
@@ -16,8 +7,9 @@ use lenso_app_plan::ResolvedAppPlan;
 use lenso_kernel::{
     CancellationToken, InvocationContext, NativeRequestEndpoint, RequestCapability, RuntimeFailure,
 };
+use tokio::sync::watch;
 
-use super::{LaneCommand, LaneRoute};
+use super::{LaneRoute, LaneTask};
 
 trait RequestTransferFactory: fmt::Debug + Send + Sync {
     fn endpoint(&self, provider_lane: LaneRoute, epoch: Instant) -> Rc<dyn NativeRequestEndpoint>;
@@ -190,73 +182,93 @@ where
                 .to_owned();
             let cancellation = context.cancellation();
             let deadline = context.deadline();
-            let transferred = TransferredInvocationContext::capture(&context);
-            let source_completed = Arc::clone(&transferred.source_completed);
+            let request_id = context.request_id();
+            let (transferred, cancellation_signal) =
+                TransferredInvocationContext::capture(&context);
             let (completed, completion) = futures::channel::oneshot::channel();
-            let command = LaneCommand::Run(Box::new(move |app| {
+            let command: LaneTask = Box::new(move |lane| {
                 Box::pin(async move {
                     let local_cancellation = CancellationToken::new();
-                    let watcher_token = local_cancellation.clone();
-                    let cancelled = Arc::clone(&transferred.cancelled);
-                    let watcher_completed = Arc::new(AtomicBool::new(false));
-                    let watcher_done = Arc::clone(&watcher_completed);
-                    tokio::task::spawn_local(async move {
-                        while !cancelled.load(Ordering::Acquire)
-                            && !watcher_done.load(Ordering::Acquire)
-                        {
-                            tokio::task::yield_now().await;
+                    let (context, mut transferred_cancellation) =
+                        transferred.restore(local_cancellation.clone());
+                    if *transferred_cancellation.borrow() {
+                        local_cancellation.cancel();
+                    }
+                    let handle = match lane.request_handle::<C>(&caller_instance) {
+                        Ok(handle) => handle,
+                        Err(error) => {
+                            let _ = completed.send(Err(error));
+                            return;
                         }
-                        if cancelled.load(Ordering::Acquire) {
-                            watcher_token.cancel();
+                    };
+                    let invocation = handle.invoke_with_context(&operation, context, *request);
+                    tokio::pin!(invocation);
+                    let result = if local_cancellation.is_cancelled() {
+                        invocation.await
+                    } else {
+                        tokio::select! {
+                            result = &mut invocation => result,
+                            () = wait_for_cancellation(&mut transferred_cancellation) => {
+                                local_cancellation.cancel();
+                                invocation.await
+                            }
                         }
-                    });
-                    let context = transferred.restore(local_cancellation);
-                    let result = app
-                        .invoke_with_context::<C>(&caller_instance, &operation, context, *request)
-                        .await;
-                    watcher_completed.store(true, Ordering::Release);
+                    };
                     let _ = completed.send(result);
                 })
-            }));
+            });
 
             let send = provider_lane.send(command);
             tokio::pin!(send);
-            match deadline {
+            let cancelled = cancellation.cancelled();
+            tokio::pin!(cancelled);
+            let result = match deadline {
                 Some(deadline) => {
                     let sleep = tokio::time::sleep_until((epoch + deadline).into());
                     tokio::pin!(sleep);
                     tokio::select! {
-                        result = &mut send => result.map_err(|_| {
-                            source_completed.store(true, Ordering::Release);
-                            lane_unavailable::<C>()
-                        })?,
-                        _ = cancellation.cancelled() => {
-                            source_completed.store(true, Ordering::Release);
-                            return Err(RuntimeFailure::Cancelled { request_id: context.request_id() });
+                        result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
+                        () = &mut cancelled => {
+                            cancellation_signal.send_replace(true);
+                            return Err(RuntimeFailure::Cancelled { request_id });
                         }
-                        _ = &mut sleep => {
-                            source_completed.store(true, Ordering::Release);
-                            return Err(RuntimeFailure::DeadlineExceeded { request_id: context.request_id() });
+                        () = &mut sleep => {
+                            cancellation_signal.send_replace(true);
+                            return Err(RuntimeFailure::DeadlineExceeded { request_id });
+                        }
+                    }
+                    tokio::select! {
+                        biased;
+                        result = completion => result.map_err(|_| lane_unavailable::<C>())?,
+                        () = &mut cancelled => {
+                            cancellation_signal.send_replace(true);
+                            return Err(RuntimeFailure::Cancelled { request_id });
+                        }
+                        () = &mut sleep => {
+                            cancellation_signal.send_replace(true);
+                            return Err(RuntimeFailure::DeadlineExceeded { request_id });
                         }
                     }
                 }
                 None => {
                     tokio::select! {
-                        result = &mut send => result.map_err(|_| {
-                            source_completed.store(true, Ordering::Release);
-                            lane_unavailable::<C>()
-                        })?,
-                        _ = cancellation.cancelled() => {
-                            source_completed.store(true, Ordering::Release);
-                            return Err(RuntimeFailure::Cancelled { request_id: context.request_id() });
+                        result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
+                        () = &mut cancelled => {
+                            cancellation_signal.send_replace(true);
+                            return Err(RuntimeFailure::Cancelled { request_id });
+                        }
+                    }
+                    tokio::select! {
+                        biased;
+                        result = completion => result.map_err(|_| lane_unavailable::<C>())?,
+                        () = &mut cancelled => {
+                            cancellation_signal.send_replace(true);
+                            return Err(RuntimeFailure::Cancelled { request_id });
                         }
                     }
                 }
-            }
-
-            let result = completion.await.map_err(|_| lane_unavailable::<C>());
-            source_completed.store(true, Ordering::Release);
-            result?.map(|domain| {
+            };
+            result.map(|domain| {
                 domain
                     .map(|response| Box::new(response) as Box<dyn Any>)
                     .map_err(|error| Box::new(error) as Box<dyn Any>)
@@ -275,49 +287,52 @@ fn lane_unavailable<C: RequestCapability>() -> RuntimeFailure {
 struct TransferredInvocationContext {
     request_id: u64,
     deadline: Option<std::time::Duration>,
-    cancelled: Arc<AtomicBool>,
-    source_completed: Arc<AtomicBool>,
+    cancellation: watch::Receiver<bool>,
     extensions: Vec<lenso_kernel::InvocationExtension>,
     sealed_extensions: Vec<lenso_kernel::SealedInvocationExtension>,
 }
 
 impl TransferredInvocationContext {
-    fn capture(context: &InvocationContext) -> Self {
-        let cancelled = Arc::new(AtomicBool::new(context.is_cancelled()));
-        let cancellation = context.cancellation();
-        let signal = Arc::clone(&cancelled);
-        let source_completed = Arc::new(AtomicBool::new(false));
-        let watcher_completed = Arc::clone(&source_completed);
-        tokio::task::spawn_local(async move {
-            while !cancellation.is_cancelled() && !watcher_completed.load(Ordering::Acquire) {
-                tokio::task::yield_now().await;
-            }
-            if cancellation.is_cancelled() {
-                signal.store(true, Ordering::Release);
-            }
-        });
-        Self {
-            request_id: context.request_id(),
-            deadline: context.deadline(),
-            cancelled,
-            source_completed,
-            extensions: context.extensions().cloned().collect(),
-            sealed_extensions: context.sealed_extensions().cloned().collect(),
-        }
+    fn capture(context: &InvocationContext) -> (Self, watch::Sender<bool>) {
+        let (cancellation_signal, cancellation) = watch::channel(context.is_cancelled());
+        (
+            Self {
+                request_id: context.request_id(),
+                deadline: context.deadline(),
+                cancellation,
+                extensions: context.extensions().cloned().collect(),
+                sealed_extensions: context.sealed_extensions().cloned().collect(),
+            },
+            cancellation_signal,
+        )
     }
 
-    fn restore(&self, cancellation: CancellationToken) -> InvocationContext {
+    fn restore(
+        self,
+        cancellation: CancellationToken,
+    ) -> (InvocationContext, watch::Receiver<bool>) {
         let mut context = InvocationContext::new(self.request_id, self.deadline, cancellation);
-        for extension in &self.extensions {
+        for extension in self.extensions {
             context = context
                 .with_extension(extension.key(), extension.value().to_vec())
                 .expect("captured ordinary Invocation Context extension remains valid");
         }
-        for extension in &self.sealed_extensions {
+        for extension in self.sealed_extensions {
             context = context
-                .with_sealed_extension(extension.clone())
+                .with_sealed_extension(extension)
                 .expect("captured sealed Invocation Context extension remains valid");
         }
-        context
+        (context, self.cancellation)
+    }
+}
+
+async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancellation.borrow_and_update() {
+            return;
+        }
+        if cancellation.changed().await.is_err() {
+            return;
+        }
     }
 }

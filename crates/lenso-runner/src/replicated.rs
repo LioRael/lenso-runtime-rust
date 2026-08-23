@@ -1,24 +1,23 @@
 use std::{
-    collections::BTreeMap,
+    any::{Any, TypeId},
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
     fmt,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc as std_mpsc,
-    },
+    rc::Rc,
+    sync::{Arc, mpsc as std_mpsc},
     thread,
     time::{Duration, Instant},
 };
 
 use cpu_time::ThreadTime;
-use futures::{channel::oneshot, future::LocalBoxFuture};
+use futures::{channel::oneshot, future::Either, future::LocalBoxFuture};
 use lenso_app_plan::{CapabilityBinding, ExecutionLaneId, ResolvedAppPlan};
 use lenso_kernel::{
     CancellationToken, DiagnosticEvent, DiagnosticFilter, DiagnosticSource,
-    ExecutionAdapterCatalog, NativeApp, RequestCapability, RuntimeDiagnostics, RuntimeFailure,
-    ShutdownOutcome,
+    ExecutionAdapterCatalog, NativeApp, NativeRequestHandle, RequestCapability, RuntimeDiagnostics,
+    RuntimeFailure, ShutdownOutcome,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::TokioDriver;
 
@@ -65,9 +64,16 @@ impl LaneInvocationOptions {
 }
 
 /// A thread-safe caller signal translated to a lane-local Kernel cancellation token.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct LaneCancellationToken {
-    cancelled: Arc<AtomicBool>,
+    cancelled: watch::Sender<bool>,
+}
+
+impl Default for LaneCancellationToken {
+    fn default() -> Self {
+        let (cancelled, _) = watch::channel(false);
+        Self { cancelled }
+    }
 }
 
 impl LaneCancellationToken {
@@ -78,31 +84,81 @@ impl LaneCancellationToken {
 
     /// Requests cooperative cancellation of attached invocations.
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.cancelled.send_replace(true);
     }
 
     /// Returns whether cancellation was requested.
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        *self.cancelled.borrow()
+    }
+
+    async fn cancelled(&self) {
+        let mut cancelled = self.cancelled.subscribe();
+        loop {
+            if *cancelled.borrow_and_update() {
+                return;
+            }
+            if cancelled.changed().await.is_err() {
+                return;
+            }
+        }
     }
 }
 
-type LaneTask = Box<dyn FnOnce(NativeApp) -> LocalBoxFuture<'static, ()> + Send + 'static>;
-type LaneSender = mpsc::Sender<LaneCommand>;
-type LaneRoute = mpsc::WeakSender<LaneCommand>;
+type LaneTask = Box<dyn FnOnce(LaneRuntime) -> LocalBoxFuture<'static, ()> + Send + 'static>;
+type LaneSender = mpsc::Sender<LaneTask>;
+type LaneRoute = mpsc::WeakSender<LaneTask>;
 
-enum LaneCommand {
-    Run(LaneTask),
-    Shutdown {
-        timeout: Duration,
-        completed: oneshot::Sender<ShutdownOutcome>,
-    },
+struct LaneShutdown {
+    timeout: Duration,
+    completed: oneshot::Sender<ShutdownOutcome>,
 }
 
 struct LaneHandle {
     id: ExecutionLaneId,
     commands: LaneSender,
+    shutdown: oneshot::Sender<LaneShutdown>,
     thread: thread::JoinHandle<()>,
+}
+
+type TypedRequestHandles = HashMap<String, Box<dyn Any>>;
+
+#[derive(Clone)]
+struct LaneRuntime {
+    app: NativeApp,
+    request_handles: Rc<RefCell<HashMap<TypeId, TypedRequestHandles>>>,
+}
+
+impl LaneRuntime {
+    fn new(app: NativeApp) -> Self {
+        Self {
+            app,
+            request_handles: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    fn request_handle<C: RequestCapability>(
+        &self,
+        caller_instance: &str,
+    ) -> Result<Rc<NativeRequestHandle<C>>, RuntimeFailure> {
+        let capability = TypeId::of::<C>();
+        if let Some(handle) = self
+            .request_handles
+            .borrow()
+            .get(&capability)
+            .and_then(|handles| handles.get(caller_instance))
+            .and_then(|handle| handle.downcast_ref::<Rc<NativeRequestHandle<C>>>())
+        {
+            return Ok(handle.clone());
+        }
+        let handle = Rc::new(self.app.handle::<C>(caller_instance)?);
+        self.request_handles
+            .borrow_mut()
+            .entry(capability)
+            .or_default()
+            .insert(caller_instance.to_owned(), Box::new(handle.clone()));
+        Ok(handle)
+    }
 }
 
 /// A native Runner startup or lane-lifecycle failure.
@@ -233,6 +289,7 @@ impl ReplicatedNativeApp {
             let receiver = receivers
                 .remove(&lane_id)
                 .expect("every declared lane has one command receiver");
+            let (shutdown, shutdown_request) = oneshot::channel();
             let (started, startup) = std_mpsc::sync_channel(1);
             let lane_adapters = Arc::clone(&adapters);
             let lane_diagnostics = Arc::clone(&diagnostics);
@@ -250,6 +307,7 @@ impl ReplicatedNativeApp {
                         thread_lane,
                         lane_plan,
                         receiver,
+                        shutdown_request,
                         started,
                         lane_adapters,
                         proxy_adapter,
@@ -275,6 +333,7 @@ impl ReplicatedNativeApp {
                 LaneHandle {
                     id: lane_id,
                     commands,
+                    shutdown,
                     thread: lane_thread,
                 },
             );
@@ -377,35 +436,44 @@ impl ReplicatedNativeApp {
             .map(|timeout| self.epoch.elapsed().saturating_add(timeout));
         let (completed, completion) = oneshot::channel();
         lane.commands
-            .send(LaneCommand::Run(Box::new(move |app| {
+            .send(Box::new(move |lane| {
                 Box::pin(async move {
-                    let cancellation = CancellationToken::new();
-                    let completed_signal = Arc::new(AtomicBool::new(false));
-                    if let Some(external) = options.cancellation.clone() {
-                        let local = cancellation.clone();
-                        let watcher_completed = Arc::clone(&completed_signal);
-                        tokio::task::spawn_local(async move {
-                            while !external.is_cancelled()
-                                && !watcher_completed.load(Ordering::Acquire)
-                            {
-                                tokio::task::yield_now().await;
-                            }
-                            if external.is_cancelled() {
-                                local.cancel();
-                            }
-                        });
-                    }
-                    let result = if deadline.is_some() || options.cancellation.is_some() {
-                        let context = app.invocation_context(deadline, cancellation);
-                        app.invoke_with_context::<C>(&caller_instance, &operation, context, request)
-                            .await
-                    } else {
-                        app.invoke::<C>(&caller_instance, &operation, request).await
+                    let handle = match lane.request_handle::<C>(&caller_instance) {
+                        Ok(handle) => handle,
+                        Err(error) => {
+                            let _ = completed.send(Err(error));
+                            return;
+                        }
                     };
-                    completed_signal.store(true, Ordering::Release);
+                    let cancellation = CancellationToken::new();
+                    let external_cancellation = options.cancellation;
+                    if external_cancellation
+                        .as_ref()
+                        .is_some_and(LaneCancellationToken::is_cancelled)
+                    {
+                        cancellation.cancel();
+                    }
+                    let invocation = if deadline.is_some() || external_cancellation.is_some() {
+                        let context = lane.app.invocation_context(deadline, cancellation.clone());
+                        Either::Left(handle.invoke_with_context(&operation, context, request))
+                    } else {
+                        Either::Right(handle.invoke(&operation, request))
+                    };
+                    tokio::pin!(invocation);
+                    let result = if let Some(external_cancellation) = external_cancellation {
+                        tokio::select! {
+                            result = &mut invocation => result,
+                            () = external_cancellation.cancelled() => {
+                                cancellation.cancel();
+                                invocation.await
+                            }
+                        }
+                    } else {
+                        invocation.await
+                    };
                     let _ = completed.send(result);
                 })
-            })))
+            }))
             .await
             .map_err(|_| RuntimeFailure::Internal {
                 detail: format!("Execution Lane `{}` is unavailable", lane.id),
@@ -424,14 +492,11 @@ impl ReplicatedNativeApp {
             let LaneHandle {
                 id,
                 commands,
+                shutdown,
                 thread,
             } = lane;
             let (completed, completion) = oneshot::channel();
-            if commands
-                .send(LaneCommand::Shutdown { timeout, completed })
-                .await
-                .is_ok()
-            {
+            if shutdown.send(LaneShutdown { timeout, completed }).is_ok() {
                 completions.push((id.clone(), completion));
             } else if first_error.is_none() {
                 first_error = Some(ReplicatedRunnerError::LaneUnavailable {
@@ -477,7 +542,7 @@ fn stop_lanes(lanes: BTreeMap<ExecutionLaneId, LaneHandle>) {
     let mut threads = Vec::new();
     for (_, lane) in lanes {
         let (completed, _) = oneshot::channel();
-        let _ = lane.commands.try_send(LaneCommand::Shutdown {
+        let _ = lane.shutdown.send(LaneShutdown {
             timeout: Duration::from_secs(1),
             completed,
         });
@@ -492,27 +557,28 @@ fn singular_binding<'a, C: RequestCapability>(
     plan: &'a ResolvedAppPlan,
     caller_instance: &str,
 ) -> Result<&'a CapabilityBinding, RuntimeFailure> {
-    let bindings = plan
-        .capability_bindings()
-        .iter()
-        .filter(|binding| {
-            binding.consumer_instance() == caller_instance && binding.capability_id() == C::ID
-        })
-        .collect::<Vec<_>>();
-    match bindings.as_slice() {
-        [binding] => Ok(*binding),
-        [] => Err(RuntimeFailure::Unavailable { capability: C::ID }),
-        bindings => Err(RuntimeFailure::AmbiguousBinding {
+    let mut bindings = plan.capability_bindings().iter().filter(|binding| {
+        binding.consumer_instance() == caller_instance && binding.capability_id() == C::ID
+    });
+    let Some(binding) = bindings.next() else {
+        return Err(RuntimeFailure::Unavailable { capability: C::ID });
+    };
+    let providers = 1 + bindings.count();
+    if providers == 1 {
+        Ok(binding)
+    } else {
+        Err(RuntimeFailure::AmbiguousBinding {
             capability: C::ID,
-            providers: bindings.len(),
-        }),
+            providers,
+        })
     }
 }
 
 fn run_lane<F>(
     lane: ExecutionLaneId,
     plan: ResolvedAppPlan,
-    mut commands: mpsc::Receiver<LaneCommand>,
+    mut commands: mpsc::Receiver<LaneTask>,
+    mut shutdown: oneshot::Receiver<LaneShutdown>,
     started: std_mpsc::SyncSender<Result<(), String>>,
     adapters: Arc<F>,
     proxy_adapter: LaneProxyAdapter,
@@ -560,25 +626,31 @@ fn run_lane<F>(
                 return;
             }
         };
+        let lane_runtime = LaneRuntime::new(app.clone());
         let _ = started.send(Ok(()));
         diagnostics.publish_lane(&lane, &app, cpu_started.elapsed());
         let mut sample_interval = tokio::time::interval(Duration::from_millis(10));
 
         loop {
             tokio::select! {
-                command = commands.recv() => match command {
-                    Some(LaneCommand::Run(task)) => {
-                        tokio::task::spawn_local(task(app.clone()));
+                biased;
+                shutdown = &mut shutdown => {
+                    match shutdown {
+                        Ok(LaneShutdown { timeout, completed }) => {
+                            let outcome = app.shutdown(timeout).await;
+                            let _ = completed.send(outcome);
+                        }
+                        Err(_) => {
+                            let _ = app.shutdown(Duration::from_secs(1)).await;
+                        }
                     }
-                    Some(LaneCommand::Shutdown { timeout, completed }) => {
-                        let outcome = app.shutdown(timeout).await;
-                        let _ = completed.send(outcome);
-                        break;
-                    }
-                    None => {
-                        let _ = app.shutdown(Duration::from_secs(1)).await;
-                        break;
-                    }
+                    break;
+                }
+                command = commands.recv() => if let Some(task) = command {
+                    tokio::task::spawn_local(task(lane_runtime.clone()));
+                } else {
+                    let _ = app.shutdown(Duration::from_secs(1)).await;
+                    break;
                 },
                 _ = sample_interval.tick() => {
                     diagnostics.publish_lane(&lane, &app, cpu_started.elapsed());

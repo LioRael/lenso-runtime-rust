@@ -16,6 +16,7 @@ use lenso_kernel::{
     DriverTask, ExecutionAdapterCatalog, LocalTask, PlanValidationError, RuntimeDriver,
     ShutdownOutcome, TaskOutcome, TerminalOutcome,
 };
+use tokio::sync::Notify;
 
 mod replicated;
 
@@ -29,6 +30,7 @@ pub use replicated::{
 pub struct TokioDriver {
     started_at: Instant,
     shutdown_requested: Rc<Cell<bool>>,
+    runtime_event: Rc<Notify>,
     jitter_state: Rc<Cell<u64>>,
 }
 
@@ -42,6 +44,7 @@ impl TokioDriver {
         Self {
             started_at,
             shutdown_requested: Rc::new(Cell::new(false)),
+            runtime_event: Rc::new(Notify::new()),
             jitter_state: Rc::new(Cell::new(
                 u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX)
                     ^ 0x9e37_79b9_7f4a_7c15,
@@ -52,6 +55,7 @@ impl TokioDriver {
     /// Requests cooperative Kernel shutdown.
     pub fn request_shutdown(&self) {
         self.shutdown_requested.set(true);
+        self.runtime_event.notify_one();
     }
 }
 
@@ -75,6 +79,20 @@ impl RuntimeDriver for TokioDriver {
 
     fn yield_now(&self) -> futures::future::LocalBoxFuture<'static, ()> {
         Box::pin(tokio::task::yield_now())
+    }
+
+    fn wait_for_runtime_event(
+        &self,
+        deadline: Duration,
+    ) -> futures::future::LocalBoxFuture<'static, ()> {
+        let target = self.started_at + deadline;
+        let runtime_event = Rc::clone(&self.runtime_event);
+        Box::pin(async move {
+            tokio::select! {
+                () = runtime_event.notified() => {}
+                () = tokio::time::sleep_until(tokio::time::Instant::from_std(target)) => {}
+            }
+        })
     }
 
     fn jitter(&self, maximum: Duration) -> Duration {
@@ -137,7 +155,8 @@ pub async fn run<D: RuntimeDriver>(
         Err(error) => return Ok(TerminalOutcome::StartupFailure { error }),
     };
     while !driver.shutdown_requested() && !app.is_failed() {
-        driver.yield_now().await;
+        let failure_check = driver.now().saturating_add(Duration::from_millis(10));
+        driver.wait_for_runtime_event(failure_check).await;
     }
     if let Some(error) = app.terminal_failure() {
         return Ok(match app.shutdown(shutdown_timeout).await {

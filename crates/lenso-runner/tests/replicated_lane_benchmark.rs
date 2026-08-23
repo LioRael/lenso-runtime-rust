@@ -11,11 +11,11 @@ use lenso_app_plan::{
     ExecutionLaneId, ExecutionLanePlan, ModuleInstancePlan,
 };
 use lenso_kernel::{ExecutionAdapterCatalog, InvocationContext, RuntimeFailure};
-use lenso_runner::ReplicatedNativeApp;
+use lenso_runner::{CrossLaneRequestCatalog, ReplicatedNativeApp};
 use lenso_runtime_conformance::{
     ConformanceExecutionAdapter, ConformanceModule, ConformanceModuleFactory, PROBE_CAPABILITY_ID,
     PROBE_DESCRIPTOR_VERSION, PROBE_OPERATION, Probe, ProbeEndpoint, ProbeInvocationError,
-    ProbeProvider, ProbeRequest, ProbeResponse,
+    ProbeProvider, ProbeProviderFactory, ProbeRequest, ProbeResponse,
 };
 
 const EMPTY_CONSUMER_PACKAGE_ID: &str = "fixture.empty-consumer";
@@ -156,6 +156,83 @@ async fn measure_shared_nothing_throughput(lane_count: usize, requests: usize) -
     requests as f64 / elapsed.as_secs_f64()
 }
 
+fn request_transfer_plan(cross_lane: bool) -> lenso_app_plan::ResolvedAppPlan {
+    let provider_lane = if cross_lane { "workers" } else { "frontend" };
+    AppComposition::new(
+        vec![
+            ModuleInstancePlan::new("consumer", EMPTY_CONSUMER_PACKAGE_ID)
+                .with_execution_lane(ExecutionLaneId::new("frontend"))
+                .with_requirement(CapabilityRequirementPlan::one(
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
+                )),
+            ModuleInstancePlan::new(
+                "provider",
+                lenso_runtime_conformance::PROBE_PROVIDER_PACKAGE_ID,
+            )
+            .with_execution_lane(ExecutionLaneId::new(provider_lane))
+            .with_capability(
+                CapabilityEndpointPlan::new(
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
+                    [PROBE_OPERATION],
+                )
+                .with_cross_lane_transfer(),
+            ),
+        ],
+        vec![CapabilityBinding::new(
+            "consumer",
+            PROBE_CAPABILITY_ID,
+            PROBE_DESCRIPTOR_VERSION,
+            "provider",
+        )],
+    )
+    .with_execution_lanes(vec![
+        ExecutionLanePlan::new("frontend"),
+        ExecutionLanePlan::new("workers"),
+    ])
+    .resolve()
+    .expect("request transfer benchmark Plan should resolve")
+}
+
+fn request_adapters(lane: &ExecutionLaneId) -> ExecutionAdapterCatalog {
+    let registry = match lane.as_str() {
+        "frontend" => ConformanceExecutionAdapter::new()
+            .with_factory(EmptyConsumerFactory)
+            .with_factory(ProbeProviderFactory),
+        "workers" => ConformanceExecutionAdapter::new().with_factory(ProbeProviderFactory),
+        other => panic!("unexpected lane {other}"),
+    };
+    ExecutionAdapterCatalog::single(registry)
+}
+
+async fn measure_request_throughput(cross_lane: bool, requests: usize) -> f64 {
+    let app = ReplicatedNativeApp::start_with_transfers(
+        request_transfer_plan(cross_lane),
+        request_adapters,
+        CrossLaneRequestCatalog::new().with_request::<Probe>(&[PROBE_OPERATION]),
+    )
+    .expect("request benchmark lanes should start");
+    let started = Instant::now();
+    for _ in 0..requests {
+        app.invoke::<Probe>(
+            "consumer",
+            PROBE_OPERATION,
+            ProbeRequest {
+                value: "benchmark".to_owned(),
+            },
+        )
+        .await
+        .expect("benchmark transport should succeed")
+        .expect("benchmark provider should succeed");
+    }
+    let elapsed = started.elapsed();
+    app.shutdown(Duration::from_secs(2))
+        .await
+        .expect("benchmark lanes should stop cleanly");
+    requests as f64 / elapsed.as_secs_f64()
+}
+
 /// Reproducible evidence command:
 /// `lenso-cargo test -p lenso-runner --test replicated_lane_benchmark lane_scaling_benchmark -- --ignored --nocapture`
 #[tokio::test(flavor = "current_thread")]
@@ -172,4 +249,18 @@ async fn lane_scaling_benchmark() {
     );
     assert!(two / one >= 1.6, "two lanes should scale near-linearly");
     assert!(four / one >= 3.0, "four lanes should scale near-linearly");
+}
+
+/// Reproducible evidence command:
+/// `lenso-cargo test -p lenso-runner --test replicated_lane_benchmark request_transfer_benchmark -- --ignored --nocapture`
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "request transport benchmark; run explicitly when changing lane scheduling"]
+async fn request_transfer_benchmark() {
+    let requests = 10_000;
+    let same_lane = measure_request_throughput(false, requests).await;
+    let cross_lane = measure_request_throughput(true, requests).await;
+    println!(
+        "{{\"requests\":{requests},\"same_lane_per_second\":{same_lane:.3},\"cross_lane_per_second\":{cross_lane:.3},\"cross_lane_ratio\":{:.3}}}",
+        cross_lane / same_lane,
+    );
 }
