@@ -13,6 +13,7 @@ retain their relevant Git history.
 
 ```sh
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo check --locked --workspace --all-targets
 cargo test --locked --workspace
 cargo check --locked -p lenso-browser-driver --all-targets --target wasm32-unknown-unknown
@@ -36,3 +37,11 @@ The WASIp2 command requires Wasmtime on `PATH`.
   executes its Kernel lifecycle smoke suite as a component in Wasmtime.
 - Native fallback implementations exist to keep host-independent development
   tests fast. Passing a fallback test is not accepted as target-host evidence.
+
+## Releases
+
+Published crates use release PRs and crates.io Trusted Publishing through
+`.github/workflows/release-plz.yml`. Each published package must allow the
+`LioRael/lenso-runtime-rust` repository and that exact workflow basename in its
+crates.io Trusted Publisher settings. The workflow requests GitHub OIDC only at
+release time and does not use a long-lived Cargo registry token.
