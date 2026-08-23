@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-browser-driver"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-native-adapter"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "lenso-app-plan",
  "lenso-kernel",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-runner"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "cpu-time",
  "futures",
