@@ -8,7 +8,7 @@ use std::{
 };
 
 use lenso_app_plan::{ExecutionLaneId, ResolvedAppPlan};
-use lenso_kernel::NativeApp;
+use lenso_kernel::{NativeApp, RuntimeInvocationProbe};
 
 #[derive(Debug)]
 pub(super) struct LaneDiagnosticsState {
@@ -49,7 +49,7 @@ impl LaneDiagnosticsState {
         let Some(caller_lane) = self
             .plan
             .module_instance(caller)
-            .map(|instance| instance.execution_lane())
+            .map(lenso_app_plan::ModuleInstancePlan::execution_lane)
         else {
             return;
         };
@@ -59,7 +59,7 @@ impl LaneDiagnosticsState {
         let Some(provider_lane) = self
             .plan
             .module_instance(provider)
-            .map(|instance| instance.execution_lane())
+            .map(lenso_app_plan::ModuleInstancePlan::execution_lane)
         else {
             return;
         };
@@ -108,6 +108,25 @@ impl LaneDiagnosticsState {
     }
 }
 
+#[derive(Debug)]
+pub(super) struct LaneInvocationProbe {
+    state: Arc<LaneDiagnosticsState>,
+    lane: ExecutionLaneId,
+}
+
+impl LaneInvocationProbe {
+    pub(super) fn new(state: Arc<LaneDiagnosticsState>, lane: ExecutionLaneId) -> Self {
+        Self { state, lane }
+    }
+}
+
+impl RuntimeInvocationProbe for LaneInvocationProbe {
+    fn record(&self, caller_instance: &str, provider_instance: &str) {
+        self.state
+            .record_invocation(&self.lane, caller_instance, provider_instance);
+    }
+}
+
 fn duration_nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
@@ -143,6 +162,7 @@ impl LaneDiagnosticsSnapshot {
     }
 
     /// Returns the share of observed request messages whose binding crosses lanes.
+    #[allow(clippy::cast_precision_loss)]
     pub fn cross_lane_message_share(&self) -> f64 {
         if self.total_messages == 0 {
             0.0
