@@ -414,21 +414,40 @@ impl ReplicatedNativeApp {
         C::Response: Send,
         C::DomainError: Send,
     {
-        let _ = singular_binding::<C>(&self.plan, caller_instance)?;
+        let binding = singular_binding::<C>(&self.plan, caller_instance)?;
         let consumer = self.plan.module_instance(caller_instance).ok_or_else(|| {
             RuntimeFailure::InvalidResolvedPlan {
                 detail: format!("binding consumer `{caller_instance}` is absent from the Plan"),
             }
         })?;
+        let provider = self
+            .plan
+            .module_instance(binding.provider_instance())
+            .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                detail: format!(
+                    "binding provider `{}` is absent from the Plan",
+                    binding.provider_instance()
+                ),
+            })?;
+        // An invocation entering through the Runner can start on the resolved provider owner.
+        // Calls originating inside a Module still use the projected cross-lane transfer endpoint.
         let lane =
             self.lanes
-                .get(consumer.execution_lane())
+                .get(provider.execution_lane())
                 .ok_or_else(|| RuntimeFailure::Internal {
                     detail: format!(
                         "Execution Lane `{}` is unavailable",
-                        consumer.execution_lane()
+                        provider.execution_lane()
                     ),
                 })?;
+        let cross_lane_diagnostics =
+            (consumer.execution_lane() != provider.execution_lane()).then(|| {
+                (
+                    Arc::clone(&self.diagnostics),
+                    consumer.execution_lane().clone(),
+                    binding.provider_instance().to_owned(),
+                )
+            });
         let caller_instance = caller_instance.to_owned();
         let operation = operation.to_owned();
         let deadline = options
@@ -437,6 +456,14 @@ impl ReplicatedNativeApp {
         let (completed, completion) = oneshot::channel();
         lane.commands
             .send(Box::new(move |lane| {
+                if let Some((diagnostics, caller_lane, provider_instance)) = cross_lane_diagnostics
+                {
+                    diagnostics.record_invocation(
+                        &caller_lane,
+                        &caller_instance,
+                        &provider_instance,
+                    );
+                }
                 tokio::task::spawn_local(async move {
                     let handle = match lane.request_handle::<C>(&caller_instance) {
                         Ok(handle) => handle,
