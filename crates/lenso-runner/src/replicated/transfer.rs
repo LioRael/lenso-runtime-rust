@@ -237,6 +237,7 @@ where
         let deadline = context.deadline();
         let request_id = context.request_id();
         let (transferred, cancellation_signal) = TransferredInvocationContext::capture(&context);
+        let mut cancellation_guard = TransferredCancellationGuard::new(cancellation_signal);
         let (completed, completion) = futures::channel::oneshot::channel();
         let command: LaneTask = Box::new(move |lane| {
             tokio::task::spawn_local(async move {
@@ -274,17 +275,17 @@ where
         tokio::pin!(send);
         let cancelled = cancellation.cancelled();
         tokio::pin!(cancelled);
-        if let Some(deadline) = deadline {
+        let result = if let Some(deadline) = deadline {
             let sleep = tokio::time::sleep_until((epoch + deadline).into());
             tokio::pin!(sleep);
             tokio::select! {
                 result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
                 () = &mut cancelled => {
-                    cancellation_signal.cancel();
+                    cancellation_guard.cancel();
                     return Err(RuntimeFailure::Cancelled { request_id });
                 }
                 () = &mut sleep => {
-                    cancellation_signal.cancel();
+                    cancellation_guard.cancel();
                     return Err(RuntimeFailure::DeadlineExceeded { request_id });
                 }
             }
@@ -292,11 +293,11 @@ where
                 biased;
                 result = completion => result.map_err(|_| lane_unavailable::<C>())?,
                 () = &mut cancelled => {
-                    cancellation_signal.cancel();
+                    cancellation_guard.cancel();
                     Err(RuntimeFailure::Cancelled { request_id })
                 }
                 () = &mut sleep => {
-                    cancellation_signal.cancel();
+                    cancellation_guard.cancel();
                     Err(RuntimeFailure::DeadlineExceeded { request_id })
                 }
             }
@@ -304,7 +305,7 @@ where
             tokio::select! {
                 result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
                 () = &mut cancelled => {
-                    cancellation_signal.cancel();
+                    cancellation_guard.cancel();
                     return Err(RuntimeFailure::Cancelled { request_id });
                 }
             }
@@ -312,11 +313,13 @@ where
                 biased;
                 result = completion => result.map_err(|_| lane_unavailable::<C>())?,
                 () = &mut cancelled => {
-                    cancellation_signal.cancel();
+                    cancellation_guard.cancel();
                     Err(RuntimeFailure::Cancelled { request_id })
                 }
             }
-        }
+        };
+        cancellation_guard.disarm();
+        result
     })
 }
 
@@ -327,7 +330,7 @@ fn lane_unavailable<C: RequestCapability>() -> RuntimeFailure {
 }
 
 #[derive(Debug)]
-struct TransferredInvocationContext {
+pub(super) struct TransferredInvocationContext {
     request_id: u64,
     deadline: Option<std::time::Duration>,
     cancellation: Arc<TransferredCancellation>,
@@ -336,7 +339,7 @@ struct TransferredInvocationContext {
 }
 
 impl TransferredInvocationContext {
-    fn capture(context: &InvocationContext) -> (Self, Arc<TransferredCancellation>) {
+    pub(super) fn capture(context: &InvocationContext) -> (Self, Arc<TransferredCancellation>) {
         let cancellation = Arc::new(TransferredCancellation::new(context.is_cancelled()));
         (
             Self {
@@ -350,7 +353,7 @@ impl TransferredInvocationContext {
         )
     }
 
-    fn restore(
+    pub(super) fn restore(
         self,
         cancellation: CancellationToken,
     ) -> (InvocationContext, Arc<TransferredCancellation>) {
@@ -370,10 +373,46 @@ impl TransferredInvocationContext {
 }
 
 #[derive(Debug)]
-struct TransferredCancellation {
+pub(super) struct TransferredCancellation {
     // A transferred invocation has exactly one provider-side waiter.
     cancelled: AtomicBool,
     waker: AtomicWaker,
+}
+
+/// Ensures dropping a caller-side transfer future wakes its provider-side cancellation waiter.
+#[derive(Debug)]
+pub(super) struct TransferredCancellationGuard {
+    cancellation: Arc<TransferredCancellation>,
+    armed: bool,
+}
+
+impl TransferredCancellationGuard {
+    pub(super) fn new(cancellation: Arc<TransferredCancellation>) -> Self {
+        Self {
+            cancellation,
+            armed: true,
+        }
+    }
+
+    pub(super) fn cancellation(&self) -> Arc<TransferredCancellation> {
+        Arc::clone(&self.cancellation)
+    }
+
+    pub(super) fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TransferredCancellationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancellation.cancel();
+        }
+    }
 }
 
 impl TransferredCancellation {
@@ -384,22 +423,22 @@ impl TransferredCancellation {
         }
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(super) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 
-    fn cancel(&self) {
+    pub(super) fn cancel(&self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             self.waker.wake();
         }
     }
 
-    fn cancelled(&self) -> TransferredCancellationFuture<'_> {
+    pub(super) fn cancelled(&self) -> TransferredCancellationFuture<'_> {
         TransferredCancellationFuture { cancellation: self }
     }
 }
 
-struct TransferredCancellationFuture<'a> {
+pub(super) struct TransferredCancellationFuture<'a> {
     cancellation: &'a TransferredCancellation,
 }
 

@@ -5,11 +5,12 @@ use lenso_app_plan::{
     ModuleInstancePlan, ResolvedAppPlan,
 };
 use lenso_kernel::{
-    ExecutionAdapter, NoopModuleLifecycle, PreparedBinding, PreparedNativeApp,
-    PreparedNativeModule, RuntimeFailure,
+    ExecutionAdapter, NativeEventEndpoint, NativeRequestEndpoint, NativeStreamEndpoint,
+    NoopModuleLifecycle, PreparedBinding, PreparedEventBinding, PreparedNativeApp,
+    PreparedNativeModule, PreparedStreamBinding, RuntimeFailure,
 };
 
-use super::{CrossLaneRequestCatalog, LANE_PROXY_EXECUTION_CLASS, LaneRoute};
+use super::{CrossLaneTransferCatalog, LANE_PROXY_EXECUTION_CLASS, LaneRoute};
 
 pub(super) fn project_lane(
     plan: &ResolvedAppPlan,
@@ -154,7 +155,7 @@ fn add_consumer_proxy(
 #[derive(Clone, Debug)]
 pub(super) struct LaneProxyAdapter {
     full_plan: Arc<ResolvedAppPlan>,
-    transfers: CrossLaneRequestCatalog,
+    transfers: CrossLaneTransferCatalog,
     routes: Arc<BTreeMap<ExecutionLaneId, LaneRoute>>,
     epoch: Instant,
 }
@@ -162,7 +163,7 @@ pub(super) struct LaneProxyAdapter {
 impl LaneProxyAdapter {
     pub(super) fn new(
         full_plan: Arc<ResolvedAppPlan>,
-        transfers: CrossLaneRequestCatalog,
+        transfers: CrossLaneTransferCatalog,
         routes: Arc<BTreeMap<ExecutionLaneId, LaneRoute>>,
         epoch: Instant,
     ) -> Self {
@@ -180,15 +181,20 @@ impl ExecutionAdapter for LaneProxyAdapter {
         ExecutionClassId::new(LANE_PROXY_EXECUTION_CLASS)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn prepare(&self, plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
         let mut generations = BTreeMap::new();
-        let mut endpoints = BTreeMap::new();
+        let mut request_endpoints: BTreeMap<_, Rc<dyn NativeRequestEndpoint>> = BTreeMap::new();
+        let mut stream_endpoints: BTreeMap<_, Rc<dyn NativeStreamEndpoint>> = BTreeMap::new();
+        let mut event_endpoints: BTreeMap<_, Rc<dyn NativeEventEndpoint>> = BTreeMap::new();
         for instance in plan
             .module_instances()
             .iter()
             .filter(|instance| instance.execution_class().as_str() == LANE_PROXY_EXECUTION_CLASS)
         {
-            let mut generation_endpoints = Vec::new();
+            let mut generation_request_endpoints = Vec::new();
+            let mut generation_stream_endpoints = Vec::new();
+            let mut generation_event_endpoints = Vec::new();
             for descriptor in instance.provided_capabilities() {
                 let source = self
                     .full_plan
@@ -205,34 +211,77 @@ impl ExecutionAdapter for LaneProxyAdapter {
                         ),
                     })?
                     .clone();
-                let endpoint = self
-                    .transfers
-                    .endpoint(descriptor.capability_id(), sender, self.epoch)
-                    .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
-                        detail: format!(
-                            "Capability `{}` has no registered native cross-lane request transfer",
-                            descriptor.capability_id()
-                        ),
-                    })?;
-                endpoints.insert(
-                    (
-                        instance.instance_key().to_owned(),
-                        descriptor.capability_id().to_owned(),
-                    ),
-                    Rc::clone(&endpoint),
+                let endpoint_key = (
+                    instance.instance_key().to_owned(),
+                    descriptor.capability_id().to_owned(),
                 );
-                generation_endpoints.push(endpoint);
+                if !descriptor.request_operations().is_empty() {
+                    let endpoint = self
+                        .transfers
+                        .requests
+                        .endpoint(descriptor.capability_id(), sender.clone(), self.epoch)
+                        .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                            detail: format!(
+                                "Capability `{}` has no registered native cross-lane request transfer",
+                                descriptor.capability_id()
+                            ),
+                        })?;
+                    request_endpoints.insert(endpoint_key.clone(), Rc::clone(&endpoint));
+                    generation_request_endpoints.push(endpoint);
+                }
+                if !descriptor.stream_operations().is_empty() {
+                    let endpoint = self
+                        .transfers
+                        .interactions
+                        .stream_endpoint(
+                            descriptor.capability_id(),
+                            instance.instance_key().to_owned(),
+                            sender.clone(),
+                            self.epoch,
+                        )
+                        .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                            detail: format!(
+                                "Capability `{}` has no registered native cross-lane stream transfer",
+                                descriptor.capability_id()
+                            ),
+                        })?;
+                    stream_endpoints.insert(endpoint_key.clone(), Rc::clone(&endpoint));
+                    generation_stream_endpoints.push(endpoint);
+                }
+                if !descriptor.event_operations().is_empty() {
+                    let endpoint = self
+                        .transfers
+                        .interactions
+                        .event_endpoint(
+                            descriptor.capability_id(),
+                            instance.instance_key().to_owned(),
+                            sender,
+                        )
+                        .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                            detail: format!(
+                                "Capability `{}` has no registered native cross-lane Event transfer",
+                                descriptor.capability_id()
+                            ),
+                        })?;
+                    event_endpoints.insert(endpoint_key, Rc::clone(&endpoint));
+                    generation_event_endpoints.push(endpoint);
+                }
             }
             generations.insert(
                 instance.instance_key().to_owned(),
-                PreparedNativeModule::new(generation_endpoints, NoopModuleLifecycle),
+                PreparedNativeModule::with_all_endpoints(
+                    generation_request_endpoints,
+                    generation_stream_endpoints,
+                    generation_event_endpoints,
+                    NoopModuleLifecycle,
+                ),
             );
         }
         let bindings = plan
             .capability_bindings()
             .iter()
             .filter_map(|binding| {
-                endpoints
+                request_endpoints
                     .get(&(
                         binding.provider_instance().to_owned(),
                         binding.capability_id().to_owned(),
@@ -246,6 +295,44 @@ impl ExecutionAdapter for LaneProxyAdapter {
                     })
             })
             .collect();
-        Ok(PreparedNativeApp::new(bindings, generations))
+        let stream_bindings = plan
+            .capability_bindings()
+            .iter()
+            .filter_map(|binding| {
+                stream_endpoints
+                    .get(&(
+                        binding.provider_instance().to_owned(),
+                        binding.capability_id().to_owned(),
+                    ))
+                    .map(|endpoint| {
+                        PreparedStreamBinding::new(
+                            binding.consumer_instance(),
+                            binding.provider_instance(),
+                            Rc::clone(endpoint),
+                        )
+                    })
+            })
+            .collect();
+        let event_bindings = plan
+            .capability_bindings()
+            .iter()
+            .filter_map(|binding| {
+                event_endpoints
+                    .get(&(
+                        binding.provider_instance().to_owned(),
+                        binding.capability_id().to_owned(),
+                    ))
+                    .map(|endpoint| {
+                        PreparedEventBinding::new(
+                            binding.consumer_instance(),
+                            binding.provider_instance(),
+                            Rc::clone(endpoint),
+                        )
+                    })
+            })
+            .collect();
+        Ok(PreparedNativeApp::new(bindings, generations)
+            .with_stream_bindings(stream_bindings)
+            .with_event_bindings(event_bindings))
     }
 }

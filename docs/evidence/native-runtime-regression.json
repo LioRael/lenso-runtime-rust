@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-08-24",
+  "decision": "ADR-0063",
+  "purpose": "verify lane terminal propagation and interaction-complete transfer do not regress the optimized Request paths",
+  "build_profile": "release",
+  "host": {
+    "os": "Darwin 27.0 arm64",
+    "cpu": "Apple M2 Pro",
+    "rustc": "1.99.0-nightly (375b1431b 2026-07-10)"
+  },
+  "method": {
+    "requests_per_sample": 100000,
+    "samples_per_reported_median": 5,
+    "comparison_policy": "rerun any median more than 10 percent below the pre-change capture; classify a regression only when the lower result repeats",
+    "command": "cargo test --release -p lenso-runner --test replicated_lane_benchmark -- --ignored --nocapture"
+  },
+  "pre_change": {
+    "lane_scaling_per_second": {
+      "1": 476.711,
+      "2": 956.234,
+      "4": 1780.327
+    },
+    "module_request_sequential_per_second": {
+      "same_lane": 1973749.136,
+      "cross_lane": 48941.376
+    },
+    "module_request_concurrency_64_per_second": {
+      "same_lane": 1253057.586,
+      "cross_lane": 291436.963
+    },
+    "external_request_routing_per_second": {
+      "same_lane": 74286.603,
+      "cross_lane": 77022.903
+    }
+  },
+  "post_change": {
+    "lane_scaling_per_second": {
+      "1": 484.399,
+      "2": 964.031,
+      "4": 1898.749
+    },
+    "module_request_sequential_medians_per_second": [
+      {
+        "same_lane": 2085652.536,
+        "cross_lane": 46797.054
+      }
+    ],
+    "module_request_concurrency_64_medians_per_second": [
+      {
+        "same_lane": 1491617.119,
+        "cross_lane": 292864.002
+      }
+    ],
+    "external_request_routing_medians_per_second": [
+      {
+        "same_lane": 69625.141,
+        "cross_lane": 68993.731
+      },
+      {
+        "same_lane": 102716.839,
+        "cross_lane": 101988.617
+      }
+    ]
+  },
+  "result": "no repeatable regression; lane scaling and concurrent transfer matched or exceeded the pre-change capture, sequential cross-lane transfer stayed within 10 percent, and the initially low external routing median recovered above the capture on the required rerun"
+}

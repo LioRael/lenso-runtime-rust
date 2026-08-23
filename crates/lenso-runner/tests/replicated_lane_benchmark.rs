@@ -399,7 +399,7 @@ async fn measure_request_throughput(cross_lane: bool, requests: usize) -> f64 {
 }
 
 /// Reproducible evidence command:
-/// `lenso-cargo test -p lenso-runner --test replicated_lane_benchmark lane_scaling_benchmark -- --ignored --nocapture`
+/// `cargo test -p lenso-runner --test replicated_lane_benchmark lane_scaling_benchmark -- --ignored --nocapture`
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "CPU benchmark; run explicitly to refresh docs/evidence/native-lane-scaling.json"]
 async fn lane_scaling_benchmark() {
@@ -417,7 +417,7 @@ async fn lane_scaling_benchmark() {
 }
 
 /// Reproducible evidence command:
-/// `lenso-cargo test --release -p lenso-runner --test replicated_lane_benchmark request_transfer_benchmark -- --exact --ignored --nocapture`
+/// `cargo test --release -p lenso-runner --test replicated_lane_benchmark request_transfer_benchmark -- --exact --ignored --nocapture`
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "module request transfer benchmark; run explicitly when changing lane scheduling"]
 async fn request_transfer_benchmark() {
@@ -439,7 +439,7 @@ async fn request_transfer_benchmark() {
 }
 
 /// Reproducible evidence command:
-/// `lenso-cargo test --release -p lenso-runner --test replicated_lane_benchmark concurrent_request_transfer_benchmark -- --exact --ignored --nocapture`
+/// `cargo test --release -p lenso-runner --test replicated_lane_benchmark concurrent_request_transfer_benchmark -- --exact --ignored --nocapture`
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "concurrent module request benchmark; run explicitly when changing lane scheduling"]
 async fn concurrent_request_transfer_benchmark() {
@@ -464,7 +464,7 @@ async fn concurrent_request_transfer_benchmark() {
 }
 
 /// Reproducible evidence command:
-/// `lenso-cargo test --release -p lenso-runner --test replicated_lane_benchmark external_request_routing_benchmark -- --exact --ignored --nocapture`
+/// `cargo test --release -p lenso-runner --test replicated_lane_benchmark external_request_routing_benchmark -- --exact --ignored --nocapture`
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "external request routing benchmark; run explicitly when changing lane scheduling"]
 async fn external_request_routing_benchmark() {
