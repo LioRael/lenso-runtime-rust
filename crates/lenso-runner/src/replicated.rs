@@ -3,6 +3,7 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
     fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
     sync::{Arc, mpsc as std_mpsc},
     thread,
@@ -13,20 +14,27 @@ use cpu_time::ThreadTime;
 use futures::{channel::oneshot, future::Either};
 use lenso_app_plan::{CapabilityBinding, ExecutionLaneId, ResolvedAppPlan};
 use lenso_kernel::{
-    CancellationToken, ExecutionAdapterCatalog, NativeApp, NativeRequestHandle, RequestCapability,
-    RuntimeDiagnostics, RuntimeFailure, ShutdownOutcome,
+    CancellationToken, EventCapability, ExecutionAdapterCatalog, NativeApp, NativeEventHandle,
+    NativeRequestHandle, NativeStream, NativeStreamHandle, RequestCapability, RuntimeDiagnostics,
+    RuntimeFailure, ShutdownOutcome, StreamCapability,
 };
 use tokio::sync::{mpsc, watch};
 
 use crate::TokioDriver;
 
 mod diagnostics;
+mod error;
+mod interaction_transfer;
 mod projection;
+mod terminal;
 mod transfer;
 
 pub use diagnostics::LaneDiagnosticsSnapshot;
 use diagnostics::{LaneDiagnosticsState, LaneInvocationProbe};
+pub use error::ReplicatedRunnerError;
+use interaction_transfer::CrossLaneInteractionCatalog;
 use projection::{LaneProxyAdapter, project_lane};
+use terminal::ReplicatedTerminalState;
 pub use transfer::CrossLaneRequestCatalog;
 
 const LANE_PROXY_EXECUTION_CLASS: &str = "lenso.native-lane-proxy@1";
@@ -121,11 +129,13 @@ struct LaneHandle {
 }
 
 type TypedRequestHandles = HashMap<String, Box<dyn Any>>;
+type TypedStreamSessions = HashMap<(TypeId, u64), Box<dyn Any>>;
 
 #[derive(Clone)]
 struct LaneRuntime {
     app: NativeApp,
     request_handles: Rc<RefCell<HashMap<TypeId, TypedRequestHandles>>>,
+    stream_sessions: Rc<RefCell<TypedStreamSessions>>,
 }
 
 impl LaneRuntime {
@@ -133,6 +143,7 @@ impl LaneRuntime {
         Self {
             app,
             request_handles: Rc::new(RefCell::new(HashMap::new())),
+            stream_sessions: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -158,63 +169,137 @@ impl LaneRuntime {
             .insert(caller_instance.to_owned(), Box::new(handle.clone()));
         Ok(handle)
     }
-}
 
-/// A native Runner startup or lane-lifecycle failure.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReplicatedRunnerError {
-    /// The immutable Plan failed validation before any lane started.
-    InvalidPlan { detail: String },
-    /// One lane could not construct or start its Kernel replica.
-    LaneStartup { lane: String, detail: String },
-    /// A generated request Capability was not registered with the native transfer catalog.
-    MissingCrossLaneRequestTransfer { capability: String },
-    /// A lane stopped accepting Runner commands unexpectedly.
-    LaneUnavailable { lane: String },
-    /// A lane thread panicked while stopping.
-    LanePanicked { lane: String },
-    /// One Kernel replica did not stop cleanly.
-    LaneShutdown {
-        lane: String,
-        outcome: ShutdownOutcome,
-    },
-}
+    fn stream_handle<C: StreamCapability>(
+        &self,
+        caller_instance: &str,
+        provider_instance: &str,
+    ) -> Result<NativeStreamHandle<C>, RuntimeFailure> {
+        let dependencies = self.app.dependencies(caller_instance)?;
+        dependencies
+            .bindings()
+            .iter()
+            .find(|binding| {
+                binding.capability_id() == C::ID && binding.provider_instance() == provider_instance
+            })
+            .and_then(lenso_kernel::ModuleDependency::stream_handle)
+            .ok_or(RuntimeFailure::Unavailable { capability: C::ID })?
+            .typed::<C>()
+    }
 
-impl fmt::Display for ReplicatedRunnerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidPlan { detail } => {
-                write!(formatter, "invalid Resolved App Plan: {detail}")
-            }
-            Self::LaneStartup { lane, detail } => {
-                write!(
-                    formatter,
-                    "Execution Lane `{lane}` failed to start: {detail}"
-                )
-            }
-            Self::MissingCrossLaneRequestTransfer { capability } => write!(
-                formatter,
-                "Capability `{capability}` has no registered native cross-lane request transfer"
-            ),
-            Self::LaneUnavailable { lane } => {
-                write!(formatter, "Execution Lane `{lane}` is unavailable")
-            }
-            Self::LanePanicked { lane } => write!(formatter, "Execution Lane `{lane}` panicked"),
-            Self::LaneShutdown { lane, outcome } => write!(
-                formatter,
-                "Execution Lane `{lane}` stopped with {outcome:?}"
-            ),
-        }
+    fn event_handle<C: EventCapability>(
+        &self,
+        caller_instance: &str,
+        provider_instance: &str,
+    ) -> Result<NativeEventHandle<C>, RuntimeFailure> {
+        let dependencies = self.app.dependencies(caller_instance)?;
+        dependencies
+            .bindings()
+            .iter()
+            .find(|binding| {
+                binding.capability_id() == C::ID && binding.provider_instance() == provider_instance
+            })
+            .and_then(lenso_kernel::ModuleDependency::event_handle)
+            .ok_or(RuntimeFailure::Unavailable { capability: C::ID })?
+            .typed::<C>()
+    }
+
+    fn insert_stream<C: StreamCapability>(&self, session_id: u64, stream: NativeStream<C>) {
+        self.stream_sessions
+            .borrow_mut()
+            .insert((TypeId::of::<C>(), session_id), Box::new(Rc::new(stream)));
+    }
+
+    fn stream<C: StreamCapability>(
+        &self,
+        session_id: u64,
+    ) -> Result<Rc<NativeStream<C>>, RuntimeFailure> {
+        self.stream_sessions
+            .borrow()
+            .get(&(TypeId::of::<C>(), session_id))
+            .and_then(|stream| stream.downcast_ref::<Rc<NativeStream<C>>>())
+            .cloned()
+            .ok_or(RuntimeFailure::Unavailable { capability: C::ID })
+    }
+
+    fn remove_stream<C: StreamCapability>(&self, session_id: u64) {
+        self.stream_sessions
+            .borrow_mut()
+            .remove(&(TypeId::of::<C>(), session_id));
     }
 }
 
-impl std::error::Error for ReplicatedRunnerError {}
+/// Generated native values registered for zero-serialization transfer between Kernel lanes.
+#[derive(Clone, Debug, Default)]
+pub struct CrossLaneTransferCatalog {
+    requests: CrossLaneRequestCatalog,
+    interactions: CrossLaneInteractionCatalog,
+}
+
+impl CrossLaneTransferCatalog {
+    /// Creates an empty catalog for a Plan whose bindings remain on one lane.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers one generated request Capability whose values are `Send`.
+    #[must_use]
+    pub fn with_request<C>(mut self, operations: &'static [&'static str]) -> Self
+    where
+        C: RequestCapability,
+        C::Request: Send,
+        C::Response: Send,
+        C::DomainError: Send,
+    {
+        self.requests = self.requests.with_request::<C>(operations);
+        self
+    }
+
+    /// Registers one generated stream Capability whose values are `Send`.
+    #[must_use]
+    pub fn with_stream<C>(mut self, operations: &'static [&'static str]) -> Self
+    where
+        C: StreamCapability,
+        C::OpenRequest: Send,
+        C::Message: Send,
+        C::DomainError: Send,
+    {
+        self.interactions = self.interactions.with_stream::<C>(operations);
+        self
+    }
+
+    /// Registers one generated ephemeral Event Capability whose values are `Send`.
+    #[must_use]
+    pub fn with_event<C>(mut self, operations: &'static [&'static str]) -> Self
+    where
+        C: EventCapability,
+        C::Event: Send,
+    {
+        self.interactions = self.interactions.with_event::<C>(operations);
+        self
+    }
+
+    fn validate_plan(&self, plan: &ResolvedAppPlan) -> Result<(), ReplicatedRunnerError> {
+        self.requests.validate_plan(plan)?;
+        self.interactions.validate_plan(plan)
+    }
+}
+
+impl From<CrossLaneRequestCatalog> for CrossLaneTransferCatalog {
+    fn from(requests: CrossLaneRequestCatalog) -> Self {
+        Self {
+            requests,
+            interactions: CrossLaneInteractionCatalog::default(),
+        }
+    }
+}
 
 /// One native App executed as a fixed set of Plan-declared single-owner Kernel lanes.
 pub struct ReplicatedNativeApp {
     plan: Arc<ResolvedAppPlan>,
     lanes: BTreeMap<ExecutionLaneId, LaneHandle>,
     diagnostics: Arc<LaneDiagnosticsState>,
+    terminal: Arc<ReplicatedTerminalState>,
     epoch: Instant,
 }
 
@@ -228,12 +313,21 @@ impl fmt::Debug for ReplicatedNativeApp {
 }
 
 impl ReplicatedNativeApp {
+    fn ensure_running(&self) -> Result<(), RuntimeFailure> {
+        if let Some(failure) = self.terminal.failure() {
+            return Err(RuntimeFailure::Internal {
+                detail: failure.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     /// Starts one unmodified Kernel replica per declared Execution Lane.
     pub fn start<F>(plan: ResolvedAppPlan, adapters: F) -> Result<Self, ReplicatedRunnerError>
     where
         F: Fn(&ExecutionLaneId) -> ExecutionAdapterCatalog + Send + Sync + 'static,
     {
-        Self::start_with_transfers(plan, adapters, CrossLaneRequestCatalog::new())
+        Self::start_with_transfer_catalog(plan, adapters, CrossLaneTransferCatalog::new())
     }
 
     /// Starts replicated lanes with generated request types allowed to cross them.
@@ -246,6 +340,19 @@ impl ReplicatedNativeApp {
     where
         F: Fn(&ExecutionLaneId) -> ExecutionAdapterCatalog + Send + Sync + 'static,
     {
+        Self::start_with_transfer_catalog(plan, adapters, transfers.into())
+    }
+
+    /// Starts replicated lanes with generated values allowed to cross them without serialization.
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    pub fn start_with_transfer_catalog<F>(
+        plan: ResolvedAppPlan,
+        adapters: F,
+        transfers: CrossLaneTransferCatalog,
+    ) -> Result<Self, ReplicatedRunnerError>
+    where
+        F: Fn(&ExecutionLaneId) -> ExecutionAdapterCatalog + Send + Sync + 'static,
+    {
         plan.validate()
             .map_err(|error| ReplicatedRunnerError::InvalidPlan {
                 detail: error.to_string(),
@@ -254,6 +361,7 @@ impl ReplicatedNativeApp {
         let plan = Arc::new(plan);
         let adapters = Arc::new(adapters);
         let diagnostics = Arc::new(LaneDiagnosticsState::new(Arc::clone(&plan)));
+        let terminal = Arc::new(ReplicatedTerminalState::default());
         let epoch = Instant::now();
         let mut receivers = BTreeMap::new();
         let senders = plan
@@ -293,6 +401,7 @@ impl ReplicatedNativeApp {
             let (started, startup) = std_mpsc::sync_channel(1);
             let lane_adapters = Arc::clone(&adapters);
             let lane_diagnostics = Arc::clone(&diagnostics);
+            let lane_terminal = Arc::clone(&terminal);
             let proxy_adapter = LaneProxyAdapter::new(
                 Arc::clone(&plan),
                 transfers.clone(),
@@ -303,23 +412,33 @@ impl ReplicatedNativeApp {
             let lane_thread = match thread::Builder::new()
                 .name(format!("lenso-lane-{}", lane_id.as_str()))
                 .spawn(move || {
-                    run_lane(
-                        thread_lane,
-                        lane_plan,
-                        receiver,
-                        shutdown_request,
-                        started,
-                        lane_adapters,
-                        proxy_adapter,
-                        lane_diagnostics,
-                        epoch,
-                    );
+                    let reported_lane = thread_lane.clone();
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        run_lane(
+                            thread_lane,
+                            lane_plan,
+                            receiver,
+                            shutdown_request,
+                            started,
+                            lane_adapters,
+                            proxy_adapter,
+                            lane_diagnostics,
+                            Arc::clone(&lane_terminal),
+                            epoch,
+                        );
+                    }));
+                    if result.is_err() {
+                        lane_terminal.fail(ReplicatedRunnerError::LanePanicked {
+                            lane: reported_lane.to_string(),
+                        });
+                    }
                 }) {
                 Ok(thread) => thread,
                 Err(error) => {
                     drop(receivers);
                     drop(routes);
                     drop(senders);
+                    terminal.begin_shutdown();
                     stop_lanes(lanes);
                     return Err(ReplicatedRunnerError::LaneStartup {
                         lane: lane_id.to_string(),
@@ -345,6 +464,7 @@ impl ReplicatedNativeApp {
                 Ok(Err(detail)) => {
                     drop(routes);
                     drop(senders);
+                    terminal.begin_shutdown();
                     stop_lanes(lanes);
                     return Err(ReplicatedRunnerError::LaneStartup {
                         lane: lane.to_string(),
@@ -354,10 +474,14 @@ impl ReplicatedNativeApp {
                 Err(_) => {
                     drop(routes);
                     drop(senders);
-                    stop_lanes(lanes);
-                    return Err(ReplicatedRunnerError::LaneUnavailable {
-                        lane: lane.to_string(),
+                    let failure = terminal.failure().unwrap_or_else(|| {
+                        ReplicatedRunnerError::LaneUnavailable {
+                            lane: lane.to_string(),
+                        }
                     });
+                    terminal.begin_shutdown();
+                    stop_lanes(lanes);
+                    return Err(failure);
                 }
             }
         }
@@ -366,6 +490,7 @@ impl ReplicatedNativeApp {
             plan,
             lanes,
             diagnostics,
+            terminal,
             epoch,
         })
     }
@@ -378,6 +503,21 @@ impl ReplicatedNativeApp {
     /// Returns structural evidence for placement decisions without exposing payloads.
     pub fn diagnostics_snapshot(&self) -> LaneDiagnosticsSnapshot {
         self.diagnostics.snapshot()
+    }
+
+    /// Returns whether any Kernel lane reached a terminal failure.
+    pub fn is_failed(&self) -> bool {
+        self.terminal.is_failed()
+    }
+
+    /// Returns the first App-terminal lane failure, when one has occurred.
+    pub fn terminal_failure(&self) -> Option<ReplicatedRunnerError> {
+        self.terminal.failure()
+    }
+
+    /// Waits until one lane makes the replicated App terminal.
+    pub async fn wait_for_terminal(&self) -> ReplicatedRunnerError {
+        self.terminal.wait().await
     }
 
     /// Invokes one generated request Capability on its Plan-placed provider lane.
@@ -414,6 +554,7 @@ impl ReplicatedNativeApp {
         C::Response: Send,
         C::DomainError: Send,
     {
+        self.ensure_running()?;
         let binding = singular_binding::<C>(&self.plan, caller_instance)?;
         let consumer = self.plan.module_instance(caller_instance).ok_or_else(|| {
             RuntimeFailure::InvalidResolvedPlan {
@@ -512,9 +653,10 @@ impl ReplicatedNativeApp {
 
     /// Stops every Kernel replica with the same bounded shutdown timeout.
     pub async fn shutdown(self, timeout: Duration) -> Result<(), ReplicatedRunnerError> {
+        self.terminal.begin_shutdown();
         let mut completions = Vec::new();
         let mut threads = Vec::new();
-        let mut first_error = None;
+        let mut first_error = self.terminal.failure();
         for (_, lane) in self.lanes {
             let LaneHandle {
                 id,
@@ -611,6 +753,7 @@ fn run_lane<F>(
     adapters: Arc<F>,
     proxy_adapter: LaneProxyAdapter,
     diagnostics: Arc<LaneDiagnosticsState>,
+    terminal: Arc<ReplicatedTerminalState>,
     epoch: Instant,
 ) where
     F: Fn(&ExecutionLaneId) -> ExecutionAdapterCatalog + Send + Sync + 'static,
@@ -657,11 +800,19 @@ fn run_lane<F>(
         let _ = started.send(Ok(()));
         diagnostics.publish_lane(&lane, &app, cpu_started.elapsed());
         let mut sample_interval = tokio::time::interval(Duration::from_millis(10));
+        let terminal_monitor = tokio::task::spawn_local(monitor_lane_failure(
+            lane.clone(),
+            app.clone(),
+            Arc::clone(&terminal),
+        ));
+        let terminal_failure = terminal.wait();
+        tokio::pin!(terminal_failure);
 
         loop {
             tokio::select! {
                 biased;
                 shutdown = &mut shutdown => {
+                    terminal_monitor.abort();
                     match shutdown {
                         Ok(LaneShutdown { timeout, completed }) => {
                             let outcome = app.shutdown(timeout).await;
@@ -673,9 +824,20 @@ fn run_lane<F>(
                     }
                     break;
                 }
+                _ = &mut terminal_failure => {
+                    terminal_monitor.abort();
+                    let _ = app.shutdown(Duration::from_secs(1)).await;
+                    break;
+                },
                 command = commands.recv() => if let Some(task) = command {
                     task(lane_runtime.clone());
                 } else {
+                    terminal_monitor.abort();
+                    if !terminal.is_stopping() {
+                        terminal.fail(ReplicatedRunnerError::LaneUnavailable {
+                            lane: lane.to_string(),
+                        });
+                    }
                     let _ = app.shutdown(Duration::from_secs(1)).await;
                     break;
                 },
@@ -685,4 +847,86 @@ fn run_lane<F>(
             }
         }
     });
+}
+
+async fn monitor_lane_failure(
+    lane: ExecutionLaneId,
+    app: NativeApp,
+    terminal: Arc<ReplicatedTerminalState>,
+) {
+    let mut failure_interval = tokio::time::interval(Duration::from_millis(10));
+    loop {
+        failure_interval.tick().await;
+        if let Some(error) = app.terminal_failure() {
+            terminal.fail(ReplicatedRunnerError::LaneRuntimeFailure {
+                lane: lane.to_string(),
+                error,
+            });
+            return;
+        }
+        if terminal.is_failed() {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use lenso_app_plan::{AppComposition, ExecutionLaneId, ExecutionLanePlan};
+    use lenso_kernel::ExecutionAdapterCatalog;
+
+    use super::{ReplicatedNativeApp, ReplicatedRunnerError};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_lane_panic_makes_the_replicated_app_terminal_and_stops_its_peers() {
+        let plan = AppComposition::new(Vec::new(), Vec::new())
+            .with_execution_lanes(vec![
+                ExecutionLanePlan::new("lane-a"),
+                ExecutionLanePlan::new("lane-b"),
+            ])
+            .resolve()
+            .expect("the empty two-lane Plan should resolve");
+        let app = ReplicatedNativeApp::start(plan, |_| ExecutionAdapterCatalog::new())
+            .expect("both empty Kernel lanes should start");
+        let peer_commands = app
+            .lanes
+            .get(&ExecutionLaneId::new("lane-b"))
+            .expect("lane-b should exist")
+            .commands
+            .clone();
+        let flooding =
+            tokio::spawn(
+                async move { while peer_commands.send(Box::new(|_| {})).await.is_ok() {} },
+            );
+        app.lanes
+            .get(&ExecutionLaneId::new("lane-a"))
+            .expect("lane-a should exist")
+            .commands
+            .send(Box::new(|_| panic!("injected lane panic")))
+            .await
+            .expect("lane-a should accept the injected task");
+
+        let failure = tokio::time::timeout(Duration::from_secs(1), app.wait_for_terminal())
+            .await
+            .expect("the lane panic should become terminal promptly");
+        assert_eq!(
+            failure,
+            ReplicatedRunnerError::LanePanicked {
+                lane: "lane-a".to_owned(),
+            }
+        );
+        assert!(app.is_failed());
+        assert_eq!(app.terminal_failure(), Some(failure.clone()));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), app.shutdown(Duration::from_secs(1)))
+                .await
+                .expect("a saturated peer lane should still observe terminal failure"),
+            Err(failure)
+        );
+        flooding
+            .await
+            .expect("the peer command producer should stop when the lane closes");
+    }
 }

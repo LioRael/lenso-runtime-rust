@@ -21,8 +21,8 @@ use tokio::sync::Notify;
 mod replicated;
 
 pub use replicated::{
-    CrossLaneRequestCatalog, LaneCancellationToken, LaneDiagnosticsSnapshot, LaneInvocationOptions,
-    ReplicatedNativeApp, ReplicatedRunnerError,
+    CrossLaneRequestCatalog, CrossLaneTransferCatalog, LaneCancellationToken,
+    LaneDiagnosticsSnapshot, LaneInvocationOptions, ReplicatedNativeApp, ReplicatedRunnerError,
 };
 
 /// Tokio-backed Runtime Driver used by the native App Runner.
