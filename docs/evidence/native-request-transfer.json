@@ -1,10 +1,11 @@
 {
-  "schema_version": 2,
-  "captured_on": "2026-08-23",
+  "schema_version": 3,
+  "captured_on": "2026-08-24",
   "decision": "ADR-0063",
   "fixture": "module-owned generated Probe client through replicated Runner lanes",
   "requests_per_sample": 100000,
-  "samples": 5,
+  "samples_per_path": 5,
+  "cross_lane_sample_order": [false, true, true, false, true, false, false, true, false, true],
   "build_profile": "release",
   "host": {
     "os": "Darwin 27.0.0 arm64",
@@ -12,19 +13,47 @@
     "rustc": "1.99.0-nightly (375b1431b 2026-07-10)"
   },
   "commands": {
-    "sequential": "cargo test --release -p lenso-runner --test replicated_lane_benchmark request_transfer_benchmark -- --exact --ignored --nocapture",
-    "concurrency_64": "cargo test --release -p lenso-runner --test replicated_lane_benchmark concurrent_request_transfer_benchmark -- --exact --ignored --nocapture"
+    "sequential": "cargo test --release --locked -p lenso-runner --test replicated_lane_benchmark request_transfer_benchmark -- --exact --ignored --nocapture",
+    "concurrency_64": "cargo test --release --locked -p lenso-runner --test replicated_lane_benchmark concurrent_request_transfer_benchmark -- --exact --ignored --nocapture"
   },
   "results": {
     "sequential": {
-      "same_lane_per_second": 2410204.807,
-      "cross_lane_per_second": 47843.347,
-      "cross_lane_ratio": 0.020
+      "same_lane_samples_per_second": [
+        2344375.051,
+        2630165.787,
+        2620370.519,
+        2588421.581,
+        2559328.432
+      ],
+      "cross_lane_samples_per_second": [
+        60070.703,
+        59334.666,
+        61070.283,
+        61678.216,
+        61894.175
+      ],
+      "same_lane_median_per_second": 2588421.581,
+      "cross_lane_median_per_second": 61070.283,
+      "cross_lane_ratio": 0.024
     },
     "concurrency_64": {
-      "same_lane_per_second": 1688505.829,
-      "cross_lane_per_second": 334193.371,
-      "cross_lane_ratio": 0.198
+      "same_lane_samples_per_second": [
+        1972856.805,
+        2057223.355,
+        1953998.002,
+        1831835.923,
+        1899891.560
+      ],
+      "cross_lane_samples_per_second": [
+        500547.682,
+        441758.147,
+        479290.077,
+        442561.673,
+        441135.843
+      ],
+      "same_lane_median_per_second": 1953998.002,
+      "cross_lane_median_per_second": 442561.673,
+      "cross_lane_ratio": 0.226
     }
   }
 }

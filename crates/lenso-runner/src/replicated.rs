@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::TokioDriver;
 
+mod admission;
 mod diagnostics;
 mod error;
 mod interaction_transfer;
@@ -115,6 +116,7 @@ impl LaneCancellationToken {
 type LaneTask = Box<dyn FnOnce(LaneRuntime) + Send + 'static>;
 type LaneSender = mpsc::Sender<LaneTask>;
 type LaneRoute = mpsc::WeakSender<LaneTask>;
+type CrossLaneDiagnostics = (Arc<LaneDiagnosticsState>, ExecutionLaneId, String);
 
 struct LaneShutdown {
     timeout: Duration,
@@ -520,6 +522,44 @@ impl ReplicatedNativeApp {
         self.terminal.wait().await
     }
 
+    fn resolve_request_lane<C: RequestCapability>(
+        &self,
+        caller_instance: &str,
+    ) -> Result<(&LaneHandle, Option<CrossLaneDiagnostics>), RuntimeFailure> {
+        let binding = singular_binding::<C>(&self.plan, caller_instance)?;
+        let consumer = self.plan.module_instance(caller_instance).ok_or_else(|| {
+            RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("binding consumer `{caller_instance}` is absent from the Plan"),
+            }
+        })?;
+        let provider = self
+            .plan
+            .module_instance(binding.provider_instance())
+            .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                detail: format!(
+                    "binding provider `{}` is absent from the Plan",
+                    binding.provider_instance()
+                ),
+            })?;
+        let lane =
+            self.lanes
+                .get(provider.execution_lane())
+                .ok_or_else(|| RuntimeFailure::Internal {
+                    detail: format!(
+                        "Execution Lane `{}` is unavailable",
+                        provider.execution_lane()
+                    ),
+                })?;
+        let diagnostics = (consumer.execution_lane() != provider.execution_lane()).then(|| {
+            (
+                Arc::clone(&self.diagnostics),
+                consumer.execution_lane().clone(),
+                binding.provider_instance().to_owned(),
+            )
+        });
+        Ok((lane, diagnostics))
+    }
+
     /// Invokes one generated request Capability on its Plan-placed provider lane.
     pub async fn invoke<C: RequestCapability>(
         &self,
@@ -542,6 +582,9 @@ impl ReplicatedNativeApp {
     }
 
     /// Invokes one generated request with Driver-relative controls on its provider lane.
+    ///
+    /// A deadline or cancellation observed before the provider Kernel allocates
+    /// an invocation identity reports request ID zero.
     pub async fn invoke_with_options<C: RequestCapability>(
         &self,
         caller_instance: &str,
@@ -555,93 +598,82 @@ impl ReplicatedNativeApp {
         C::DomainError: Send,
     {
         self.ensure_running()?;
-        let binding = singular_binding::<C>(&self.plan, caller_instance)?;
-        let consumer = self.plan.module_instance(caller_instance).ok_or_else(|| {
-            RuntimeFailure::InvalidResolvedPlan {
-                detail: format!("binding consumer `{caller_instance}` is absent from the Plan"),
-            }
-        })?;
-        let provider = self
-            .plan
-            .module_instance(binding.provider_instance())
-            .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
-                detail: format!(
-                    "binding provider `{}` is absent from the Plan",
-                    binding.provider_instance()
-                ),
-            })?;
         // An invocation entering through the Runner can start on the resolved provider owner.
         // Calls originating inside a Module still use the projected cross-lane transfer endpoint.
-        let lane =
-            self.lanes
-                .get(provider.execution_lane())
-                .ok_or_else(|| RuntimeFailure::Internal {
-                    detail: format!(
-                        "Execution Lane `{}` is unavailable",
-                        provider.execution_lane()
-                    ),
-                })?;
-        let cross_lane_diagnostics =
-            (consumer.execution_lane() != provider.execution_lane()).then(|| {
-                (
-                    Arc::clone(&self.diagnostics),
-                    consumer.execution_lane().clone(),
-                    binding.provider_instance().to_owned(),
-                )
-            });
+        let (lane, cross_lane_diagnostics) = self.resolve_request_lane::<C>(caller_instance)?;
         let caller_instance = caller_instance.to_owned();
         let operation = operation.to_owned();
         let deadline = options
             .timeout
             .map(|timeout| self.epoch.elapsed().saturating_add(timeout));
+        let admission_timeout = options.timeout;
+        let admission_cancellation = options.cancellation.clone();
+        let controlled = deadline.is_some() || admission_cancellation.is_some();
         let (completed, completion) = oneshot::channel();
-        lane.commands
-            .send(Box::new(move |lane| {
-                if let Some((diagnostics, caller_lane, provider_instance)) = cross_lane_diagnostics
-                {
-                    diagnostics.record_invocation(
-                        &caller_lane,
-                        &caller_instance,
-                        &provider_instance,
-                    );
-                }
-                tokio::task::spawn_local(async move {
-                    let handle = match lane.request_handle::<C>(&caller_instance) {
-                        Ok(handle) => handle,
-                        Err(error) => {
-                            let _ = completed.send(Err(error));
-                            return;
-                        }
-                    };
-                    let cancellation = CancellationToken::new();
-                    let external_cancellation = options.cancellation;
-                    if external_cancellation
-                        .as_ref()
-                        .is_some_and(LaneCancellationToken::is_cancelled)
-                    {
-                        cancellation.cancel();
+        let (started, start) = if controlled {
+            let (started, start) = oneshot::channel();
+            (Some(started), Some(start))
+        } else {
+            (None, None)
+        };
+        let task = Box::new(move |lane: LaneRuntime| {
+            if let Some((diagnostics, caller_lane, provider_instance)) = cross_lane_diagnostics {
+                diagnostics.record_invocation(&caller_lane, &caller_instance, &provider_instance);
+            }
+            tokio::task::spawn_local(async move {
+                let handle = match lane.request_handle::<C>(&caller_instance) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        let _ = completed.send(Err(error));
+                        return;
                     }
-                    let invocation = if deadline.is_some() || external_cancellation.is_some() {
-                        let context = lane.app.invocation_context(deadline, cancellation.clone());
-                        Either::Left(handle.invoke_with_context(&operation, context, request))
-                    } else {
-                        Either::Right(handle.invoke(&operation, request))
-                    };
-                    tokio::pin!(invocation);
-                    let result = if let Some(external_cancellation) = external_cancellation {
-                        tokio::select! {
-                            result = &mut invocation => result,
-                            () = external_cancellation.cancelled() => {
-                                cancellation.cancel();
-                                invocation.await
-                            }
+                };
+                let cancellation = CancellationToken::new();
+                let external_cancellation = options.cancellation;
+                if external_cancellation
+                    .as_ref()
+                    .is_some_and(LaneCancellationToken::is_cancelled)
+                {
+                    cancellation.cancel();
+                }
+                let invocation = if deadline.is_some() || external_cancellation.is_some() {
+                    let context = lane.app.invocation_context(deadline, cancellation.clone());
+                    if let Some(started) = started {
+                        let _ = started.send(());
+                    }
+                    Either::Left(handle.invoke_with_context(&operation, context, request))
+                } else {
+                    Either::Right(handle.invoke(&operation, request))
+                };
+                tokio::pin!(invocation);
+                let result = if let Some(external_cancellation) = external_cancellation {
+                    tokio::select! {
+                        result = &mut invocation => result,
+                        () = external_cancellation.cancelled() => {
+                            cancellation.cancel();
+                            invocation.await
                         }
-                    } else {
-                        invocation.await
-                    };
-                    let _ = completed.send(result);
-                });
-            }))
+                    }
+                } else {
+                    invocation.await
+                };
+                let _ = completed.send(result);
+            });
+        });
+        if let Some(start) = start {
+            return admission::dispatch_controlled(
+                &lane.id,
+                &lane.commands,
+                task,
+                start,
+                completion,
+                admission_timeout,
+                admission_cancellation,
+            )
+            .await?;
+        }
+        lane.commands
+            .send(task)
             .await
             .map_err(|_| RuntimeFailure::Internal {
                 detail: format!("Execution Lane `{}` is unavailable", lane.id),
