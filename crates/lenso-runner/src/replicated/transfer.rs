@@ -1,16 +1,26 @@
 use std::{
-    any::Any, collections::BTreeMap, fmt, marker::PhantomData, rc::Rc, sync::Arc, time::Instant,
+    any::Any,
+    collections::BTreeMap,
+    fmt,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll},
+    time::Instant,
 };
 
-use futures::future::LocalBoxFuture;
+use super::{LaneRoute, LaneTask};
+use futures::{future::LocalBoxFuture, task::AtomicWaker};
 use lenso_app_plan::ResolvedAppPlan;
 use lenso_kernel::{
     CancellationToken, InvocationContext, NativeRequestEndpoint, NativeRequestFuture,
     RequestCapability, RuntimeFailure, TypedNativeRequestEndpoint,
 };
-use tokio::sync::watch;
-
-use super::{LaneRoute, LaneTask};
 
 trait RequestTransferFactory: fmt::Debug + Send + Sync {
     fn endpoint(&self, provider_lane: LaneRoute, epoch: Instant) -> Rc<dyn NativeRequestEndpoint>;
@@ -231,9 +241,9 @@ where
         let command: LaneTask = Box::new(move |lane| {
             tokio::task::spawn_local(async move {
                 let local_cancellation = CancellationToken::new();
-                let (context, mut transferred_cancellation) =
+                let (context, transferred_cancellation) =
                     transferred.restore(local_cancellation.clone());
-                if *transferred_cancellation.borrow() {
+                if transferred_cancellation.is_cancelled() {
                     local_cancellation.cancel();
                 }
                 let handle = match lane.request_handle::<C>(&caller_instance) {
@@ -250,7 +260,7 @@ where
                 } else {
                     tokio::select! {
                         result = &mut invocation => result,
-                        () = wait_for_cancellation(&mut transferred_cancellation) => {
+                        () = transferred_cancellation.cancelled() => {
                             local_cancellation.cancel();
                             invocation.await
                         }
@@ -270,11 +280,11 @@ where
             tokio::select! {
                 result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
                 () = &mut cancelled => {
-                    cancellation_signal.send_replace(true);
+                    cancellation_signal.cancel();
                     return Err(RuntimeFailure::Cancelled { request_id });
                 }
                 () = &mut sleep => {
-                    cancellation_signal.send_replace(true);
+                    cancellation_signal.cancel();
                     return Err(RuntimeFailure::DeadlineExceeded { request_id });
                 }
             }
@@ -282,11 +292,11 @@ where
                 biased;
                 result = completion => result.map_err(|_| lane_unavailable::<C>())?,
                 () = &mut cancelled => {
-                    cancellation_signal.send_replace(true);
+                    cancellation_signal.cancel();
                     Err(RuntimeFailure::Cancelled { request_id })
                 }
                 () = &mut sleep => {
-                    cancellation_signal.send_replace(true);
+                    cancellation_signal.cancel();
                     Err(RuntimeFailure::DeadlineExceeded { request_id })
                 }
             }
@@ -294,7 +304,7 @@ where
             tokio::select! {
                 result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
                 () = &mut cancelled => {
-                    cancellation_signal.send_replace(true);
+                    cancellation_signal.cancel();
                     return Err(RuntimeFailure::Cancelled { request_id });
                 }
             }
@@ -302,7 +312,7 @@ where
                 biased;
                 result = completion => result.map_err(|_| lane_unavailable::<C>())?,
                 () = &mut cancelled => {
-                    cancellation_signal.send_replace(true);
+                    cancellation_signal.cancel();
                     Err(RuntimeFailure::Cancelled { request_id })
                 }
             }
@@ -320,30 +330,30 @@ fn lane_unavailable<C: RequestCapability>() -> RuntimeFailure {
 struct TransferredInvocationContext {
     request_id: u64,
     deadline: Option<std::time::Duration>,
-    cancellation: watch::Receiver<bool>,
+    cancellation: Arc<TransferredCancellation>,
     extensions: Vec<lenso_kernel::InvocationExtension>,
     sealed_extensions: Vec<lenso_kernel::SealedInvocationExtension>,
 }
 
 impl TransferredInvocationContext {
-    fn capture(context: &InvocationContext) -> (Self, watch::Sender<bool>) {
-        let (cancellation_signal, cancellation) = watch::channel(context.is_cancelled());
+    fn capture(context: &InvocationContext) -> (Self, Arc<TransferredCancellation>) {
+        let cancellation = Arc::new(TransferredCancellation::new(context.is_cancelled()));
         (
             Self {
                 request_id: context.request_id(),
                 deadline: context.deadline(),
-                cancellation,
+                cancellation: Arc::clone(&cancellation),
                 extensions: context.extensions().cloned().collect(),
                 sealed_extensions: context.sealed_extensions().cloned().collect(),
             },
-            cancellation_signal,
+            cancellation,
         )
     }
 
     fn restore(
         self,
         cancellation: CancellationToken,
-    ) -> (InvocationContext, watch::Receiver<bool>) {
+    ) -> (InvocationContext, Arc<TransferredCancellation>) {
         let mut context = InvocationContext::new(self.request_id, self.deadline, cancellation);
         for extension in self.extensions {
             context = context
@@ -359,13 +369,81 @@ impl TransferredInvocationContext {
     }
 }
 
-async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
-    loop {
-        if *cancellation.borrow_and_update() {
-            return;
+#[derive(Debug)]
+struct TransferredCancellation {
+    // A transferred invocation has exactly one provider-side waiter.
+    cancelled: AtomicBool,
+    waker: AtomicWaker,
+}
+
+impl TransferredCancellation {
+    fn new(cancelled: bool) -> Self {
+        Self {
+            cancelled: AtomicBool::new(cancelled),
+            waker: AtomicWaker::new(),
         }
-        if cancellation.changed().await.is_err() {
-            return;
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn cancel(&self) {
+        if !self.cancelled.swap(true, Ordering::AcqRel) {
+            self.waker.wake();
         }
+    }
+
+    fn cancelled(&self) -> TransferredCancellationFuture<'_> {
+        TransferredCancellationFuture { cancellation: self }
+    }
+}
+
+struct TransferredCancellationFuture<'a> {
+    cancellation: &'a TransferredCancellation,
+}
+
+impl Future for TransferredCancellationFuture<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.cancellation.is_cancelled() {
+            return Poll::Ready(());
+        }
+        self.cancellation.waker.register(context.waker());
+        if self.cancellation.is_cancelled() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::TransferredCancellation;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transferred_cancellation_observes_an_initial_signal() {
+        let cancellation = TransferredCancellation::new(true);
+
+        cancellation.cancelled().await;
+
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transferred_cancellation_wakes_the_provider_waiter() {
+        let cancellation = Arc::new(TransferredCancellation::new(false));
+        let canceller = Arc::clone(&cancellation);
+
+        tokio::join!(cancellation.cancelled(), async move {
+            tokio::task::yield_now().await;
+            canceller.cancel();
+        });
+
+        assert!(cancellation.is_cancelled());
     }
 }
