@@ -209,9 +209,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-kernel"
-version = "0.1.1"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f31faf46ab8af5434711faabce84a1bd9bddd9c97ac778e138518b35d8023d12"
+checksum = "82e04e66c31fac8ae52b3bdcef6f381e9fbca302690adf3c2d179b8920a815cc"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-runtime-conformance"
-version = "0.1.1"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7331de1bc3a5d659e6b66570875cc4c6ea68a5a6f0e2519895f03b55d84f5400"
+checksum = "b9cfe87d4bd5e7b1c76a0e2fa3f820be1cbca4cb7769b3263df176289dfd3e75"
 dependencies = [
  "futures",
  "lenso-app-plan",
