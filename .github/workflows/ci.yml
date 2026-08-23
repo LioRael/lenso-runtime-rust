@@ -12,6 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Reject machine-local paths in evidence
+        run: |
+          if git grep -n -E '/(Users|home)/[^/]+' -- docs/evidence; then
+            echo '::error::Evidence must use portable commands, not machine-local home paths.'
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown,wasm32-wasip2

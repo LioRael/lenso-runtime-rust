@@ -11,7 +11,7 @@
     "cpu": "Apple M2 Pro",
     "rustc": "1.99.0-nightly (375b1431b 2026-07-10)"
   },
-  "command": "/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo test --release -p lenso-runner --test replicated_lane_benchmark external_request_routing_benchmark -- --exact --ignored --nocapture",
+  "command": "cargo test --release -p lenso-runner --test replicated_lane_benchmark external_request_routing_benchmark -- --exact --ignored --nocapture",
   "results": {
     "same_lane_per_second": 77473.824,
     "cross_lane_per_second": 81592.953,
