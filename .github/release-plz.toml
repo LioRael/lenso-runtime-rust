@@ -1,6 +1,8 @@
 [workspace]
 # A merged release PR is the only publication boundary. Packages must also opt
 # in through `publish = true` in their manifest.
+# Release PR branches therefore keep release-plz's default `release-plz-`
+# prefix so the release job can recognize their merged commits.
 release_always = false
 changelog_update = false
 git_tag_name = "{{ package }}-v{{ version }}"
