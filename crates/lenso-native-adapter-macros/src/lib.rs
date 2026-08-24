@@ -54,15 +54,20 @@ fn expand_module(
         .as_ref()
         .map(|descriptor| module_descriptor(&package_id, descriptor))
         .transpose()?;
-    if let Some(descriptor) = &descriptor_json {
-        write_descriptor_artifact(descriptor)?;
-    }
     let function_name = &function.sig.ident;
     let generated_module = format_ident!("__lenso_module_{function_name}");
     let descriptor_constant = descriptor_json.map(|descriptor| {
+        let artifact =
+            format!("LENSO_MODULE_DESCRIPTOR_V1\0{descriptor}\0END_LENSO_MODULE_DESCRIPTOR_V1");
+        let artifact_length = artifact.len();
+        let artifact = proc_macro2::Literal::byte_string(artifact.as_bytes());
         quote! {
             /// Generated package-owned Module Descriptor bytes.
             pub const MODULE_DESCRIPTOR_JSON: &str = #descriptor;
+            /// Linker-retained descriptor artifact consumed without executing package code.
+            #[doc(hidden)]
+            #[used]
+            pub static __LENSO_MODULE_DESCRIPTOR_ARTIFACT: [u8; #artifact_length] = *#artifact;
         }
     });
 
@@ -184,22 +189,6 @@ fn complete_module_descriptor(
     generated.insert("criticality".to_owned(), json!("non_critical"));
     serde_json::to_string(&Value::Object(generated))
         .expect("generated Module Descriptor values must serialize")
-}
-
-fn write_descriptor_artifact(descriptor: &str) -> syn::Result<()> {
-    let output = env::var_os("OUT_DIR").ok_or_else(|| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "OUT_DIR is unavailable while deriving Module Descriptor",
-        )
-    })?;
-    let path = PathBuf::from(output).join("lenso.module.json");
-    fs::write(&path, descriptor).map_err(|error| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!("failed to write {}: {error}", path.display()),
-        )
-    })
 }
 
 fn package_id() -> syn::Result<String> {
