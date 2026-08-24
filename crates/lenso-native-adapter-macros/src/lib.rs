@@ -9,24 +9,49 @@ use syn::{ItemFn, LitStr, Token, parse_macro_input};
 
 struct ModuleAttributes {
     descriptor: Option<LitStr>,
+    configuration_schema: Option<LitStr>,
 }
 
 impl syn::parse::Parse for ModuleAttributes {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
-            return Ok(Self { descriptor: None });
+            return Ok(Self {
+                descriptor: None,
+                configuration_schema: None,
+            });
         }
-        let name: syn::Ident = input.parse()?;
-        if name != "descriptor" {
-            return Err(syn::Error::new(name.span(), "expected `descriptor`"));
+        let mut descriptor = None;
+        let mut configuration_schema = None;
+        while !input.is_empty() {
+            let name: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            let value: LitStr = input.parse()?;
+            match name.to_string().as_str() {
+                "descriptor" if descriptor.is_none() => descriptor = Some(value),
+                "configuration_schema" if configuration_schema.is_none() => {
+                    configuration_schema = Some(value);
+                }
+                "descriptor" | "configuration_schema" => {
+                    return Err(syn::Error::new(name.span(), "duplicate Module attribute"));
+                }
+                _ => {
+                    return Err(syn::Error::new(
+                        name.span(),
+                        "expected `descriptor` or `configuration_schema`",
+                    ));
+                }
+            }
+            if input.is_empty() {
+                break;
+            }
+            input.parse::<Token![,]>()?;
         }
-        input.parse::<Token![=]>()?;
-        let descriptor = input.parse()?;
-        if !input.is_empty() {
-            return Err(input.error("unexpected Module attribute input"));
+        if descriptor.is_none() && configuration_schema.is_some() {
+            return Err(input.error("`configuration_schema` requires `descriptor`"));
         }
         Ok(Self {
-            descriptor: Some(descriptor),
+            descriptor,
+            configuration_schema,
         })
     }
 }
@@ -52,7 +77,13 @@ fn expand_module(
     let descriptor_json = attributes
         .descriptor
         .as_ref()
-        .map(|descriptor| module_descriptor(&package_id, descriptor))
+        .map(|descriptor| {
+            module_descriptor(
+                &package_id,
+                descriptor,
+                attributes.configuration_schema.as_ref(),
+            )
+        })
         .transpose()?;
     let function_name = &function.sig.ident;
     let generated_module = format_ident!("__lenso_module_{function_name}");
@@ -61,6 +92,11 @@ fn expand_module(
             format!("LENSO_MODULE_DESCRIPTOR_V1\0{descriptor}\0END_LENSO_MODULE_DESCRIPTOR_V1");
         let artifact_length = artifact.len();
         let artifact = proc_macro2::Literal::byte_string(artifact.as_bytes());
+        let schema_tracking = attributes.configuration_schema.as_ref().map(|schema| {
+            quote! {
+                const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", #schema));
+            }
+        });
         quote! {
             /// Generated package-owned Module Descriptor bytes.
             pub const MODULE_DESCRIPTOR_JSON: &str = #descriptor;
@@ -68,6 +104,7 @@ fn expand_module(
             #[doc(hidden)]
             #[used]
             pub static __LENSO_MODULE_DESCRIPTOR_ARTIFACT: [u8; #artifact_length] = *#artifact;
+            #schema_tracking
         }
     });
 
@@ -121,19 +158,35 @@ fn expand_module(
     })
 }
 
-fn module_descriptor(package_id: &str, descriptor: &LitStr) -> syn::Result<String> {
+fn module_descriptor(
+    package_id: &str,
+    descriptor: &LitStr,
+    configuration_schema: Option<&LitStr>,
+) -> syn::Result<String> {
     let supplied: Value = serde_json::from_str(&descriptor.value()).map_err(|error| {
         syn::Error::new(
             descriptor.span(),
             format!("Module Descriptor input is not valid JSON: {error}"),
         )
     })?;
-    let supplied = supplied.as_object().cloned().ok_or_else(|| {
+    let mut supplied = supplied.as_object().cloned().ok_or_else(|| {
         syn::Error::new(
             descriptor.span(),
             "Module Descriptor input must be an object",
         )
     })?;
+    if supplied.contains_key("configuration_schema") {
+        return Err(syn::Error::new(
+            descriptor.span(),
+            "Module Descriptor input cannot contain `configuration_schema`; use the package-owned schema path attribute",
+        ));
+    }
+    if let Some(schema_path) = configuration_schema {
+        supplied.insert(
+            "configuration_schema".to_owned(),
+            read_configuration_schema(schema_path)?,
+        );
+    }
     for owned in [
         "package_id",
         "package_revision",
@@ -160,6 +213,52 @@ fn module_descriptor(package_id: &str, descriptor: &LitStr) -> syn::Result<Strin
         &package_version,
         supplied,
     ))
+}
+
+fn read_configuration_schema(schema_path: &LitStr) -> syn::Result<Value> {
+    let relative = PathBuf::from(schema_path.value());
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(syn::Error::new(
+            schema_path.span(),
+            "configuration Schema path must stay inside the Module package",
+        ));
+    }
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
+        syn::Error::new(
+            schema_path.span(),
+            "CARGO_MANIFEST_DIR is unavailable while deriving configuration Schema",
+        )
+    })?;
+    let path = PathBuf::from(manifest_dir).join(relative);
+    let bytes = fs::read(&path).map_err(|error| {
+        syn::Error::new(
+            schema_path.span(),
+            format!(
+                "failed to read configuration Schema {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    let schema: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        syn::Error::new(
+            schema_path.span(),
+            format!(
+                "configuration Schema {} is invalid JSON: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    if !schema.is_object() {
+        return Err(syn::Error::new(
+            schema_path.span(),
+            "configuration Schema must be a JSON object",
+        ));
+    }
+    Ok(schema)
 }
 
 fn complete_module_descriptor(
@@ -246,5 +345,17 @@ mod tests {
         assert_eq!(descriptor["execution_class"], "lenso.native-rust@1");
         assert_eq!(descriptor["restart_policy"]["mode"], "never");
         assert_eq!(descriptor["criticality"], "non_critical");
+    }
+
+    #[test]
+    fn package_schema_is_embedded_as_descriptor_data() {
+        let path = LitStr::new(
+            "tests/fixtures/config.schema.json",
+            proc_macro2::Span::call_site(),
+        );
+        let schema = read_configuration_schema(&path).unwrap();
+
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"], json!(["name"]));
     }
 }
