@@ -4,7 +4,32 @@ use std::{env, fs, path::PathBuf};
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{ItemFn, parse_macro_input};
+use serde_json::{Map, Value, json};
+use syn::{ItemFn, LitStr, Token, parse_macro_input};
+
+struct ModuleAttributes {
+    descriptor: Option<LitStr>,
+}
+
+impl syn::parse::Parse for ModuleAttributes {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Self { descriptor: None });
+        }
+        let name: syn::Ident = input.parse()?;
+        if name != "descriptor" {
+            return Err(syn::Error::new(name.span(), "expected `descriptor`"));
+        }
+        input.parse::<Token![=]>()?;
+        let descriptor = input.parse()?;
+        if !input.is_empty() {
+            return Err(input.error("unexpected Module attribute input"));
+        }
+        Ok(Self {
+            descriptor: Some(descriptor),
+        })
+    }
+}
 
 /// Derives the native factory and link-time registration for one Module entrypoint.
 ///
@@ -12,25 +37,34 @@ use syn::{ItemFn, parse_macro_input};
 /// consuming crate's `Cargo.toml`; the package version remains Cargo-owned.
 #[proc_macro_attribute]
 pub fn module(attributes: TokenStream, item: TokenStream) -> TokenStream {
-    if !attributes.is_empty() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "#[lenso::module] does not accept identity arguments; declare package-id in Cargo.toml",
-        )
-        .into_compile_error()
-        .into();
-    }
-
+    let attributes = parse_macro_input!(attributes as ModuleAttributes);
     let function = parse_macro_input!(item as ItemFn);
-    expand_module(&function)
+    expand_module(&attributes, &function)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
 
-fn expand_module(function: &ItemFn) -> syn::Result<proc_macro2::TokenStream> {
+fn expand_module(
+    attributes: &ModuleAttributes,
+    function: &ItemFn,
+) -> syn::Result<proc_macro2::TokenStream> {
     let package_id = package_id()?;
+    let descriptor_json = attributes
+        .descriptor
+        .as_ref()
+        .map(|descriptor| module_descriptor(&package_id, descriptor))
+        .transpose()?;
+    if let Some(descriptor) = &descriptor_json {
+        write_descriptor_artifact(descriptor)?;
+    }
     let function_name = &function.sig.ident;
     let generated_module = format_ident!("__lenso_module_{function_name}");
+    let descriptor_constant = descriptor_json.map(|descriptor| {
+        quote! {
+            /// Generated package-owned Module Descriptor bytes.
+            pub const MODULE_DESCRIPTOR_JSON: &str = #descriptor;
+        }
+    });
 
     Ok(quote! {
         /// Runtime package identity derived from Cargo package metadata.
@@ -39,6 +73,7 @@ fn expand_module(function: &ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
         /// Exact Host Build identity for this linked package.
         pub const FACTORY_IDENTITY: &str = concat!(#package_id, "@", env!("CARGO_PKG_VERSION"));
+        #descriptor_constant
 
         #function
 
@@ -81,6 +116,92 @@ fn expand_module(function: &ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
+fn module_descriptor(package_id: &str, descriptor: &LitStr) -> syn::Result<String> {
+    let supplied: Value = serde_json::from_str(&descriptor.value()).map_err(|error| {
+        syn::Error::new(
+            descriptor.span(),
+            format!("Module Descriptor input is not valid JSON: {error}"),
+        )
+    })?;
+    let supplied = supplied.as_object().cloned().ok_or_else(|| {
+        syn::Error::new(
+            descriptor.span(),
+            "Module Descriptor input must be an object",
+        )
+    })?;
+    for owned in [
+        "package_id",
+        "package_revision",
+        "entrypoint",
+        "execution_class",
+        "restart_policy",
+        "criticality",
+    ] {
+        if supplied.contains_key(owned) {
+            return Err(syn::Error::new(
+                descriptor.span(),
+                format!("Module Descriptor input cannot override generated field `{owned}`"),
+            ));
+        }
+    }
+    let package_version = env::var("CARGO_PKG_VERSION").map_err(|_| {
+        syn::Error::new(
+            descriptor.span(),
+            "CARGO_PKG_VERSION is unavailable while deriving Module Descriptor",
+        )
+    })?;
+    Ok(complete_module_descriptor(
+        package_id,
+        &package_version,
+        supplied,
+    ))
+}
+
+fn complete_module_descriptor(
+    package_id: &str,
+    package_version: &str,
+    mut supplied: Map<String, Value>,
+) -> String {
+    let mut generated = Map::new();
+    generated.insert("package_id".to_owned(), json!(package_id));
+    generated.insert("package_revision".to_owned(), json!(package_version));
+    generated.insert("entrypoint".to_owned(), json!("default"));
+    for (key, value) in std::mem::take(&mut supplied) {
+        generated.insert(key, value);
+    }
+    generated.insert("execution_class".to_owned(), json!("lenso.native-rust@1"));
+    generated.insert(
+        "restart_policy".to_owned(),
+        json!({
+            "mode": "never",
+            "max_attempts": 0,
+            "window": {"secs": 0, "nanos": 0},
+            "backoff": {"secs": 0, "nanos": 0},
+            "stability": {"secs": 0, "nanos": 0},
+            "jitter": {"secs": 0, "nanos": 0}
+        }),
+    );
+    generated.insert("criticality".to_owned(), json!("non_critical"));
+    serde_json::to_string(&Value::Object(generated))
+        .expect("generated Module Descriptor values must serialize")
+}
+
+fn write_descriptor_artifact(descriptor: &str) -> syn::Result<()> {
+    let output = env::var_os("OUT_DIR").ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "OUT_DIR is unavailable while deriving Module Descriptor",
+        )
+    })?;
+    let path = PathBuf::from(output).join("lenso.module.json");
+    fs::write(&path, descriptor).map_err(|error| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("failed to write {}: {error}", path.display()),
+        )
+    })
+}
+
 fn package_id() -> syn::Result<String> {
     let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
         syn::Error::new(
@@ -114,4 +235,27 @@ fn package_id() -> syn::Result<String> {
                 "missing `[package.metadata.lenso] package-id = \"...\"` in Cargo.toml",
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_descriptor_owns_identity_and_execution_defaults() {
+        let supplied = serde_json::from_value::<Map<String, Value>>(json!({
+            "provided_capabilities": [],
+            "required_capabilities": []
+        }))
+        .unwrap();
+        let descriptor = complete_module_descriptor("example.tool", "1.2.3", supplied);
+        let descriptor: Value = serde_json::from_str(&descriptor).unwrap();
+
+        assert_eq!(descriptor["package_id"], "example.tool");
+        assert_eq!(descriptor["package_revision"], "1.2.3");
+        assert_eq!(descriptor["entrypoint"], "default");
+        assert_eq!(descriptor["execution_class"], "lenso.native-rust@1");
+        assert_eq!(descriptor["restart_policy"]["mode"], "never");
+        assert_eq!(descriptor["criticality"], "non_critical");
+    }
 }
