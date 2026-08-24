@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use lenso_app_plan::ResolvedAppPlan;
+use lenso_app_plan::{CapabilityOperationKind, ResolvedAppPlan};
 use lenso_kernel::{ExecutionAdapterCatalog, NativeExecutionAdapter, RuntimeFailure};
 use lenso_native_adapter::{
     NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
@@ -98,6 +98,10 @@ fn store_policy_resolution_and_generation_authority_close() {
                 descriptor_version: "1.0.0".to_owned(),
                 descriptor_digest: digest(b"descriptor"),
                 request_operations: vec!["echo".to_owned()],
+                operation_kinds: BTreeMap::from([(
+                    "echo".to_owned(),
+                    CapabilityOperationKind::Stream,
+                )]),
             }],
             requires: Vec::new(),
             implementations: vec![ImplementationVariant {
@@ -222,6 +226,10 @@ fn store_policy_resolution_and_generation_authority_close() {
     assert_eq!(resolved.artifact_set.value().instances.len(), 1);
     assert_eq!(resolved.spec.value().plugin_set_lock_digest, lock.digest());
     assert!(resolved.artifacts.require("echo-plugin").is_ok());
+    assert_eq!(
+        resolved.plan.module_instances()[0].provided_capabilities()[0].stream_operations(),
+        ["echo"]
+    );
 }
 
 #[test]
