@@ -2,13 +2,34 @@
 
 use std::{collections::BTreeMap, rc::Rc};
 
+#[doc(hidden)]
+pub use inventory as __inventory;
 use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
+pub use lenso_kernel::RuntimeFailure;
+pub use lenso_native_adapter_macros::module;
+
 use lenso_kernel::{
     ModuleLifecycle, NativeEndpointSet, NativeEventEndpoint, NativeExecutionAdapter,
     NativeRequestEndpoint, NativeStreamEndpoint, NoopModuleLifecycle, PreparedBinding,
     PreparedEventBinding, PreparedNativeApp, PreparedNativeModule, PreparedStreamBinding,
-    RuntimeFailure,
 };
+
+/// One native Module factory contributed to the Host's link-time catalog.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+pub struct LinkedNativeModuleFactory {
+    constructor: fn() -> Rc<dyn NativeModuleFactory>,
+}
+
+impl LinkedNativeModuleFactory {
+    /// Creates a link-time catalog record. Intended for generated authoring glue.
+    #[doc(hidden)]
+    pub const fn new(constructor: fn() -> Rc<dyn NativeModuleFactory>) -> Self {
+        Self { constructor }
+    }
+}
+
+inventory::collect!(LinkedNativeModuleFactory);
 
 /// Endpoints created for one statically linked Module Instance generation.
 #[derive(Debug)]
@@ -195,6 +216,27 @@ impl NativeModuleRegistry {
     /// Creates an empty linked-factory registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Adds every Module factory contributed to this Host at link time.
+    ///
+    /// This catalog describes code available in the binary. The Resolved App
+    /// Plan remains the sole authority that selects and binds Module Instances.
+    #[must_use]
+    pub fn with_linked_factories(mut self) -> Self {
+        self.factories.extend(
+            inventory::iter::<LinkedNativeModuleFactory>
+                .into_iter()
+                .map(|linked| (linked.constructor)()),
+        );
+        self.factories
+            .sort_by_key(|factory| factory.factory_identity());
+        self
+    }
+
+    /// Returns the exact native factories available to this registry.
+    pub fn factories(&self) -> impl Iterator<Item = &dyn NativeModuleFactory> {
+        self.factories.iter().map(std::convert::AsRef::as_ref)
     }
     /// Adds one statically linked factory.
     #[must_use]
