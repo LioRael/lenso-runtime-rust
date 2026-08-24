@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use lenso_app_plan::ResolvedAppPlan;
-use lenso_kernel::ExecutionAdapterCatalog;
+use lenso_kernel::{ExecutionAdapterCatalog, NativeExecutionAdapter, RuntimeFailure};
+use lenso_native_adapter::{
+    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+};
 use lenso_plugin_control_plane::*;
 use lenso_runtime_codec::ArtifactCatalog;
 use sha2::{Digest, Sha256};
@@ -29,6 +32,30 @@ impl AdmissionPolicy for AllowExact {
 
     fn identity(&self) -> &'static str {
         "test.allow-exact@1"
+    }
+}
+
+#[derive(Debug)]
+struct BuiltInPluginFactory;
+
+impl NativeModuleFactory for BuiltInPluginFactory {
+    fn package_id(&self) -> &'static str {
+        "example.builtin"
+    }
+
+    fn package_version(&self) -> &'static str {
+        "1.0.0"
+    }
+
+    fn factory_identity(&self) -> String {
+        "example.builtin@host-build-a".to_owned()
+    }
+
+    fn instantiate(
+        &self,
+        _context: NativeModuleFactoryContext<'_>,
+    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        Ok(NativeModuleInstance::default())
     }
 }
 
@@ -195,6 +222,146 @@ fn store_policy_resolution_and_generation_authority_close() {
     assert_eq!(resolved.artifact_set.value().instances.len(), 1);
     assert_eq!(resolved.spec.value().plugin_set_lock_digest, lock.digest());
     assert!(resolved.artifacts.require("echo-plugin").is_ok());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn built_in_plugin_factory_identity_closes_into_native_preparation() {
+    let factory = BuiltInPluginFactory;
+    let factory_identity = factory.factory_identity();
+    let manifest = PluginManifest {
+        schema_version: 1,
+        plugin_id: "example.builtin-plugin".to_owned(),
+        release_version: "1.0.0".to_owned(),
+        artifacts: Vec::new(),
+        module_contributions: vec![ModuleContribution {
+            id: "builtin".to_owned(),
+            package_id: factory.package_id().to_owned(),
+            configuration_schema_digest: digest(b"configuration"),
+            provides: Vec::new(),
+            requires: Vec::new(),
+            implementations: vec![ImplementationVariant {
+                id: "native".to_owned(),
+                artifact: None,
+                built_in_factory: Some(factory_identity.clone()),
+                entrypoint: "default".to_owned(),
+                execution_class: "lenso.native-rust@1".to_owned(),
+                targets: vec!["aarch64-apple-darwin".to_owned()],
+                profiles: vec!["native-v1".to_owned()],
+                support_channel: SupportChannel::Stable,
+                trust: TrustLevel::Trusted,
+            }],
+            permission_request_ids: Vec::new(),
+            state: None,
+        }],
+        data_contributions: Vec::new(),
+        permission_requests: Vec::new(),
+        features: Vec::new(),
+        binding_templates: Vec::new(),
+        product_metadata: Vec::new(),
+    };
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    let store_directory = tempfile::tempdir().unwrap();
+    let store = PluginStore::open(store_directory.path()).unwrap();
+    let receipt = store
+        .admit(
+            &PluginBundle::new(manifest_bytes.clone(), BTreeMap::new(), "local-review"),
+            &AllowExact,
+        )
+        .unwrap();
+    let manifest = CanonicalDocument::<PluginManifest>::parse("manifest", &manifest_bytes).unwrap();
+    let lock = CanonicalDocument::from_value(
+        "lock",
+        PluginSetLock {
+            schema_version: 1,
+            app_id: "example-app".to_owned(),
+            plugins: vec![LockedPlugin {
+                plugin_id: "example.builtin-plugin".to_owned(),
+                release_version: "1.0.0".to_owned(),
+                manifest_digest: manifest.digest().to_owned(),
+                selected_features: Vec::new(),
+                product_metadata_digests: Vec::new(),
+            }],
+            instances: vec![LockedInstance {
+                plugin_id: "example.builtin-plugin".to_owned(),
+                contribution_id: "builtin".to_owned(),
+                instance_key: "builtin-plugin".to_owned(),
+                implementation_variant: None,
+                configuration: "{}".to_owned(),
+                execution_lane: "main".to_owned(),
+            }],
+            data_mounts: Vec::new(),
+            approved_grants: Vec::new(),
+        },
+    )
+    .unwrap();
+    let host_build = CanonicalDocument::from_value(
+        "host build",
+        HostBuildManifest {
+            schema_version: 1,
+            app_id: "example-app".to_owned(),
+            host_executable_digest: digest(b"host"),
+            target: "aarch64-apple-darwin".to_owned(),
+            built_in_modules: vec![BuiltInModule {
+                package_id: factory.package_id().to_owned(),
+                factory_identity: factory_identity.clone(),
+                execution_class: "lenso.native-rust@1".to_owned(),
+            }],
+            adapter_profiles: vec![AdapterProfile {
+                execution_class: "lenso.native-rust@1".to_owned(),
+                adapter_build_identity: "lenso-native-adapter@0.1.2".to_owned(),
+                targets: vec!["aarch64-apple-darwin".to_owned()],
+                profiles: vec!["native-v1".to_owned()],
+            }],
+        },
+    )
+    .unwrap();
+    let policy = CanonicalDocument::from_value(
+        "execution policy",
+        HostExecutionPolicy {
+            schema_version: 1,
+            app_id: "example-app".to_owned(),
+            host_build_manifest_digest: host_build.digest().to_owned(),
+            target: "aarch64-apple-darwin".to_owned(),
+            classes: vec![ClassPolicy {
+                execution_class: "lenso.native-rust@1".to_owned(),
+                support_channels: vec![SupportChannel::Stable],
+                trust_levels: vec![TrustLevel::Trusted],
+                profiles: vec!["native-v1".to_owned()],
+            }],
+            preference: vec!["lenso.native-rust@1".to_owned()],
+            instance_overrides: Vec::new(),
+        },
+    )
+    .unwrap();
+    let mut manifests = BTreeMap::new();
+    manifests.insert("example.builtin-plugin".to_owned(), manifest);
+    let mut receipts = BTreeMap::new();
+    receipts.insert(
+        lock.value().plugins[0].manifest_digest.clone(),
+        receipt.digest().to_owned(),
+    );
+
+    let resolved = resolve_generation(&ResolutionInput {
+        lock: &lock,
+        manifests: &manifests,
+        admission_receipts: &receipts,
+        host_build: &host_build,
+        policy: &policy,
+        store: &store,
+        base_instances: Vec::new(),
+        bindings: Vec::new(),
+    })
+    .unwrap();
+
+    assert_eq!(
+        resolved.plan.module_instances()[0].package_revision(),
+        factory_identity
+    );
+    NativeModuleRegistry::new()
+        .with_factory(factory)
+        .prepare(&resolved.plan)
+        .expect("the exact built-in factory identity should prepare natively");
 }
 
 #[derive(Debug, Default)]
