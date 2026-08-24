@@ -1,0 +1,161 @@
+use std::{any::Any, process::Command, time::Duration};
+
+use futures::FutureExt;
+use lenso_app_plan::{
+    CapabilityEndpointPlan, ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
+};
+use lenso_kernel::{CancellationToken, ExecutionAdapter, InvocationContext, RuntimeFailure};
+use lenso_runtime_codec::{ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec};
+use lenso_wasm_component_adapter::{EXECUTION_CLASS, WasmComponentAdapter, WasmComponentLimits};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+#[derive(Debug)]
+struct EchoCodec;
+
+impl JsonCapabilityCodec for EchoCodec {
+    fn capability_id(&self) -> &'static str {
+        "test.echo@1"
+    }
+    fn descriptor_version(&self) -> &'static str {
+        "1.0.0"
+    }
+    fn request_operations(&self) -> &'static [&'static str] {
+        &["echo", "fail", "trap", "loop"]
+    }
+    fn encode_request(&self, _operation: &str, request: &dyn Any) -> Result<Value, RuntimeFailure> {
+        request
+            .downcast_ref::<u64>()
+            .copied()
+            .map(Value::from)
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: self.capability_id(),
+            })
+    }
+    fn decode_response(
+        &self,
+        _operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        value
+            .as_u64()
+            .map(|value| Box::new(value) as Box<dyn Any>)
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: self.capability_id(),
+            })
+    }
+    fn decode_domain_error(
+        &self,
+        _operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        value
+            .as_str()
+            .map(|value| Box::new(value.to_owned()) as Box<dyn Any>)
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: self.capability_id(),
+            })
+    }
+}
+
+#[test]
+fn real_component_runs_without_wasi_and_retires_on_trap_or_cancellation() {
+    let fixture_target = tempfile::tempdir().unwrap();
+    let status = Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--manifest-path",
+            "tests/fixtures/rust-guest/Cargo.toml",
+            "--target-dir",
+        ])
+        .arg(fixture_target.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let core = std::fs::read(
+        fixture_target
+            .path()
+            .join("wasm32-unknown-unknown/release/lenso_wasm_test_guest.wasm"),
+    )
+    .unwrap();
+    let component = wit_component::ComponentEncoder::default()
+        .module(&core)
+        .unwrap()
+        .validate(true)
+        .encode()
+        .unwrap();
+    let artifact_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(artifact_file.path(), &component).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&component)));
+    let artifact =
+        ArtifactHandle::open(artifact_file.path(), &digest, component.len() as u64).unwrap();
+    let artifacts = ArtifactCatalog::new()
+        .with_artifact("plugin", artifact)
+        .unwrap();
+    let adapter = WasmComponentAdapter::new(artifacts)
+        .with_codec(EchoCodec)
+        .with_limits(WasmComponentLimits {
+            max_turn: Duration::from_millis(50),
+            ..WasmComponentLimits::default()
+        });
+    let plan = plan();
+    let generation = adapter.recreate(&plan, "plugin").unwrap();
+    let endpoint = generation.endpoints()[0].clone();
+
+    let context = InvocationContext::new(1, None, CancellationToken::new());
+    let Ok(Ok(response)) =
+        futures::executor::block_on(endpoint.invoke("echo", Box::new(9_u64), context))
+    else {
+        panic!("Component echo did not succeed");
+    };
+    assert_eq!(*response.downcast::<u64>().unwrap(), 9);
+
+    let context = InvocationContext::new(2, None, CancellationToken::new());
+    let Ok(Err(error)) =
+        futures::executor::block_on(endpoint.invoke("fail", Box::new(0_u64), context))
+    else {
+        panic!("Component fail did not return a Domain Error");
+    };
+    assert_eq!(*error.downcast::<String>().unwrap(), "declared");
+
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let invocation = endpoint
+        .invoke(
+            "loop",
+            Box::new(0_u64),
+            InvocationContext::new(3, None, cancellation),
+        )
+        .fuse();
+    let cancellation = async move {
+        futures::future::ready(()).await;
+        cancel.cancel();
+    };
+    let (failure, ()) =
+        futures::executor::block_on(async { futures::join!(invocation, cancellation) });
+    assert!(matches!(
+        failure,
+        Err(RuntimeFailure::Cancelled { request_id: 3 })
+    ));
+    assert!(adapter.recreate(&plan, "plugin").is_ok());
+}
+
+fn plan() -> ResolvedAppPlan {
+    ResolvedAppPlan::new(
+        vec![
+            ModuleInstancePlan::new("plugin", "test.component")
+                .with_entrypoint("plugin")
+                .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
+                .with_capability(CapabilityEndpointPlan::new(
+                    "test.echo@1",
+                    "1.0.0",
+                    ["echo", "fail", "trap", "loop"],
+                )),
+        ],
+        Vec::new(),
+    )
+}

@@ -1,0 +1,25 @@
+[package]
+name = "lenso-wasm-component-adapter"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+description = "Wasmtime Component Model Execution Adapter for Lenso Module artifacts."
+
+[dependencies]
+futures.workspace = true
+lenso-app-plan.workspace = true
+lenso-kernel.workspace = true
+lenso-runtime-codec = { path = "../lenso-runtime-codec" }
+serde_json.workspace = true
+wasmtime = { version = "47.0.1", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+
+[dev-dependencies]
+hex.workspace = true
+sha2.workspace = true
+tempfile = "3"
+wit-component = "0.252"
+
+[lints]
+workspace = true
