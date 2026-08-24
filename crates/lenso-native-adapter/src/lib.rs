@@ -113,6 +113,20 @@ pub trait NativeModuleFactory: std::fmt::Debug + 'static {
     fn package_version(&self) -> &'static str {
         ""
     }
+    /// Immutable factory identity advertised by the exact Host Build Manifest.
+    ///
+    /// Plugin-resolved Plans carry this value as their package revision. The
+    /// default keeps ordinary statically linked factories unique by package and
+    /// version while allowing a factory to override the identity when its build
+    /// authority is more specific than a Cargo package version.
+    fn factory_identity(&self) -> String {
+        let version = self.package_version();
+        if version.is_empty() {
+            self.package_id().to_owned()
+        } else {
+            format!("{}@{version}", self.package_id())
+        }
+    }
     /// Creates a fresh Module Instance generation.
     fn instantiate(
         &self,
@@ -173,7 +187,8 @@ fn factory_matches(
 ) -> bool {
     factory.package_id() == expected.package_id()
         && (expected.package_revision().is_empty()
-            || factory.package_version() == expected.package_revision())
+            || factory.package_version() == expected.package_revision()
+            || factory.factory_identity() == expected.package_revision())
 }
 
 impl NativeModuleRegistry {

@@ -656,6 +656,7 @@ dependencies = [
  "lenso-app-plan",
  "lenso-dylib-adapter",
  "lenso-kernel",
+ "lenso-native-adapter",
  "lenso-quickjs-adapter",
  "lenso-runner",
  "lenso-runtime-codec",

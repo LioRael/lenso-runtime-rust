@@ -32,6 +32,37 @@ impl NativeModuleFactory for RecordingFactory {
     }
 }
 
+#[derive(Debug)]
+struct PluginFactory {
+    observed: Rc<RefCell<Vec<(String, String, String)>>>,
+}
+
+impl NativeModuleFactory for PluginFactory {
+    fn package_id(&self) -> &'static str {
+        "test.configured"
+    }
+
+    fn package_version(&self) -> &'static str {
+        "1.0.0"
+    }
+
+    fn factory_identity(&self) -> String {
+        "test.configured@host-build-a".to_owned()
+    }
+
+    fn instantiate(
+        &self,
+        context: NativeModuleFactoryContext<'_>,
+    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        self.observed.borrow_mut().push((
+            context.instance_key().to_owned(),
+            context.entrypoint().to_owned(),
+            context.configuration().to_owned(),
+        ));
+        Ok(NativeModuleInstance::default())
+    }
+}
+
 #[test]
 fn native_factory_version_must_match_the_authoring_resolved_version() {
     let observed = Rc::new(RefCell::new(Vec::new()));
@@ -50,6 +81,38 @@ fn native_factory_version_must_match_the_authoring_resolved_version() {
         ))
         .expect_err("a differently linked Cargo package must be rejected");
     assert!(matches!(error, RuntimeFailure::MissingModuleFactory { .. }));
+}
+
+#[test]
+fn native_factory_identity_matches_a_plugin_resolved_revision() {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let plan = ResolvedAppPlan::new(
+        vec![
+            ModuleInstancePlan::new("configured", "test.configured")
+                .with_package_revision("test.configured@host-build-a"),
+        ],
+        vec![],
+    );
+    let driver = DeterministicDriver::new();
+
+    driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativeModuleRegistry::new().with_factory(PluginFactory {
+                observed: observed.clone(),
+            }),
+        ))
+        .expect("the Plugin-resolved factory identity should select the linked factory");
+
+    assert_eq!(
+        *observed.borrow(),
+        vec![(
+            "configured".to_owned(),
+            "default".to_owned(),
+            "{}".to_owned(),
+        )]
+    );
 }
 
 #[test]
