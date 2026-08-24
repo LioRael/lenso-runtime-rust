@@ -4,6 +4,7 @@ members = [
     "crates/lenso-browser-driver",
     "crates/lenso-dylib-adapter",
     "crates/lenso-native-adapter",
+    "crates/lenso-native-adapter-macros",
     "crates/lenso-plugin-control-plane",
     "crates/lenso-quickjs-adapter",
     "crates/lenso-runner",
@@ -22,6 +23,7 @@ rust-version = "1.94"
 [workspace.dependencies]
 futures = "0.3"
 hex = "0.4"
+inventory = "0.3"
 lenso-app-plan = "0.1.1"
 lenso-kernel = "0.1.5"
 serde = { version = "1", features = ["derive"] }
