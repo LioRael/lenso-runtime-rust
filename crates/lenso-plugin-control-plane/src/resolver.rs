@@ -197,11 +197,15 @@ pub fn resolve_generation(
             .with_execution_lane(ExecutionLaneId::new(&locked.execution_lane))
             .with_package_revision(revision);
         for provided in &contribution.provides {
-            instance = instance.with_capability(CapabilityEndpointPlan::new(
+            let mut endpoint = CapabilityEndpointPlan::new(
                 &provided.capability_id,
                 &provided.descriptor_version,
                 provided.request_operations.clone(),
-            ));
+            );
+            for (operation, kind) in &provided.operation_kinds {
+                endpoint = endpoint.with_operation_kind(operation, *kind);
+            }
+            instance = instance.with_capability(endpoint);
         }
         for required in &contribution.requires {
             let cardinality = match required.cardinality {

@@ -382,7 +382,14 @@ fn validate_manifest(manifest: &PluginManifest) -> Result<(), ControlPlaneError>
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>();
-            ensure_strictly_sorted_unique(&operations, "Request Operation")?;
+            ensure_strictly_sorted_unique(&operations, "Capability Operation")?;
+            if capability
+                .operation_kinds
+                .keys()
+                .any(|operation| !operations.contains(&operation.as_str()))
+            {
+                return rejected("Capability interaction kind references an unknown Operation");
+            }
         }
         let required = contribution
             .requires
@@ -676,5 +683,63 @@ fn rejected<T>(detail: impl Into<String>) -> Result<T, ControlPlaneError> {
 fn store_error(error: impl std::fmt::Display) -> ControlPlaneError {
     ControlPlaneError::StoreFailure {
         detail: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lenso_app_plan::CapabilityOperationKind;
+
+    use super::*;
+    use crate::{
+        CapabilityDeclaration, ImplementationVariant, ModuleContribution, SupportChannel,
+        TrustLevel,
+    };
+
+    #[test]
+    fn interaction_kind_must_name_a_declared_operation() {
+        let manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "example.invalid-kind".to_owned(),
+            release_version: "1.0.0".to_owned(),
+            artifacts: Vec::new(),
+            module_contributions: vec![ModuleContribution {
+                id: "provider".to_owned(),
+                package_id: "example.provider".to_owned(),
+                configuration_schema_digest: sha256_digest(b"configuration"),
+                provides: vec![CapabilityDeclaration {
+                    capability_id: "example.echo@1".to_owned(),
+                    descriptor_version: "1.0.0".to_owned(),
+                    descriptor_digest: sha256_digest(b"descriptor"),
+                    request_operations: vec!["echo".to_owned()],
+                    operation_kinds: BTreeMap::from([(
+                        "missing".to_owned(),
+                        CapabilityOperationKind::Stream,
+                    )]),
+                }],
+                requires: Vec::new(),
+                implementations: vec![ImplementationVariant {
+                    id: "native".to_owned(),
+                    artifact: None,
+                    built_in_factory: Some("example.provider@1.0.0".to_owned()),
+                    entrypoint: "default".to_owned(),
+                    execution_class: "lenso.native-rust@1".to_owned(),
+                    targets: vec!["test-target".to_owned()],
+                    profiles: vec!["test-v1".to_owned()],
+                    support_channel: SupportChannel::Stable,
+                    trust: TrustLevel::Trusted,
+                }],
+                permission_request_ids: Vec::new(),
+                state: None,
+            }],
+            data_contributions: Vec::new(),
+            permission_requests: Vec::new(),
+            features: Vec::new(),
+            binding_templates: Vec::new(),
+            product_metadata: Vec::new(),
+        };
+
+        let error = validate_manifest(&manifest).unwrap_err();
+        assert!(error.to_string().contains("unknown Operation"));
     }
 }

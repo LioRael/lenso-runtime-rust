@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use lenso_app_plan::CapabilityOperationKind;
 use serde::{Deserialize, Serialize};
 
 /// Publisher-owned immutable Plugin Release manifest.
@@ -110,14 +111,18 @@ pub struct StateDeclaration {
     pub state_schema_digest: String,
 }
 
-/// Exact Capability Descriptor identity and Request Operation table.
+/// Exact Capability Descriptor identity and Operation interaction table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityDeclaration {
     pub capability_id: String,
     pub descriptor_version: String,
     pub descriptor_digest: String,
+    /// Historical field name for the complete ordered Operation table.
     pub request_operations: Vec<String>,
+    /// Non-Request interaction kinds; omitted Operations default to Request.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_kinds: BTreeMap<String, CapabilityOperationKind>,
 }
 
 /// One required Capability identity and cardinality.
@@ -169,6 +174,20 @@ pub enum TrustLevel {
     Constrained,
     Isolated,
     Trusted,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_request_capability_declaration_remains_canonical() {
+        let bytes = br#"{"capability_id":"example.echo@1","descriptor_version":"1.0.0","descriptor_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","request_operations":["echo"]}"#;
+        let declaration: CapabilityDeclaration = serde_json::from_slice(bytes).unwrap();
+
+        assert!(declaration.operation_kinds.is_empty());
+        assert_eq!(serde_json::to_vec(&declaration).unwrap(), bytes);
+    }
 }
 
 /// Inert Data contribution mounted into an explicit interpreter Instance.
