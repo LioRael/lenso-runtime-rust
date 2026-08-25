@@ -25,12 +25,27 @@ struct Greeting {
 }
 
 #[provides(greeting::Greeting)]
-impl greeting::GreetingProvider for Greeting {
-    // Generated Capability Provider methods remain the current behavior seam.
+impl Greeting {
+    async fn greet(
+        &self,
+        _ctx: Ctx,
+        request: greeting::GreetRequest,
+    ) -> Result<greeting::GreetResponse, greeting::GreetError> {
+        let _ = (&self.profile, request);
+        todo!("ordinary async domain behavior")
+    }
 }
 ```
 
-The generated Provider trait is still visible for now. Lowering ordinary
-domain methods into request, stream, and event Provider implementations is a
-separate authoring step because each interaction kind has different ownership
-and failure semantics.
+Generated lowering owns the Provider trait implementation, future boxing,
+endpoint construction, and native registration. A method that only has
+Capability-defined rejection returns an ordinary domain `Result`. A method
+that must deliberately preserve infrastructure failure returns
+`ModuleResult<T, DomainError>` and constructs `ModuleError::runtime(error)`.
+
+Stream providers return `ProviderStream<C>`. `ProviderStream::channel(&ctx,
+capacity)` also returns a `ProviderStreamChannel<C>` for a generation-managed
+task. That task sends typed `C::Message` values, receives typed `StreamInput<C>`
+values, half-closes either direction, and emits exactly one success, Domain
+Error, or Runtime Failure terminal outcome. Bounded backpressure, cancellation,
+and native type erasure stay inside the facade.
