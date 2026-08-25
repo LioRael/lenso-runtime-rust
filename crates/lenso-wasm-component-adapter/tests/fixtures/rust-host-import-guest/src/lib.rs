@@ -3,6 +3,18 @@ wit_bindgen::generate!({
     world: "plugin",
 });
 
+lenso_guest_sdk::wasm_host! {
+    struct WasmHost {
+        bindings: host_bindings,
+        invoke: host_invoke,
+        stream_open: host_stream_open,
+        stream_send: host_stream_send,
+        stream_receive: host_stream_receive,
+        stream_close_send: host_stream_close_send,
+        stream_cancel: host_stream_cancel,
+    }
+}
+
 struct GuestComponent;
 
 impl Guest for GuestComponent {
@@ -17,22 +29,24 @@ impl Guest for GuestComponent {
     ) -> Result<String, String> {
         assert_eq!(capability, "test.echo@1");
         assert_eq!(operation, "echo");
-        let bindings: serde_json::Value = serde_json::from_str(&host_bindings()).unwrap();
-        let binding = &bindings["ok"][0];
-        assert_eq!(binding["provider_instance"], "provider");
-        assert_eq!(
-            binding["capability_id"],
-            "lenso.runtime.conformance.probe@1"
-        );
-        let binding_id = binding["binding_id"].as_u64().unwrap() as u32;
+        let context = lenso_guest_sdk::GuestContext::load(WasmHost).unwrap();
+        let probe = context
+            .require(
+                "lenso.runtime.conformance.probe@1",
+                "1.0.0",
+                &["probe"],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(probe.binding().provider_instance(), "provider");
         let request: serde_json::Value = serde_json::from_str(&request_json).unwrap();
-        let imported: serde_json::Value = serde_json::from_str(&host_invoke(
-            binding_id,
-            "probe",
-            &serde_json::json!({ "value": format!("wasm-{request}") }).to_string(),
-        ))
-        .unwrap();
-        assert_eq!(imported["ok"]["value"], format!("Echo: wasm-{request}"));
+        let imported = probe
+            .request::<_, serde_json::Value, serde_json::Value>(
+                "probe",
+                &serde_json::json!({ "value": format!("wasm-{request}") }),
+            )
+            .unwrap();
+        assert_eq!(imported["value"], format!("Echo: wasm-{request}"));
         Ok(request_json)
     }
 

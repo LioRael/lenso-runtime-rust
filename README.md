@@ -58,6 +58,12 @@ the immutable Plan.
 Generated codecs lower typed open requests, messages, and Domain Errors to
 portable JSON. Stream guests expose explicit open, send, receive, half-close,
 and cancel functions; the Host bounds both worker admission and live sessions.
+Rust guests use `lenso-guest-sdk` to load the activated binding table once and
+consume generated Capability clients. The SDK keeps Domain Errors, bounded
+Runtime Failures, and guest protocol failures distinct, and cancels live Host
+Streams when their typed guest handles are dropped. Adapter-specific
+`wit-bindgen` imports are connected through the `wasm_host!` macro; application
+code does not parse envelopes or manage opaque stream identities.
 Descriptor drift, duplicate host codecs, unsupported Event Operations, missing
 entrypoints, and unadmitted Artifacts fail before Module activation.
 
