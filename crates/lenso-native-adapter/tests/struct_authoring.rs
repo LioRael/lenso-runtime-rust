@@ -30,9 +30,11 @@ mod echo {
     pub trait EchoProvider {}
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, lenso_native_adapter::ModuleConfig)]
 struct ExampleConfig {
     name: String,
+    retries: u32,
+    tags: Option<Vec<String>>,
 }
 
 fn validate(configuration: &ExampleConfig) -> Result<(), lenso_native_adapter::RuntimeFailure> {
@@ -44,10 +46,7 @@ fn validate(configuration: &ExampleConfig) -> Result<(), lenso_native_adapter::R
     Ok(())
 }
 
-#[module(
-    configuration_schema = "tests/fixtures/config.schema.json",
-    validate = validate
-)]
+#[module(validate = validate)]
 #[derive(Clone, Debug)]
 struct ExampleModule {
     #[config]
@@ -68,6 +67,14 @@ fn struct_module_derives_descriptor_factory_and_configuration() {
     );
     assert_eq!(descriptor["required_capabilities"], serde_json::json!([]));
     assert_eq!(descriptor["configuration_schema"]["type"], "object");
+    assert_eq!(
+        descriptor["configuration_schema"]["required"],
+        serde_json::json!(["name", "retries"])
+    );
+    assert_eq!(
+        descriptor["configuration_schema"]["properties"]["tags"]["items"]["type"],
+        "string"
+    );
 
     let registry = NativeModuleRegistry::new().with_linked_factories();
     assert!(registry.factories().any(|factory| {

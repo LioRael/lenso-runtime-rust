@@ -6,8 +6,8 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use serde_json::{Map, Value, json};
 use syn::{
-    Attribute, Fields, Item, ItemFn, ItemImpl, ItemStruct, LitStr, Path, Token, Type,
-    parse_macro_input,
+    Attribute, Data, DeriveInput, Fields, GenericArgument, Item, ItemFn, ItemImpl, ItemStruct,
+    LitStr, Path, PathArguments, Token, Type, parse_macro_input,
 };
 
 struct ModuleAttributes {
@@ -98,6 +98,123 @@ pub fn module(attributes: TokenStream, item: TokenStream) -> TokenStream {
     }
     .unwrap_or_else(syn::Error::into_compile_error)
     .into()
+}
+
+/// Derives the locked JSON Schema fragment consumed by a struct-level Module.
+#[proc_macro_derive(ModuleConfig, attributes(serde))]
+pub fn module_config(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+    expand_module_config(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+fn expand_module_config(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let Data::Struct(data) = &input.data else {
+        return Err(syn::Error::new_spanned(
+            input,
+            "Module configuration must be a named-field struct",
+        ));
+    };
+    let Fields::Named(fields) = &data.fields else {
+        return Err(syn::Error::new_spanned(
+            &data.fields,
+            "Module configuration must use named fields",
+        ));
+    };
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for field in &fields.named {
+        let ident = field.ident.as_ref().expect("named fields have identifiers");
+        let name = serde_field_name(&field.attrs, ident)?;
+        let (schema, optional) = configuration_type_schema(&field.ty)?;
+        properties.insert(name.clone(), schema);
+        if !optional {
+            required.push(Value::String(name));
+        }
+    }
+    let schema = canonical_json(&json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": required,
+        "properties": properties,
+    }));
+    let macro_name = format_ident!("__lenso_config_schema_{}", snake(&input.ident.to_string()));
+    Ok(quote! {
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #macro_name {
+            () => { #schema };
+        }
+    })
+}
+
+fn serde_field_name(attributes: &[Attribute], ident: &syn::Ident) -> syn::Result<String> {
+    let mut name = ident.to_string();
+    for attribute in attributes {
+        if !attribute.path().is_ident("serde") {
+            continue;
+        }
+        attribute.parse_nested_meta(|meta| {
+            if meta.path.is_ident("rename") {
+                name = meta.value()?.parse::<LitStr>()?.value();
+            }
+            Ok(())
+        })?;
+    }
+    Ok(name)
+}
+
+fn configuration_type_schema(ty: &Type) -> syn::Result<(Value, bool)> {
+    let Type::Path(path) = ty else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "Module configuration fields must use portable named types",
+        ));
+    };
+    let segment = path.path.segments.last().expect("type paths are non-empty");
+    let name = segment.ident.to_string();
+    if name == "Option" {
+        return Ok((configuration_inner_schema(segment, ty)?, true));
+    }
+    if name == "Vec" {
+        return Ok((
+            json!({"type": "array", "items": configuration_inner_schema(segment, ty)?}),
+            false,
+        ));
+    }
+    let schema = match name.as_str() {
+        "String" => json!({"type": "string"}),
+        "bool" => json!({"type": "boolean"}),
+        "f32" | "f64" => json!({"type": "number"}),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "usize" => json!({"type": "integer"}),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "unsupported Module configuration field type; use String, bool, a number, Option<T>, or Vec<T>",
+            ));
+        }
+    };
+    Ok((schema, false))
+}
+
+fn configuration_inner_schema(segment: &syn::PathSegment, ty: &Type) -> syn::Result<Value> {
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "configuration container requires one type",
+        ));
+    };
+    let [GenericArgument::Type(inner)] = arguments.args.iter().collect::<Vec<_>>().as_slice()
+    else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "configuration container requires one type",
+        ));
+    };
+    configuration_type_schema(inner).map(|(schema, _)| schema)
 }
 
 fn expand_module_function(
@@ -324,12 +441,6 @@ fn expand_module_struct(
             "struct-level Modules derive their Descriptor; remove `descriptor`",
         ));
     }
-    let schema_path = attributes.configuration_schema.as_ref().ok_or_else(|| {
-        syn::Error::new_spanned(
-            &module.ident,
-            "struct-level Modules currently require `configuration_schema = \"...\"`",
-        )
-    })?;
     let package_id = package_id()?;
     let package_version = env::var("CARGO_PKG_VERSION").map_err(|_| {
         syn::Error::new_spanned(
@@ -337,12 +448,13 @@ fn expand_module_struct(
             "CARGO_PKG_VERSION is unavailable while deriving Module Descriptor",
         )
     })?;
-    let schema = canonical_json(&read_configuration_schema(schema_path)?);
     let StructFields {
         config_type,
         ports,
         initializers,
     } = analyze_struct_fields(&mut module)?;
+    let schema =
+        configuration_schema_tokens(attributes.configuration_schema.as_ref(), &config_type)?;
     let name = &module.ident;
     let lifecycle_name = format_ident!("__LensoLifecycle{name}");
     let descriptor_macro = format_ident!("__lenso_module_descriptor_{}", snake(&name.to_string()));
@@ -354,7 +466,8 @@ fn expand_module_struct(
         quote! { self.module.#field.connect(context.dependencies())?; }
     });
     let requirement_parts = intersperse_commas(requirement_macros);
-    let (prefix, suffix, defaults) = descriptor_affixes(&package_id, &package_version, &schema);
+    let (prefix, after_schema, suffix, defaults) =
+        descriptor_affixes(&package_id, &package_version);
     let validate = attributes
         .validate
         .as_ref()
@@ -362,6 +475,11 @@ fn expand_module_struct(
     let prepare = hook(attributes.prepare.as_ref());
     let activate = hook(attributes.activate.as_ref());
     let deactivate = hook(attributes.deactivate.as_ref());
+    let schema_tracking = attributes.configuration_schema.as_ref().map(|path| {
+        quote!(
+            const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", #path));
+        )
+    });
 
     Ok(quote! {
         /// Runtime package identity derived from Cargo package metadata.
@@ -376,7 +494,7 @@ fn expand_module_struct(
         #[doc(hidden)]
         macro_rules! #descriptor_macro {
             ($provided:expr) => {
-                concat!(#prefix, $provided, #suffix #(, #requirement_parts)*, #defaults)
+                concat!(#prefix, #schema, #after_schema, $provided, #suffix #(, #requirement_parts)*, #defaults)
             };
         }
 
@@ -427,23 +545,53 @@ fn expand_module_struct(
         }
 
         const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
-        const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", #schema_path));
+        #schema_tracking
     })
 }
 
 fn descriptor_affixes(
     package_id: &str,
     package_version: &str,
-    schema: &str,
-) -> (String, &'static str, &'static str) {
+) -> (String, &'static str, &'static str, &'static str) {
     let prefix = format!(
-        "{{\"package_id\":{},\"package_revision\":{},\"entrypoint\":\"default\",\"configuration_schema\":{schema},\"provided_capabilities\":[",
+        "{{\"package_id\":{},\"package_revision\":{},\"entrypoint\":\"default\",\"configuration_schema\":",
         serde_json::to_string(package_id).expect("package ID serializes"),
         serde_json::to_string(package_version).expect("package version serializes"),
     );
+    let after_schema = ",\"provided_capabilities\":[";
     let suffix = "],\"required_capabilities\":[";
     let defaults = "],\"execution_class\":\"lenso.native-rust@1\",\"restart_policy\":{\"mode\":\"never\",\"max_attempts\":0,\"window\":{\"secs\":0,\"nanos\":0},\"backoff\":{\"secs\":0,\"nanos\":0},\"stability\":{\"secs\":0,\"nanos\":0},\"jitter\":{\"secs\":0,\"nanos\":0}},\"criticality\":\"non_critical\"}";
-    (prefix, suffix, defaults)
+    (prefix, after_schema, suffix, defaults)
+}
+
+fn configuration_schema_tokens(
+    schema_path: Option<&LitStr>,
+    config_type: &Type,
+) -> syn::Result<proc_macro2::TokenStream> {
+    if let Some(path) = schema_path {
+        let schema = canonical_json(&read_configuration_schema(path)?);
+        return Ok(quote!(#schema));
+    }
+    let Type::Path(config) = config_type else {
+        return Err(syn::Error::new_spanned(
+            config_type,
+            "the `#[config]` field type must be a path",
+        ));
+    };
+    let mut namespace = config.path.clone();
+    let config_name = namespace
+        .segments
+        .pop()
+        .expect("type paths are non-empty")
+        .into_value()
+        .ident;
+    namespace.segments.pop_punct();
+    let macro_name = format_ident!("__lenso_config_schema_{}", snake(&config_name.to_string()));
+    if namespace.segments.is_empty() {
+        Ok(quote!(#macro_name!()))
+    } else {
+        Ok(quote!(#namespace::#macro_name!()))
+    }
 }
 
 struct StructFields {
