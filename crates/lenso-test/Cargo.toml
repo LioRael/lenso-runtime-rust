@@ -1,0 +1,18 @@
+[package]
+name = "lenso-test"
+version = "0.1.0"
+description = "Deterministic TestApp harness for native Lenso Modules."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lenso-app-plan.workspace = true
+lenso-kernel.workspace = true
+lenso-module-authoring.workspace = true
+lenso-native-adapter = { path = "../lenso-native-adapter" }
+
+[lints]
+workspace = true

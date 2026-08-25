@@ -9,6 +9,9 @@ The source was extracted from `LioRael/lenso` at monorepo commit
 `67d21499548d07e92c2f6529d7c8345e58c067d9` under ADR 0064. Imported subtrees
 retain their relevant Git history.
 
+`lenso-test` provides a deterministic `TestApp` that boots an immutable Plan
+through the real Kernel and native Adapter for Module integration tests.
+
 ## Validation
 
 ```sh
