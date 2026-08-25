@@ -40,18 +40,20 @@ The WASIp2 command requires Wasmtime on `PATH`.
 
 ## Byte-oriented guest ABI
 
-The preview Wasm Component and QuickJS Adapters implement the same
-`lenso.json-request@1` guest ABI. Before opening readiness, a guest must expose
+The preview Wasm Component and QuickJS Adapters preserve the stable
+`lenso.json-request@1` ABI and additionally implement
+`lenso.json-interactions@1` for Request plus bidirectional Stream Capabilities.
+Before opening readiness, a guest must expose
 an exact `describe` result containing every provided Capability, Descriptor
-version, and Request Operation selected by the immutable Plan. Invocation then
-receives `capability_id`, `operation`, and validated request JSON; the result is
-one JSON success or Domain Error value. Descriptor drift, duplicate host codecs,
-unsupported Stream or Event Operations, missing entrypoints, and unadmitted
-Artifacts fail before Module activation.
+version, interaction kind, and Operation selected by the immutable Plan.
+Generated codecs lower typed open requests, messages, and Domain Errors to
+portable JSON. Stream guests expose explicit open, send, receive, half-close,
+and cancel functions; the Host bounds both worker admission and live sessions.
+Descriptor drift, duplicate host codecs, unsupported Event Operations, missing
+entrypoints, and unadmitted Artifacts fail before Module activation.
 
-This ABI is request-only. Stream and Event support require reviewed generated
-codec and guest-lifecycle contracts; the Adapters do not emulate them through
-unbounded arrays, callbacks, or hidden runtime negotiation.
+Event support remains fail-closed. The Adapters do not emulate Stream or Event
+semantics through unbounded arrays, callbacks, or hidden runtime negotiation.
 
 ## Releases
 
