@@ -6,7 +6,7 @@
 mod provider_stream;
 
 pub use lenso_module_authoring::{CapabilityClient, ModuleError, Port};
-pub use lenso_native_adapter::{ModuleConfig, module, provides};
+pub use lenso_native_adapter::{Lifecycle, ModuleConfig, module, provides};
 
 pub use provider_stream::{ProviderStream, ProviderStreamChannel, StreamInput};
 
@@ -27,9 +27,10 @@ pub type ModuleEventResult = Result<(), RuntimeFailure>;
 /// Common imports for native Rust Module authors.
 pub mod prelude {
     pub use crate::{
-        ActivateContext, CapabilityClient, Ctx, DeactivateContext, ManagedTaskScope, ModuleConfig,
-        ModuleError, ModuleEventResult, ModuleFuture, ModuleResult, Port, PrepareContext,
-        ProviderStream, ProviderStreamChannel, RuntimeFailure, StreamInput, module, provides,
+        ActivateContext, CapabilityClient, Ctx, DeactivateContext, Lifecycle, ManagedTaskScope,
+        ModuleConfig, ModuleError, ModuleEventResult, ModuleFuture, ModuleResult, Port,
+        PrepareContext, ProviderStream, ProviderStreamChannel, RuntimeFailure, StreamInput, module,
+        provides,
     };
 }
 
