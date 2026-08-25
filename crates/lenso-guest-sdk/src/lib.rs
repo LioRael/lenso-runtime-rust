@@ -19,6 +19,19 @@ pub trait HostImports: Clone + std::fmt::Debug + 'static {
 /// Defines a zero-sized [`HostImports`] implementation over `wit-bindgen` world imports.
 #[macro_export]
 macro_rules! wasm_host {
+    ($visibility:vis struct $name:ident $(;)?) => {
+        $crate::wasm_host! {
+            $visibility struct $name {
+                bindings: host_bindings,
+                invoke: host_invoke,
+                stream_open: host_stream_open,
+                stream_send: host_stream_send,
+                stream_receive: host_stream_receive,
+                stream_close_send: host_stream_close_send,
+                stream_cancel: host_stream_cancel,
+            }
+        }
+    };
     (
         $visibility:vis struct $name:ident {
             bindings: $bindings:path,

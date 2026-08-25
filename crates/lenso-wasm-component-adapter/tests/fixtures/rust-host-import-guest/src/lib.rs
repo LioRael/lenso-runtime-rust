@@ -3,17 +3,7 @@ wit_bindgen::generate!({
     world: "plugin",
 });
 
-lenso_guest_sdk::wasm_host! {
-    struct WasmHost {
-        bindings: host_bindings,
-        invoke: host_invoke,
-        stream_open: host_stream_open,
-        stream_send: host_stream_send,
-        stream_receive: host_stream_receive,
-        stream_close_send: host_stream_close_send,
-        stream_cancel: host_stream_cancel,
-    }
-}
+lenso_guest_sdk::wasm_host!(struct WasmHost);
 
 struct GuestComponent;
 

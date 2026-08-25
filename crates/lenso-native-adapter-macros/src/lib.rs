@@ -19,6 +19,7 @@ struct ModuleAttributes {
     activate: Option<Path>,
     deactivate: Option<Path>,
     lifecycle: bool,
+    consumer: bool,
 }
 
 impl syn::parse::Parse for ModuleAttributes {
@@ -32,6 +33,7 @@ impl syn::parse::Parse for ModuleAttributes {
                 activate: None,
                 deactivate: None,
                 lifecycle: false,
+                consumer: false,
             });
         }
         let mut descriptor = None;
@@ -41,6 +43,7 @@ impl syn::parse::Parse for ModuleAttributes {
         let mut activate = None;
         let mut deactivate = None;
         let mut lifecycle = false;
+        let mut consumer = false;
         while !input.is_empty() {
             let name: syn::Ident = input.parse()?;
             if name == "lifecycle" {
@@ -48,6 +51,17 @@ impl syn::parse::Parse for ModuleAttributes {
                     return Err(syn::Error::new(name.span(), "duplicate Module attribute"));
                 }
                 lifecycle = true;
+                if input.is_empty() {
+                    break;
+                }
+                input.parse::<Token![,]>()?;
+                continue;
+            }
+            if name == "consumer" {
+                if consumer {
+                    return Err(syn::Error::new(name.span(), "duplicate Module attribute"));
+                }
+                consumer = true;
                 if input.is_empty() {
                     break;
                 }
@@ -75,7 +89,7 @@ impl syn::parse::Parse for ModuleAttributes {
                 _ => {
                     return Err(syn::Error::new(
                         name.span(),
-                        "expected `descriptor`, `configuration_schema`, `validate`, `prepare`, `activate`, `deactivate`, or `lifecycle`",
+                        "expected `descriptor`, `configuration_schema`, `validate`, `prepare`, `activate`, `deactivate`, `lifecycle`, or `consumer`",
                     ));
                 }
             }
@@ -92,11 +106,12 @@ impl syn::parse::Parse for ModuleAttributes {
             activate,
             deactivate,
             lifecycle,
+            consumer,
         })
     }
 }
 
-/// Derives the native factory and link-time registration for one Module entrypoint.
+/// Derives native Module source and, for `consumer`, its factory registration.
 ///
 /// The package identity comes from `[package.metadata.lenso].package-id` in the
 /// consuming crate's `Cargo.toml`; the package version remains Cargo-owned.
@@ -249,10 +264,11 @@ fn expand_module_function(
         || attributes.activate.is_some()
         || attributes.deactivate.is_some()
         || attributes.lifecycle
+        || attributes.consumer
     {
         return Err(syn::Error::new_spanned(
             function,
-            "lifecycle hooks are available only on struct-level Modules",
+            "struct-level Module attributes are unavailable on factory functions",
         ));
     }
     let package_id = package_id()?;
@@ -484,6 +500,11 @@ fn expand_provides(
         }
     });
 
+    let mut implementation = implementation.clone();
+    implementation
+        .attrs
+        .push(syn::parse_quote!(#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]));
+
     Ok(quote! {
         #implementation
         #(#provider_implementations)*
@@ -658,6 +679,60 @@ fn expand_module_struct(
         hook(attributes.deactivate.as_ref(), &sdk)
     };
     let schema_tracking = schema_tracking(attributes.configuration_schema.as_ref());
+    let consumer_finalizer = if attributes.consumer {
+        let generated_module = format_ident!("__lenso_consumer_{}", snake(&name.to_string()));
+        let artifact = format_ident!("__LENSO_MODULE_DESCRIPTOR_ARTIFACT_{name}");
+        Some(quote! {
+            /// Generated package-owned Module Descriptor bytes.
+            pub const MODULE_DESCRIPTOR_JSON: &str = #descriptor_macro!();
+            #[doc(hidden)]
+            const __LENSO_MODULE_DESCRIPTOR_ARTIFACT_TEXT: &str = concat!(
+                "LENSO_MODULE_DESCRIPTOR_V1\0",
+                #descriptor_macro!(),
+                "\0END_LENSO_MODULE_DESCRIPTOR_V1",
+            );
+            /// Linker-retained descriptor artifact consumed without executing package code.
+            #[doc(hidden)]
+            #[used]
+            pub static #artifact: &[u8] = __LENSO_MODULE_DESCRIPTOR_ARTIFACT_TEXT.as_bytes();
+
+            #[doc(hidden)]
+            mod #generated_module {
+                #[derive(Clone, Copy, Debug, Default)]
+                struct Factory;
+
+                impl #sdk::__private::NativeModuleFactory for Factory {
+                    fn package_id(&self) -> &'static str { super::PACKAGE_ID }
+                    fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
+
+                    fn instantiate(
+                        &self,
+                        context: #sdk::__private::NativeModuleFactoryContext<'_>,
+                    ) -> Result<
+                        #sdk::__private::NativeModuleInstance,
+                        #sdk::__private::RuntimeFailure,
+                    > {
+                        let module = super::#name::__lenso_construct(context)?;
+                        let lifecycle = super::#lifecycle_name { module };
+                        Ok(#sdk::__private::NativeModuleInstance::with_lifecycle(
+                            Vec::new(),
+                            lifecycle,
+                        ))
+                    }
+                }
+
+                fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativeModuleFactory> {
+                    ::std::rc::Rc::new(Factory)
+                }
+
+                #sdk::__private::__inventory::submit! {
+                    #sdk::__private::LinkedNativeModuleFactory::new(factory)
+                }
+            }
+        })
+    } else {
+        None
+    };
 
     Ok(quote! {
         /// Runtime package identity derived from Cargo package metadata.
@@ -671,6 +746,9 @@ fn expand_module_struct(
 
         #[doc(hidden)]
         macro_rules! #descriptor_macro {
+            () => {
+                concat!(#prefix, #schema, #after_schema, #suffix #(, #requirement_parts)*, #defaults)
+            };
             ($first:expr $(, $rest:expr)*) => {
                 concat!(#prefix, #schema, #after_schema, $first $(, ",", $rest)*, #suffix #(, #requirement_parts)*, #defaults)
             };
@@ -720,6 +798,8 @@ fn expand_module_struct(
 
         const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
         #schema_tracking
+
+        #consumer_finalizer
     })
 }
 

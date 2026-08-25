@@ -11,6 +11,8 @@ use lenso_kernel::{
     StreamCapability,
 };
 
+use crate::ModuleResult;
+
 /// One typed value sent by a Capability consumer to a Stream provider.
 #[derive(Debug)]
 pub enum StreamInput<C: StreamCapability> {
@@ -82,6 +84,24 @@ impl<C: StreamCapability> ProviderStreamChannel<C> {
     /// Completes the Stream with an infrastructure Runtime Failure.
     pub async fn fail_runtime(&mut self, error: RuntimeFailure) -> Result<(), RuntimeFailure> {
         self.terminate(ProviderOutput::Runtime(error)).await
+    }
+
+    /// Closes the provider send direction and completes the Stream exactly once.
+    ///
+    /// Consuming the channel prevents Module code from accidentally sending or
+    /// terminating the session again after its operation result is known.
+    pub async fn complete(
+        mut self,
+        result: ModuleResult<(), C::DomainError>,
+    ) -> Result<(), RuntimeFailure> {
+        if !self.send_closed {
+            self.close_send().await?;
+        }
+        match result {
+            Ok(()) => self.finish().await,
+            Err(crate::ModuleError::Domain(error)) => self.fail(error).await,
+            Err(crate::ModuleError::Runtime(error)) => self.fail_runtime(error).await,
+        }
     }
 
     /// Receives the next typed consumer message or half-close marker.
