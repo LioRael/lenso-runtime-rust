@@ -103,6 +103,35 @@ fn typed_provider_stream_preserves_runtime_failure_and_cancellation() {
 }
 
 #[test]
+fn typed_provider_stream_completes_from_one_module_result() {
+    block_on(async {
+        let (stream, provider) = ProviderStream::<Conversation>::channel(&context(6), 1);
+        let completing = provider.complete(Err(lenso::ModuleError::Domain("rejected")));
+        let receiving = async {
+            assert!(matches!(
+                stream.receive().await,
+                Ok(NativeStreamItem::PeerHalfClosed)
+            ));
+            let NativeStreamItem::Terminal(Err(error)) = stream
+                .receive()
+                .await
+                .expect("consumer should receive the terminal outcome")
+            else {
+                panic!("domain failure must remain a terminal outcome");
+            };
+            assert_eq!(
+                *error
+                    .downcast::<&'static str>()
+                    .expect("generated Domain Error type should be preserved"),
+                "rejected"
+            );
+        };
+        let (completed, ()) = join(completing, receiving).await;
+        completed.expect("one-shot completion should be admitted");
+    });
+}
+
+#[test]
 fn typed_provider_stream_rejects_wrong_types_and_duplicate_half_close() {
     let (stream, _provider) = ProviderStream::<Conversation>::channel(&context(4), 1);
     assert!(matches!(

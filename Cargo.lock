@@ -608,6 +608,7 @@ dependencies = [
  "lenso-module-authoring",
  "lenso-native-adapter",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
