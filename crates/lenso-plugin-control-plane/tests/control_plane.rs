@@ -385,6 +385,7 @@ struct FakeRuntime {
 
 impl GenerationRuntime for FakeRuntime {
     type Handle = String;
+    type Route = String;
 
     fn stage<'a>(
         &'a mut self,
@@ -407,6 +408,10 @@ impl GenerationRuntime for FakeRuntime {
 
     fn terminal_failure(&self, handle: &Self::Handle) -> Option<ControlPlaneError> {
         self.failures.borrow().get(handle).cloned()
+    }
+
+    fn route(&self, handle: &Self::Handle) -> Self::Route {
+        handle.clone()
     }
 }
 
@@ -614,6 +619,158 @@ fn durable_supervisor_recovers_fences_drains_and_rolls_back() {
         assert!(recovered.state().supervisor_epoch > before_recovery.supervisor_epoch);
         assert!(recovered.state().routing_epoch > before_recovery.routing_epoch);
         assert!(recovered.lease().is_ok());
+    });
+}
+
+#[test]
+fn controller_routes_rolls_back_during_drain_and_shuts_down_after_leases() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        let failures = Rc::new(RefCell::new(BTreeMap::new()));
+        let supervisor = DurableGenerationSupervisor::open(
+            "app",
+            FakeRuntime {
+                failures: failures.clone(),
+                ..FakeRuntime::default()
+            },
+            MemoryControlStateStore::default(),
+        )
+        .unwrap();
+        let (controller, client) =
+            GenerationController::new(supervisor, std::time::Duration::from_millis(2)).unwrap();
+        let controller_task = tokio::task::spawn_local(controller.run());
+        let mut events = client.subscribe();
+        let first = empty_generation("controller-first");
+        let second = empty_generation("controller-second");
+        let initial = client
+            .transition(
+                transition(None, &first, ReplacementMode::Initial, "0"),
+                first.clone(),
+                BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+        let first_route = client.route().await.unwrap();
+        assert_eq!(first_route.target(), first.spec.digest());
+
+        let overlap = transition_with_receipts(
+            Some(first.spec.digest()),
+            &second,
+            ReplacementMode::Overlap,
+            "10000000000",
+            true,
+            Vec::new(),
+        );
+        let switched = client
+            .transition(overlap, second.clone(), BTreeMap::new())
+            .await
+            .unwrap();
+        assert!(client.route_at_epoch(initial.routing_epoch).await.is_err());
+        assert_eq!(client.route().await.unwrap().target(), second.spec.digest());
+
+        failures.borrow_mut().insert(
+            second.spec.digest().to_owned(),
+            ControlPlaneError::HostFailure {
+                detail: "terminal candidate".to_owned(),
+            },
+        );
+        let rollback = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let GenerationControllerEvent::Maintained(
+                    GenerationMaintenanceOutcome::Failed(failure),
+                ) = events.recv().await.unwrap()
+                {
+                    break failure
+                        .automatic_rollback
+                        .expect("the draining predecessor should remain rollback-capable");
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(rollback.routing_epoch, switched.routing_epoch + 1);
+        assert_eq!(rollback.active_generation_spec_digest, first.spec.digest());
+
+        let shutdown_client = client.clone();
+        let shutdown = tokio::task::spawn_local(async move { shutdown_client.shutdown().await });
+        tokio::task::yield_now().await;
+        assert!(!shutdown.is_finished());
+        drop(first_route);
+        let state = tokio::time::timeout(std::time::Duration::from_secs(1), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            state
+                .generations
+                .iter()
+                .all(|record| record.lifecycle == ControlLifecycle::Retired)
+        );
+        assert!(controller_task.await.unwrap().is_ok());
+    });
+}
+
+#[test]
+fn maintenance_forces_retirement_after_the_durable_drain_deadline() {
+    futures::executor::block_on(async {
+        let first = empty_generation("deadline-first");
+        let second = empty_generation("deadline-second");
+        let mut supervisor = DurableGenerationSupervisor::open(
+            "app",
+            FakeRuntime::default(),
+            MemoryControlStateStore::default(),
+        )
+        .unwrap();
+        supervisor
+            .transition(
+                &transition(None, &first, ReplacementMode::Initial, "0"),
+                &first,
+                &BTreeMap::new(),
+                0,
+            )
+            .await
+            .unwrap();
+        let route = supervisor.route().unwrap();
+        supervisor
+            .transition(
+                &transition(
+                    Some(first.spec.digest()),
+                    &second,
+                    ReplacementMode::Overlap,
+                    "0",
+                ),
+                &second,
+                &BTreeMap::new(),
+                0,
+            )
+            .await
+            .unwrap();
+
+        let outcomes = supervisor.maintain(1_000_000_000).await.unwrap();
+        assert!(outcomes.iter().any(|outcome| matches!(
+            outcome,
+            GenerationMaintenanceOutcome::Retired {
+                generation_spec_digest,
+                reason: RetirementReason::DrainDeadlineExceeded,
+            } if generation_spec_digest == first.spec.digest()
+        )));
+        assert_eq!(route.target(), first.spec.digest());
+        let record = supervisor
+            .state()
+            .generations
+            .iter()
+            .find(|record| record.generation_spec_digest == first.spec.digest())
+            .unwrap();
+        assert_eq!(record.lifecycle, ControlLifecycle::Retired);
+        assert_eq!(
+            record.retirement_reason,
+            Some(RetirementReason::DrainDeadlineExceeded)
+        );
     });
 }
 

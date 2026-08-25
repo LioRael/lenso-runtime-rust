@@ -45,6 +45,7 @@ impl<F: CatalogFactory> std::fmt::Debug for KernelGenerationRuntime<F> {
 
 impl<F: CatalogFactory> GenerationRuntime for KernelGenerationRuntime<F> {
     type Handle = KernelGenerationHandle;
+    type Route = NativeApp;
 
     fn stage<'a>(
         &'a mut self,
@@ -99,5 +100,9 @@ impl<F: CatalogFactory> GenerationRuntime for KernelGenerationRuntime<F> {
             .map(|error| ControlPlaneError::HostFailure {
                 detail: format!("Kernel Generation failed after Ready: {error:?}"),
             })
+    }
+
+    fn route(&self, handle: &Self::Handle) -> Self::Route {
+        handle.app.clone()
     }
 }
