@@ -8,6 +8,21 @@ use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
 pub use lenso_kernel::RuntimeFailure;
 pub use lenso_native_adapter_macros::{ModuleConfig, module, provides};
 
+/// Implementation details referenced by generated Module glue.
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::{
+        __inventory, LinkedNativeModuleFactory, NativeModuleFactory, NativeModuleFactoryContext,
+        NativeModuleInstance, RuntimeFailure,
+    };
+    pub use futures;
+    pub use lenso_kernel::{
+        ActivateContext, DeactivateContext, ModuleFuture, ModuleLifecycle, NativeEventEndpoint,
+        NativeRequestEndpoint, NativeStreamEndpoint, PrepareContext,
+    };
+    pub use serde_json;
+}
+
 use lenso_kernel::{
     ModuleLifecycle, NativeEndpointSet, NativeEventEndpoint, NativeExecutionAdapter,
     NativeRequestEndpoint, NativeStreamEndpoint, NoopModuleLifecycle, PreparedBinding,

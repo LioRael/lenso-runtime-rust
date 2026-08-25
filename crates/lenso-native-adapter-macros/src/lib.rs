@@ -3,6 +3,7 @@
 use std::{env, fs, path::PathBuf};
 
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
 use quote::{format_ident, quote};
 use serde_json::{Map, Value, json};
 use syn::{
@@ -221,6 +222,7 @@ fn expand_module_function(
     attributes: &ModuleAttributes,
     function: &ItemFn,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let sdk = authoring_crate();
     if attributes.descriptor.is_none() && attributes.configuration_schema.is_some() {
         return Err(syn::Error::new_spanned(
             function,
@@ -288,7 +290,7 @@ fn expand_module_function(
             #[derive(Clone, Copy, Debug, Default)]
             struct Factory;
 
-            impl ::lenso_native_adapter::NativeModuleFactory for Factory {
+            impl #sdk::__private::NativeModuleFactory for Factory {
                 fn package_id(&self) -> &'static str {
                     #package_id
                 }
@@ -299,21 +301,21 @@ fn expand_module_function(
 
                 fn instantiate(
                     &self,
-                    context: ::lenso_native_adapter::NativeModuleFactoryContext<'_>,
+                    context: #sdk::__private::NativeModuleFactoryContext<'_>,
                 ) -> Result<
-                    ::lenso_native_adapter::NativeModuleInstance,
-                    ::lenso_native_adapter::RuntimeFailure,
+                    #sdk::__private::NativeModuleInstance,
+                    #sdk::__private::RuntimeFailure,
                 > {
                     super::#function_name(context)
                 }
             }
 
-            fn factory() -> std::rc::Rc<dyn ::lenso_native_adapter::NativeModuleFactory> {
+            fn factory() -> std::rc::Rc<dyn #sdk::__private::NativeModuleFactory> {
                 std::rc::Rc::new(Factory)
             }
 
-            ::lenso_native_adapter::__inventory::submit! {
-                ::lenso_native_adapter::LinkedNativeModuleFactory::new(factory)
+            #sdk::__private::__inventory::submit! {
+                #sdk::__private::LinkedNativeModuleFactory::new(factory)
             }
 
             // Make Cargo track the manifest that supplied the generated identity.
@@ -339,6 +341,7 @@ fn expand_provides(
     capability: &Path,
     implementation: &ItemImpl,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let sdk = authoring_crate();
     if implementation.trait_.is_none() {
         return Err(syn::Error::new_spanned(
             implementation,
@@ -403,16 +406,16 @@ fn expand_provides(
             #[derive(Clone, Copy, Debug, Default)]
             struct Factory;
 
-            impl ::lenso_native_adapter::NativeModuleFactory for Factory {
+            impl #sdk::__private::NativeModuleFactory for Factory {
                 fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                 fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
 
                 fn instantiate(
                     &self,
-                    context: ::lenso_native_adapter::NativeModuleFactoryContext<'_>,
+                    context: #sdk::__private::NativeModuleFactoryContext<'_>,
                 ) -> Result<
-                    ::lenso_native_adapter::NativeModuleInstance,
-                    ::lenso_native_adapter::RuntimeFailure,
+                    #sdk::__private::NativeModuleInstance,
+                    #sdk::__private::RuntimeFailure,
                 > {
                     let module = super::#module_ident::__lenso_construct(context)?;
                     let lifecycle = super::#lifecycle { module: module.clone() };
@@ -420,12 +423,12 @@ fn expand_provides(
                 }
             }
 
-            fn factory() -> ::std::rc::Rc<dyn ::lenso_native_adapter::NativeModuleFactory> {
+            fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativeModuleFactory> {
                 ::std::rc::Rc::new(Factory)
             }
 
-            ::lenso_native_adapter::__inventory::submit! {
-                ::lenso_native_adapter::LinkedNativeModuleFactory::new(factory)
+            #sdk::__private::__inventory::submit! {
+                #sdk::__private::LinkedNativeModuleFactory::new(factory)
             }
         }
     })
@@ -435,6 +438,7 @@ fn expand_module_struct(
     attributes: &ModuleAttributes,
     mut module: ItemStruct,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let sdk = authoring_crate();
     if attributes.descriptor.is_some() {
         return Err(syn::Error::new_spanned(
             &module.ident,
@@ -472,14 +476,10 @@ fn expand_module_struct(
         .validate
         .as_ref()
         .map(|path| quote!(#path(&configuration)?;));
-    let prepare = hook(attributes.prepare.as_ref());
-    let activate = hook(attributes.activate.as_ref());
-    let deactivate = hook(attributes.deactivate.as_ref());
-    let schema_tracking = attributes.configuration_schema.as_ref().map(|path| {
-        quote!(
-            const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", #path));
-        )
-    });
+    let prepare = hook(attributes.prepare.as_ref(), &sdk);
+    let activate = hook(attributes.activate.as_ref(), &sdk);
+    let deactivate = hook(attributes.deactivate.as_ref(), &sdk);
+    let schema_tracking = schema_tracking(attributes.configuration_schema.as_ref());
 
     Ok(quote! {
         /// Runtime package identity derived from Cargo package metadata.
@@ -501,15 +501,15 @@ fn expand_module_struct(
         impl #name {
             #[doc(hidden)]
             fn __lenso_construct(
-                context: ::lenso_native_adapter::NativeModuleFactoryContext<'_>,
-            ) -> Result<Self, ::lenso_native_adapter::RuntimeFailure> {
+                context: #sdk::__private::NativeModuleFactoryContext<'_>,
+            ) -> Result<Self, #sdk::__private::RuntimeFailure> {
                 if context.entrypoint() != "default" {
-                    return Err(::lenso_native_adapter::RuntimeFailure::InvalidResolvedPlan {
+                    return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
                         detail: format!("unsupported {} entrypoint {}", #package_id, context.entrypoint()),
                     });
                 }
-                let configuration = ::serde_json::from_str::<#config_type>(context.configuration())
-                    .map_err(|error| ::lenso_native_adapter::RuntimeFailure::InvalidResolvedPlan {
+                let configuration = #sdk::__private::serde_json::from_str::<#config_type>(context.configuration())
+                    .map_err(|error| #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
                         detail: format!("invalid {} configuration: {error}", #package_id),
                     })?;
                 #validate
@@ -523,23 +523,23 @@ fn expand_module_struct(
             module: #name,
         }
 
-        impl ::lenso_kernel::ModuleLifecycle for #lifecycle_name {
-            fn prepare(&self, context: ::lenso_kernel::PrepareContext) -> ::lenso_kernel::ModuleFuture {
+        impl #sdk::__private::ModuleLifecycle for #lifecycle_name {
+            fn prepare(&self, context: #sdk::__private::PrepareContext) -> #sdk::__private::ModuleFuture {
                 #prepare
             }
 
-            fn activate(&self, context: ::lenso_kernel::ActivateContext) -> ::lenso_kernel::ModuleFuture {
-                let connected = (|| -> Result<(), ::lenso_native_adapter::RuntimeFailure> {
+            fn activate(&self, context: #sdk::__private::ActivateContext) -> #sdk::__private::ModuleFuture {
+                let connected = (|| -> Result<(), #sdk::__private::RuntimeFailure> {
                     #(#connect_ports)*
                     Ok(())
                 })();
                 if let Err(error) = connected {
-                    return Box::pin(::futures::future::ready(Err(error)));
+                    return Box::pin(#sdk::__private::futures::future::ready(Err(error)));
                 }
                 #activate
             }
 
-            fn deactivate(&self, context: ::lenso_kernel::DeactivateContext) -> ::lenso_kernel::ModuleFuture {
+            fn deactivate(&self, context: #sdk::__private::DeactivateContext) -> #sdk::__private::ModuleFuture {
                 #deactivate
             }
         }
@@ -562,6 +562,14 @@ fn descriptor_affixes(
     let suffix = "],\"required_capabilities\":[";
     let defaults = "],\"execution_class\":\"lenso.native-rust@1\",\"restart_policy\":{\"mode\":\"never\",\"max_attempts\":0,\"window\":{\"secs\":0,\"nanos\":0},\"backoff\":{\"secs\":0,\"nanos\":0},\"stability\":{\"secs\":0,\"nanos\":0},\"jitter\":{\"secs\":0,\"nanos\":0}},\"criticality\":\"non_critical\"}";
     (prefix, after_schema, suffix, defaults)
+}
+
+fn schema_tracking(path: Option<&LitStr>) -> Option<proc_macro2::TokenStream> {
+    path.map(|path| {
+        quote!(
+            const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", #path));
+        )
+    })
 }
 
 fn configuration_schema_tokens(
@@ -708,15 +716,32 @@ fn intersperse_commas(values: Vec<proc_macro2::TokenStream>) -> Vec<proc_macro2:
         .collect()
 }
 
-fn hook(path: Option<&Path>) -> proc_macro2::TokenStream {
+fn hook(path: Option<&Path>, sdk: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     path.map_or_else(
-        || quote!(Box::pin(::futures::future::ready(Ok(())))),
+        || quote!(Box::pin(#sdk::__private::futures::future::ready(Ok(())))),
         |path| quote!(#path(&self.module, &context)),
     )
 }
 
 fn canonical_json(value: &Value) -> String {
     serde_json::to_string(value).expect("JSON values serialize")
+}
+
+fn authoring_crate() -> proc_macro2::TokenStream {
+    for package in ["lenso", "lenso-native-adapter"] {
+        match crate_name(package) {
+            Ok(FoundCrate::Itself) => {
+                let ident = format_ident!("{}", package.replace('-', "_"));
+                return quote!(::#ident);
+            }
+            Ok(FoundCrate::Name(name)) => {
+                let ident = format_ident!("{name}");
+                return quote!(::#ident);
+            }
+            Err(_) => {}
+        }
+    }
+    quote!(::lenso_native_adapter)
 }
 
 fn snake(value: &str) -> String {

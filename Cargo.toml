@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/lenso",
     "crates/lenso-browser-driver",
     "crates/lenso-dylib-adapter",
     "crates/lenso-native-adapter",
