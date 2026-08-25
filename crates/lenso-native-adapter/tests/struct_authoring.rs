@@ -46,7 +46,14 @@ fn validate(configuration: &ExampleConfig) -> Result<(), lenso_native_adapter::R
     Ok(())
 }
 
-#[module(validate = validate)]
+fn activate(
+    _module: &ExampleModule,
+    _context: &lenso_kernel::ActivateContext,
+) -> lenso_kernel::ModuleFuture {
+    Box::pin(futures::future::ready(Ok(())))
+}
+
+#[module(validate = validate, activate = activate)]
 #[derive(Clone, Debug)]
 struct ExampleModule {
     #[config]

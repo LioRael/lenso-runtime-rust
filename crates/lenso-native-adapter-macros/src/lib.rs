@@ -711,7 +711,7 @@ fn intersperse_commas(values: Vec<proc_macro2::TokenStream>) -> Vec<proc_macro2:
 fn hook(path: Option<&Path>) -> proc_macro2::TokenStream {
     path.map_or_else(
         || quote!(Box::pin(::futures::future::ready(Ok(())))),
-        |path| quote!(#path(&self.module, context)),
+        |path| quote!(#path(&self.module, &context)),
     )
 }
 
