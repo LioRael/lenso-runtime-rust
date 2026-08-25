@@ -49,3 +49,25 @@ task. That task sends typed `C::Message` values, receives typed `StreamInput<C>`
 values, half-closes either direction, and emits exactly one success, Domain
 Error, or Runtime Failure terminal outcome. Bounded backpressure, cancellation,
 and native type erasure stay inside the facade.
+
+Event subscribers use the same inherent async method shape without exposing an
+endpoint or boxed future:
+
+```rust,ignore
+#[provides(notifications::Notifications)]
+impl Notifications {
+    async fn notify(
+        &self,
+        ctx: Ctx,
+        event: notifications::NotifyRequest,
+    ) -> ModuleEventResult {
+        self.handle(ctx, event).await
+    }
+}
+```
+
+Publishing remains volatile fan-out: every explicit subscriber binding has an
+independent bounded admission result. The handler runs after native admission,
+so it has no publisher-visible Domain result. Returning `ModuleEventResult`
+preserves a handler Runtime Failure for diagnostics and Module supervision;
+a simple infallible async handler may return `()`.
