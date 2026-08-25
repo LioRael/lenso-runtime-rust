@@ -18,6 +18,7 @@ struct ModuleAttributes {
     prepare: Option<Path>,
     activate: Option<Path>,
     deactivate: Option<Path>,
+    lifecycle: bool,
 }
 
 impl syn::parse::Parse for ModuleAttributes {
@@ -30,6 +31,7 @@ impl syn::parse::Parse for ModuleAttributes {
                 prepare: None,
                 activate: None,
                 deactivate: None,
+                lifecycle: false,
             });
         }
         let mut descriptor = None;
@@ -38,8 +40,20 @@ impl syn::parse::Parse for ModuleAttributes {
         let mut prepare = None;
         let mut activate = None;
         let mut deactivate = None;
+        let mut lifecycle = false;
         while !input.is_empty() {
             let name: syn::Ident = input.parse()?;
+            if name == "lifecycle" {
+                if lifecycle {
+                    return Err(syn::Error::new(name.span(), "duplicate Module attribute"));
+                }
+                lifecycle = true;
+                if input.is_empty() {
+                    break;
+                }
+                input.parse::<Token![,]>()?;
+                continue;
+            }
             input.parse::<Token![=]>()?;
             match name.to_string().as_str() {
                 "descriptor" if descriptor.is_none() => descriptor = Some(input.parse()?),
@@ -61,7 +75,7 @@ impl syn::parse::Parse for ModuleAttributes {
                 _ => {
                     return Err(syn::Error::new(
                         name.span(),
-                        "expected `descriptor`, `configuration_schema`, `validate`, `prepare`, `activate`, or `deactivate`",
+                        "expected `descriptor`, `configuration_schema`, `validate`, `prepare`, `activate`, `deactivate`, or `lifecycle`",
                     ));
                 }
             }
@@ -77,6 +91,7 @@ impl syn::parse::Parse for ModuleAttributes {
             prepare,
             activate,
             deactivate,
+            lifecycle,
         })
     }
 }
@@ -233,6 +248,7 @@ fn expand_module_function(
         || attributes.prepare.is_some()
         || attributes.activate.is_some()
         || attributes.deactivate.is_some()
+        || attributes.lifecycle
     {
         return Err(syn::Error::new_spanned(
             function,
@@ -529,6 +545,7 @@ fn expand_provides(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn expand_module_struct(
     attributes: &ModuleAttributes,
     mut module: ItemStruct,
@@ -552,8 +569,10 @@ fn expand_module_struct(
         ports,
         initializers,
     } = analyze_struct_fields(&mut module)?;
-    let schema =
-        configuration_schema_tokens(attributes.configuration_schema.as_ref(), &config_type)?;
+    let schema = configuration_schema_tokens(
+        attributes.configuration_schema.as_ref(),
+        config_type.as_ref(),
+    )?;
     let name = &module.ident;
     let lifecycle_name = format_ident!("__LensoLifecycle{name}");
     let descriptor_macro = format_ident!("__lenso_module_descriptor_{}", snake(&name.to_string()));
@@ -567,13 +586,77 @@ fn expand_module_struct(
     let requirement_parts = intersperse_commas(requirement_macros);
     let (prefix, after_schema, suffix, defaults) =
         descriptor_affixes(&package_id, &package_version);
-    let validate = attributes
-        .validate
-        .as_ref()
-        .map(|path| quote!(#path(&configuration)?;));
-    let prepare = hook(attributes.prepare.as_ref(), &sdk);
-    let activate = hook(attributes.activate.as_ref(), &sdk);
-    let deactivate = hook(attributes.deactivate.as_ref(), &sdk);
+    let construct_configuration = if let Some(config_type) = &config_type {
+        let validate = attributes
+            .validate
+            .as_ref()
+            .map(|path| quote!(#path(&configuration)?;));
+        quote! {
+            let configuration = #sdk::__private::serde_json::from_str::<#config_type>(context.configuration())
+                .map_err(|error| #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!("invalid {} configuration: {error}", #package_id),
+                })?;
+            #validate
+        }
+    } else {
+        if attributes.configuration_schema.is_some() {
+            return Err(syn::Error::new_spanned(
+                &module.ident,
+                "`configuration_schema` requires a `#[config]` field",
+            ));
+        }
+        if attributes.validate.is_some() {
+            return Err(syn::Error::new_spanned(
+                &module.ident,
+                "`validate` requires a `#[config]` field",
+            ));
+        }
+        quote! {
+            let configuration = #sdk::__private::serde_json::from_str::<#sdk::__private::serde_json::Value>(context.configuration())
+                .map_err(|error| #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!("invalid {} configuration: {error}", #package_id),
+                })?;
+            if !configuration.as_object().is_some_and(|object| object.is_empty()) {
+                return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!("{} does not accept configuration", #package_id),
+                });
+            }
+        }
+    };
+    if attributes.lifecycle
+        && (attributes.prepare.is_some()
+            || attributes.activate.is_some()
+            || attributes.deactivate.is_some())
+    {
+        return Err(syn::Error::new_spanned(
+            &module.ident,
+            "`lifecycle` replaces the `prepare`, `activate`, and `deactivate` function attributes",
+        ));
+    }
+    let prepare = if attributes.lifecycle {
+        quote! {
+            let module = self.module.clone();
+            Box::pin(async move { #sdk::Lifecycle::prepare(&module, context).await })
+        }
+    } else {
+        hook(attributes.prepare.as_ref(), &sdk)
+    };
+    let activate = if attributes.lifecycle {
+        quote! {
+            let module = self.module.clone();
+            Box::pin(async move { #sdk::Lifecycle::activate(&module, context).await })
+        }
+    } else {
+        hook(attributes.activate.as_ref(), &sdk)
+    };
+    let deactivate = if attributes.lifecycle {
+        quote! {
+            let module = self.module.clone();
+            Box::pin(async move { #sdk::Lifecycle::deactivate(&module, context).await })
+        }
+    } else {
+        hook(attributes.deactivate.as_ref(), &sdk)
+    };
     let schema_tracking = schema_tracking(attributes.configuration_schema.as_ref());
 
     Ok(quote! {
@@ -603,11 +686,7 @@ fn expand_module_struct(
                         detail: format!("unsupported {} entrypoint {}", #package_id, context.entrypoint()),
                     });
                 }
-                let configuration = #sdk::__private::serde_json::from_str::<#config_type>(context.configuration())
-                    .map_err(|error| #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
-                        detail: format!("invalid {} configuration: {error}", #package_id),
-                    })?;
-                #validate
+                #construct_configuration
                 Ok(Self { #(#initializers),* })
             }
         }
@@ -669,12 +748,22 @@ fn schema_tracking(path: Option<&LitStr>) -> Option<proc_macro2::TokenStream> {
 
 fn configuration_schema_tokens(
     schema_path: Option<&LitStr>,
-    config_type: &Type,
+    config_type: Option<&Type>,
 ) -> syn::Result<proc_macro2::TokenStream> {
     if let Some(path) = schema_path {
         let schema = canonical_json(&read_configuration_schema(path)?);
         return Ok(quote!(#schema));
     }
+    let Some(config_type) = config_type else {
+        let schema = canonical_json(&json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [],
+            "properties": {},
+        }));
+        return Ok(quote!(#schema));
+    };
     let Type::Path(config) = config_type else {
         return Err(syn::Error::new_spanned(
             config_type,
@@ -698,7 +787,7 @@ fn configuration_schema_tokens(
 }
 
 struct StructFields {
-    config_type: Type,
+    config_type: Option<Type>,
     ports: Vec<(syn::Ident, Path)>,
     initializers: Vec<proc_macro2::TokenStream>,
 }
@@ -730,14 +819,8 @@ fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
             initializers.push(quote!(#name: ::core::default::Default::default()));
         }
     }
-    let Some(config_type) = config else {
-        return Err(syn::Error::new_spanned(
-            &module.ident,
-            "a struct-level Module requires one `#[config]` field",
-        ));
-    };
     Ok(StructFields {
-        config_type,
+        config_type: config,
         ports,
         initializers,
     })

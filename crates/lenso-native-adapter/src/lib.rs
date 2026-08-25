@@ -6,14 +6,35 @@ use std::{collections::BTreeMap, rc::Rc};
 pub use inventory as __inventory;
 use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
 pub use lenso_kernel::RuntimeFailure;
+use lenso_kernel::{ActivateContext, DeactivateContext, PrepareContext};
 pub use lenso_native_adapter_macros::{ModuleConfig, module, provides};
+
+/// Optional convention-based lifecycle hooks for a struct-level Module.
+///
+/// Add `#[module(lifecycle)]`, implement this trait, and override only the
+/// phases that own real work. The generated Adapter lifecycle still connects
+/// declared Capability ports before `activate`.
+#[allow(async_fn_in_trait)]
+pub trait Lifecycle: Clone + 'static {
+    async fn prepare(&self, _context: PrepareContext) -> Result<(), RuntimeFailure> {
+        Ok(())
+    }
+
+    async fn activate(&self, _context: ActivateContext) -> Result<(), RuntimeFailure> {
+        Ok(())
+    }
+
+    async fn deactivate(&self, _context: DeactivateContext) -> Result<(), RuntimeFailure> {
+        Ok(())
+    }
+}
 
 /// Implementation details referenced by generated Module glue.
 #[doc(hidden)]
 pub mod __private {
     pub use crate::{
-        __inventory, LinkedNativeModuleFactory, NativeModuleFactory, NativeModuleFactoryContext,
-        NativeModuleInstance, RuntimeFailure,
+        __inventory, Lifecycle, LinkedNativeModuleFactory, NativeModuleFactory,
+        NativeModuleFactoryContext, NativeModuleInstance, RuntimeFailure,
     };
     pub use futures;
     pub use futures::future::LocalBoxFuture;

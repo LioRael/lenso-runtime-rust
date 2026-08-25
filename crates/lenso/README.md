@@ -37,6 +37,26 @@ impl Greeting {
 }
 ```
 
+Stateless Modules omit configuration entirely; the facade derives a closed
+empty-object Schema and rejects non-empty configuration before readiness:
+
+```rust,ignore
+#[module]
+#[derive(Clone, Debug, Default)]
+struct Health {}
+
+#[provides(health::Health)]
+impl Health {
+    async fn check(
+        &self,
+        _ctx: Ctx,
+        request: health::CheckRequest,
+    ) -> Result<health::CheckResponse, health::CheckError> {
+        todo!()
+    }
+}
+```
+
 A cohesive Module may provide several Capabilities from the same state and
 lifecycle. List them once and keep their generated domain methods in one
 inherent implementation:
@@ -110,3 +130,32 @@ independent bounded admission result. The handler runs after native admission,
 so it has no publisher-visible Domain result. Returning `ModuleEventResult`
 preserves a handler Runtime Failure for diagnostics and Module supervision;
 a simple infallible async handler may return `()`.
+
+Modules with resources or managed work opt into convention-based lifecycle
+methods and override only the phases they own:
+
+```rust,ignore
+#[module(lifecycle)]
+#[derive(Clone, Debug)]
+struct Worker {
+    #[config]
+    config: WorkerConfig,
+}
+
+impl Lifecycle for Worker {
+    async fn prepare(&self, context: PrepareContext) -> Result<(), RuntimeFailure> {
+        todo!("reserve reversible resources")
+    }
+
+    async fn activate(&self, context: ActivateContext) -> Result<(), RuntimeFailure> {
+        todo!("start generation-owned work")
+    }
+
+    async fn deactivate(&self, context: DeactivateContext) -> Result<(), RuntimeFailure> {
+        todo!("release owned resources")
+    }
+}
+```
+
+The existing function-path lifecycle attributes remain available for
+compatibility.

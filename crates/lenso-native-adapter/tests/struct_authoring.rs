@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use lenso_native_adapter::{NativeModuleRegistry, module, provides};
+use lenso_native_adapter::{Lifecycle, NativeModuleRegistry, module, provides};
 
 mod echo {
     #[macro_export]
@@ -46,18 +46,21 @@ fn validate(configuration: &ExampleConfig) -> Result<(), lenso_native_adapter::R
     Ok(())
 }
 
-fn activate(
-    _module: &ExampleModule,
-    _context: &lenso_kernel::ActivateContext,
-) -> lenso_kernel::ModuleFuture {
-    Box::pin(futures::future::ready(Ok(())))
-}
-
-#[module(validate = validate, activate = activate)]
+#[module(validate = validate, lifecycle)]
 #[derive(Clone, Debug)]
 struct ExampleModule {
     #[config]
     config: ExampleConfig,
+}
+
+impl Lifecycle for ExampleModule {
+    async fn activate(
+        &self,
+        _context: lenso_kernel::ActivateContext,
+    ) -> Result<(), lenso_native_adapter::RuntimeFailure> {
+        std::future::ready(()).await;
+        Ok(())
+    }
 }
 
 #[provides(echo::Echo)]
