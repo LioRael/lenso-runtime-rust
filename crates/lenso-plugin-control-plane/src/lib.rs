@@ -1,6 +1,7 @@
 //! Dynamic Plugin authority, content Store, resolution, and Generation supervision.
 
 mod canonical;
+mod controller;
 mod durable;
 mod durable_supervisor;
 mod kernel_runtime;
@@ -11,13 +12,14 @@ mod store;
 mod supervisor;
 
 pub use canonical::{CanonicalDocument, ControlPlaneError, sha256_digest, strict_json};
+pub use controller::{GenerationController, GenerationControllerClient, GenerationControllerEvent};
 pub use durable::{
     ActivationDirection, ControlHealth, ControlLifecycle, ControlStateStore, DurableControlState,
-    FileControlStateStore, GenerationControlRecord, MemoryControlStateStore,
+    FileControlStateStore, GenerationControlRecord, MemoryControlStateStore, RetirementReason,
 };
 pub use durable_supervisor::{
-    DurableGenerationLease, DurableGenerationSupervisor, DurableTransitionOutcome,
-    GenerationFailureOutcome,
+    DurableGenerationLease, DurableGenerationRoute, DurableGenerationSupervisor,
+    DurableTransitionOutcome, GenerationFailureOutcome, GenerationMaintenanceOutcome,
 };
 pub use kernel_runtime::{CatalogFactory, KernelGenerationHandle, KernelGenerationRuntime};
 pub use model::*;

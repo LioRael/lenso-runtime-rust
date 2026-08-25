@@ -9,6 +9,8 @@ use crate::{
 pub trait GenerationRuntime: std::fmt::Debug {
     /// Opaque generation-owned Driver, Adapter catalog, Kernel, and host resources.
     type Handle: std::fmt::Debug;
+    /// Cloneable invocation target retained by one route lease.
+    type Route: Clone + std::fmt::Debug;
 
     /// Stages all resources and proves the Ready Gate before the timeout.
     fn stage<'a>(
@@ -29,6 +31,9 @@ pub trait GenerationRuntime: std::fmt::Debug {
     /// A healthy or still-running Generation returns `None`. The Supervisor owns
     /// the policy decision which records the failure and may switch routes.
     fn terminal_failure(&self, handle: &Self::Handle) -> Option<ControlPlaneError>;
+
+    /// Projects the exact staged Generation into its Host routing target.
+    fn route(&self, handle: &Self::Handle) -> Self::Route;
 }
 
 /// Operator-visible lifecycle state of one staged Generation.

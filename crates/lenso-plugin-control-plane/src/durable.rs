@@ -39,6 +39,20 @@ pub enum ActivationDirection {
     Rollback,
 }
 
+/// Durable reason why a Generation released all Host-owned resources.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetirementReason {
+    StagingFailed,
+    Replaced,
+    Drained,
+    DrainDeadlineExceeded,
+    RollbackWindowExpired,
+    TerminalFailure,
+    SupervisorShutdown,
+    RecoveryCleanup,
+}
+
 /// Durable authority and recovery facts for one Generation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -50,9 +64,13 @@ pub struct GenerationControlRecord {
     pub activation_direction: ActivationDirection,
     pub ready_timeout_nanos: String,
     pub drain_timeout_nanos: String,
+    #[serde(default)]
+    pub drain_deadline_unix_nanos: Option<String>,
     pub rollback_deadline_unix_nanos: Option<String>,
     pub automatic_rollback_on_generation_failure: bool,
     pub state_compatibility_receipt_digests: Vec<String>,
+    #[serde(default)]
+    pub retirement_reason: Option<RetirementReason>,
 }
 
 /// Compare-and-swap state read before route admission or recovery.
@@ -104,7 +122,7 @@ impl DurableControlState {
                 .iter()
                 .filter(|record| record.lifecycle == ControlLifecycle::Active)
                 .count()
-                > 1
+                != usize::from(self.active_generation_spec_digest.is_some())
         {
             return Err(ControlPlaneError::TransitionRejected {
                 detail: "durable control state violates App, uniqueness, or active-route closure"
