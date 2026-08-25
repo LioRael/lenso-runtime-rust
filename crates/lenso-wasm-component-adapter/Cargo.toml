@@ -17,6 +17,7 @@ wasmtime = { version = "47.0.1", default-features = false, features = ["componen
 
 [dev-dependencies]
 hex.workspace = true
+lenso-runtime-conformance = "0.1.5"
 sha2.workspace = true
 tempfile = "3"
 wit-component = "0.252"
