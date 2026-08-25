@@ -460,6 +460,14 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
         &self,
         routing_epoch: u64,
     ) -> Result<DurableGenerationLease, ControlPlaneError> {
+        let durable = self.store.load(&self.app_id)?;
+        if durable.supervisor_epoch != self.state.supervisor_epoch
+            || durable.routing_epoch != self.state.routing_epoch
+            || durable.revision != self.state.revision
+            || durable.active_generation_spec_digest != self.state.active_generation_spec_digest
+        {
+            return rejected("Generation Supervisor was fenced by newer durable authority");
+        }
         if routing_epoch != self.state.routing_epoch {
             return rejected("router presented an obsolete Routing Epoch");
         }
@@ -575,26 +583,30 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
         let automatic = record.automatic_rollback_on_generation_failure;
         let transition_digest = record.transition_spec_digest.clone();
         self.mark_record(digest, |record| record.health = ControlHealth::Failed)?;
-        if self.state.active_generation_spec_digest.as_deref() != Some(digest) || !automatic {
+        if self.state.active_generation_spec_digest.as_deref() != Some(digest) {
             return Ok(None);
         }
-        let standby = self
-            .state
-            .generations
-            .iter()
-            .find(|record| {
-                matches!(
-                    record.lifecycle,
-                    ControlLifecycle::Draining | ControlLifecycle::Standby
-                ) && record.transition_spec_digest == transition_digest
-                    && deadline(record).is_ok_and(|deadline| deadline > now_unix_nanos)
-            })
-            .map(|record| record.generation_spec_digest.clone())
-            .ok_or_else(|| ControlPlaneError::TransitionRejected {
-                detail: "automatic rollback has no exact retained standby Generation".to_owned(),
-            })?;
-        self.rollback_inner(&standby, now_unix_nanos, true)
-            .map(Some)
+        let standby = automatic.then(|| {
+            self.state
+                .generations
+                .iter()
+                .find(|record| {
+                    matches!(
+                        record.lifecycle,
+                        ControlLifecycle::Draining | ControlLifecycle::Standby
+                    ) && record.transition_spec_digest == transition_digest
+                        && record.health == ControlHealth::Healthy
+                        && deadline(record).is_ok_and(|deadline| deadline > now_unix_nanos)
+                })
+                .map(|record| record.generation_spec_digest.clone())
+        });
+        if let Some(Some(standby)) = standby {
+            return self
+                .rollback_inner(&standby, now_unix_nanos, true)
+                .map(Some);
+        }
+        self.fence_failed_active(digest, now_unix_nanos)?;
+        Ok(None)
     }
 
     /// Reconciles the active Generation's runtime health with durable control authority.
@@ -634,6 +646,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
         if let Some(failure) = self.reconcile_active_generation(now_unix_nanos)? {
             outcomes.push(GenerationMaintenanceOutcome::Failed(failure));
         }
+        outcomes.extend(self.reconcile_inactive_failures(now_unix_nanos).await?);
         let candidates = self
             .state
             .generations
@@ -647,66 +660,117 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             .map(|record| record.generation_spec_digest.clone())
             .collect::<Vec<_>>();
         for digest in candidates {
-            let record = self
-                .record(&digest)
-                .ok_or_else(|| unknown_generation(&digest))?;
-            match record.lifecycle {
-                ControlLifecycle::Draining => {
-                    let leases = self
-                        .slots
-                        .get(&digest)
-                        .ok_or_else(|| unknown_generation(&digest))?
-                        .leases
-                        .get();
-                    let drain_expired = drain_deadline(record)? <= now_unix_nanos;
-                    if leases == 0 {
-                        let rollback_live = record.health == ControlHealth::Healthy
-                            && deadline_option(record)?
-                                .is_some_and(|deadline| deadline > now_unix_nanos);
-                        if rollback_live {
-                            self.mark_record(&digest, |record| {
-                                record.lifecycle = ControlLifecycle::Standby;
-                                record.drain_deadline_unix_nanos = None;
-                            })?;
-                            outcomes.push(GenerationMaintenanceOutcome::Standby {
-                                generation_spec_digest: digest,
-                            });
-                            continue;
-                        }
-                        let reason = if record.health == ControlHealth::Failed {
-                            RetirementReason::TerminalFailure
-                        } else {
-                            record
-                                .retirement_reason
-                                .unwrap_or(RetirementReason::Drained)
-                        };
-                        self.shutdown_and_retire(&digest, reason).await?;
-                        outcomes.push(GenerationMaintenanceOutcome::Retired {
-                            generation_spec_digest: digest,
-                            reason,
-                        });
-                    } else if drain_expired {
-                        self.shutdown_and_retire(&digest, RetirementReason::DrainDeadlineExceeded)
-                            .await?;
-                        outcomes.push(GenerationMaintenanceOutcome::Retired {
-                            generation_spec_digest: digest,
-                            reason: RetirementReason::DrainDeadlineExceeded,
-                        });
-                    }
-                }
-                ControlLifecycle::Standby if deadline(record)? <= now_unix_nanos => {
-                    self.shutdown_and_retire(&digest, RetirementReason::RollbackWindowExpired)
-                        .await?;
-                    outcomes.push(GenerationMaintenanceOutcome::Retired {
-                        generation_spec_digest: digest,
-                        reason: RetirementReason::RollbackWindowExpired,
-                    });
-                }
-                ControlLifecycle::Standby => {}
-                _ => unreachable!("maintenance candidates were filtered by lifecycle"),
+            if let Some(outcome) = self.maintain_candidate(&digest, now_unix_nanos).await? {
+                outcomes.push(outcome);
             }
         }
         Ok(outcomes)
+    }
+
+    async fn reconcile_inactive_failures(
+        &mut self,
+        now_unix_nanos: u128,
+    ) -> Result<Vec<GenerationMaintenanceOutcome>, ControlPlaneError> {
+        let active = self.state.active_generation_spec_digest.clone();
+        let inactive_failures = self
+            .state
+            .generations
+            .iter()
+            .filter(|record| {
+                record.health == ControlHealth::Healthy
+                    && matches!(
+                        record.lifecycle,
+                        ControlLifecycle::Draining | ControlLifecycle::Standby
+                    )
+                    && active.as_deref() != Some(&record.generation_spec_digest)
+            })
+            .filter_map(|record| {
+                let slot = self.slots.get(&record.generation_spec_digest)?;
+                self.runtime
+                    .terminal_failure(&slot.handle)
+                    .map(|failure| (record.generation_spec_digest.clone(), failure))
+            })
+            .collect::<Vec<_>>();
+        let mut outcomes = Vec::new();
+        for (digest, failure) in inactive_failures {
+            self.mark_generation_failed(&digest, now_unix_nanos)?;
+            self.shutdown_and_retire(&digest, RetirementReason::TerminalFailure)
+                .await?;
+            outcomes.push(GenerationMaintenanceOutcome::Failed(
+                GenerationFailureOutcome {
+                    generation_spec_digest: digest.clone(),
+                    failure,
+                    automatic_rollback: None,
+                },
+            ));
+            outcomes.push(GenerationMaintenanceOutcome::Retired {
+                generation_spec_digest: digest,
+                reason: RetirementReason::TerminalFailure,
+            });
+        }
+        Ok(outcomes)
+    }
+
+    async fn maintain_candidate(
+        &mut self,
+        digest: &str,
+        now_unix_nanos: u128,
+    ) -> Result<Option<GenerationMaintenanceOutcome>, ControlPlaneError> {
+        let record = self
+            .record(digest)
+            .ok_or_else(|| unknown_generation(digest))?;
+        if record.lifecycle == ControlLifecycle::Standby {
+            if deadline(record)? > now_unix_nanos {
+                return Ok(None);
+            }
+            self.shutdown_and_retire(digest, RetirementReason::RollbackWindowExpired)
+                .await?;
+            return Ok(Some(GenerationMaintenanceOutcome::Retired {
+                generation_spec_digest: digest.to_owned(),
+                reason: RetirementReason::RollbackWindowExpired,
+            }));
+        }
+        if record.lifecycle != ControlLifecycle::Draining {
+            return Ok(None);
+        }
+        if record.health == ControlHealth::Failed {
+            self.shutdown_and_retire(digest, RetirementReason::TerminalFailure)
+                .await?;
+            return Ok(Some(GenerationMaintenanceOutcome::Retired {
+                generation_spec_digest: digest.to_owned(),
+                reason: RetirementReason::TerminalFailure,
+            }));
+        }
+        let leases = self
+            .slots
+            .get(digest)
+            .ok_or_else(|| unknown_generation(digest))?
+            .leases
+            .get();
+        if leases == 0 && deadline_option(record)?.is_some_and(|deadline| deadline > now_unix_nanos)
+        {
+            self.mark_record(digest, |record| {
+                record.lifecycle = ControlLifecycle::Standby;
+                record.drain_deadline_unix_nanos = None;
+            })?;
+            return Ok(Some(GenerationMaintenanceOutcome::Standby {
+                generation_spec_digest: digest.to_owned(),
+            }));
+        }
+        let reason = if leases == 0 {
+            record
+                .retirement_reason
+                .unwrap_or(RetirementReason::Drained)
+        } else if drain_deadline(record)? <= now_unix_nanos {
+            RetirementReason::DrainDeadlineExceeded
+        } else {
+            return Ok(None);
+        };
+        self.shutdown_and_retire(digest, reason).await?;
+        Ok(Some(GenerationMaintenanceOutcome::Retired {
+            generation_spec_digest: digest.to_owned(),
+            reason,
+        }))
     }
 
     /// Fences new routes and begins bounded retirement of every live Generation.
@@ -722,7 +786,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
         for record in &mut next.generations {
             if matches!(
                 record.lifecycle,
-                ControlLifecycle::Active | ControlLifecycle::Standby
+                ControlLifecycle::Active | ControlLifecycle::Draining | ControlLifecycle::Standby
             ) {
                 let timeout = parse_nanos(&record.drain_timeout_nanos, "drain timeout")?;
                 record.lifecycle = ControlLifecycle::Draining;
@@ -826,6 +890,38 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             draining_generation_spec_digest: Some(failed),
             activation_direction: ActivationDirection::Rollback,
         })
+    }
+
+    fn fence_failed_active(
+        &mut self,
+        digest: &str,
+        now_unix_nanos: u128,
+    ) -> Result<(), ControlPlaneError> {
+        let record = self
+            .record(digest)
+            .ok_or_else(|| unknown_generation(digest))?;
+        let timeout = parse_nanos(&record.drain_timeout_nanos, "drain timeout")?;
+        let drain_deadline = now_unix_nanos
+            .checked_add(u128::from(timeout))
+            .ok_or_else(|| ControlPlaneError::TransitionRejected {
+                detail: "drain deadline exhausted".to_owned(),
+            })?
+            .to_string();
+        let mut next = self.state.clone();
+        if next.active_generation_spec_digest.as_deref() != Some(digest) {
+            return rejected("terminal failure fence requires the active Generation");
+        }
+        next.active_generation_spec_digest = None;
+        next.routing_epoch = next.routing_epoch.checked_add(1).ok_or_else(|| {
+            ControlPlaneError::TransitionRejected {
+                detail: "Routing Epoch exhausted".to_owned(),
+            }
+        })?;
+        update_record(&mut next, digest, |record| {
+            record.lifecycle = ControlLifecycle::Draining;
+            record.drain_deadline_unix_nanos = Some(drain_deadline);
+        })?;
+        self.commit(next)
     }
 
     async fn shutdown_and_retire(

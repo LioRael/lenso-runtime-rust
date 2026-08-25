@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 use lenso_app_plan::{
     AppComposition, CapabilityOperationKind, ExecutionLaneId, ExecutionLanePlan, ModuleCriticality,
@@ -382,6 +386,7 @@ fn built_in_plugin_factory_identity_closes_into_native_preparation() {
 struct FakeRuntime {
     stopped: Vec<String>,
     failures: Rc<RefCell<BTreeMap<String, ControlPlaneError>>>,
+    stage_failures: Rc<RefCell<BTreeSet<String>>>,
 }
 
 impl GenerationRuntime for FakeRuntime {
@@ -393,7 +398,18 @@ impl GenerationRuntime for FakeRuntime {
         generation: &'a ResolvedGeneration,
         _ready_timeout_nanos: u64,
     ) -> futures::future::LocalBoxFuture<'a, Result<Self::Handle, ControlPlaneError>> {
-        Box::pin(async move { Ok(generation.spec.digest().to_owned()) })
+        Box::pin(async move {
+            if self
+                .stage_failures
+                .borrow()
+                .contains(generation.spec.digest())
+            {
+                return Err(ControlPlaneError::HostFailure {
+                    detail: "configured staging failure".to_owned(),
+                });
+            }
+            Ok(generation.spec.digest().to_owned())
+        })
     }
 
     fn shutdown(
@@ -624,6 +640,87 @@ fn durable_supervisor_recovers_fences_drains_and_rolls_back() {
 }
 
 #[test]
+fn recovery_fences_the_old_supervisor_and_rolls_back_failed_active_staging() {
+    futures::executor::block_on(async {
+        let directory = tempfile::tempdir().unwrap();
+        let store = FileControlStateStore::open(directory.path()).unwrap();
+        let first = empty_generation("recovery-first");
+        let second = empty_generation("recovery-second");
+        let mut old =
+            DurableGenerationSupervisor::open("app", FakeRuntime::default(), store.clone())
+                .unwrap();
+        old.transition(
+            &transition(None, &first, ReplacementMode::Initial, "0"),
+            &first,
+            &BTreeMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+        old.transition(
+            &transition_with_receipts(
+                Some(first.spec.digest()),
+                &second,
+                ReplacementMode::Overlap,
+                "10000000000",
+                true,
+                Vec::new(),
+            ),
+            &second,
+            &BTreeMap::new(),
+            100,
+        )
+        .await
+        .unwrap();
+        old.complete_drain(first.spec.digest(), 150).await.unwrap();
+
+        let stage_failures = Rc::new(RefCell::new(BTreeSet::from([second
+            .spec
+            .digest()
+            .to_owned()])));
+        let authorities = BTreeMap::from([
+            (first.spec.digest().to_owned(), first.clone()),
+            (second.spec.digest().to_owned(), second.clone()),
+        ]);
+        let recovered = DurableGenerationSupervisor::recover(
+            "app",
+            FakeRuntime {
+                stage_failures,
+                ..FakeRuntime::default()
+            },
+            store,
+            &authorities,
+            200,
+        )
+        .await
+        .unwrap();
+
+        assert!(old.lease().is_err());
+        assert_eq!(
+            recovered.state().active_generation_spec_digest.as_deref(),
+            Some(first.spec.digest())
+        );
+        let active = recovered
+            .state()
+            .generations
+            .iter()
+            .find(|record| record.generation_spec_digest == first.spec.digest())
+            .unwrap();
+        assert_eq!(active.lifecycle, ControlLifecycle::Active);
+        assert_eq!(active.activation_direction, ActivationDirection::Rollback);
+        let failed = recovered
+            .state()
+            .generations
+            .iter()
+            .find(|record| record.generation_spec_digest == second.spec.digest())
+            .unwrap();
+        assert_eq!(failed.lifecycle, ControlLifecycle::Retired);
+        assert_eq!(failed.health, ControlHealth::Failed);
+        assert!(recovered.lease().is_ok());
+    });
+}
+
+#[test]
 fn controller_routes_rolls_back_during_drain_and_shuts_down_after_leases() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -775,6 +872,183 @@ fn maintenance_forces_retirement_after_the_durable_drain_deadline() {
     });
 }
 
+#[test]
+fn terminal_active_without_a_live_rollback_target_is_fenced_and_retired() {
+    futures::executor::block_on(async {
+        let failures = Rc::new(RefCell::new(BTreeMap::new()));
+        let generation = empty_generation("terminal-no-rollback");
+        let mut supervisor = DurableGenerationSupervisor::open(
+            "app",
+            FakeRuntime {
+                failures: failures.clone(),
+                ..FakeRuntime::default()
+            },
+            MemoryControlStateStore::default(),
+        )
+        .unwrap();
+        let activation = supervisor
+            .transition(
+                &transition(None, &generation, ReplacementMode::Initial, "0"),
+                &generation,
+                &BTreeMap::new(),
+                0,
+            )
+            .await
+            .unwrap();
+        let route = supervisor.route().unwrap();
+        failures.borrow_mut().insert(
+            generation.spec.digest().to_owned(),
+            ControlPlaneError::HostFailure {
+                detail: "terminal active".to_owned(),
+            },
+        );
+
+        let outcomes = supervisor.maintain(1).await.unwrap();
+        assert!(outcomes.iter().any(|outcome| matches!(
+            outcome,
+            GenerationMaintenanceOutcome::Failed(failure)
+                if failure.generation_spec_digest == generation.spec.digest()
+                    && failure.automatic_rollback.is_none()
+        )));
+        assert!(supervisor.state().active_generation_spec_digest.is_none());
+        assert_eq!(
+            supervisor.state().routing_epoch,
+            activation.routing_epoch + 1
+        );
+        assert!(supervisor.route_at_epoch(activation.routing_epoch).is_err());
+        assert_eq!(route.target(), generation.spec.digest());
+        let record = supervisor
+            .state()
+            .generations
+            .iter()
+            .find(|record| record.generation_spec_digest == generation.spec.digest())
+            .unwrap();
+        assert_eq!(record.lifecycle, ControlLifecycle::Retired);
+        assert_eq!(record.health, ControlHealth::Failed);
+        assert_eq!(
+            record.retirement_reason,
+            Some(RetirementReason::TerminalFailure)
+        );
+    });
+}
+
+#[test]
+fn terminal_standby_is_retired_and_cannot_receive_automatic_rollback() {
+    futures::executor::block_on(async {
+        let failures = Rc::new(RefCell::new(BTreeMap::new()));
+        let first = empty_generation("failed-standby-first");
+        let second = empty_generation("failed-standby-second");
+        let mut supervisor = DurableGenerationSupervisor::open(
+            "app",
+            FakeRuntime {
+                failures: failures.clone(),
+                ..FakeRuntime::default()
+            },
+            MemoryControlStateStore::default(),
+        )
+        .unwrap();
+        supervisor
+            .transition(
+                &transition(None, &first, ReplacementMode::Initial, "0"),
+                &first,
+                &BTreeMap::new(),
+                0,
+            )
+            .await
+            .unwrap();
+        supervisor
+            .transition(
+                &transition_with_receipts(
+                    Some(first.spec.digest()),
+                    &second,
+                    ReplacementMode::Overlap,
+                    "10000000000",
+                    true,
+                    Vec::new(),
+                ),
+                &second,
+                &BTreeMap::new(),
+                1,
+            )
+            .await
+            .unwrap();
+        supervisor.maintain(2).await.unwrap();
+        failures.borrow_mut().insert(
+            first.spec.digest().to_owned(),
+            ControlPlaneError::HostFailure {
+                detail: "terminal standby".to_owned(),
+            },
+        );
+        supervisor.maintain(3).await.unwrap();
+        failures.borrow_mut().insert(
+            second.spec.digest().to_owned(),
+            ControlPlaneError::HostFailure {
+                detail: "terminal active".to_owned(),
+            },
+        );
+        let outcomes = supervisor.maintain(4).await.unwrap();
+        assert!(outcomes.iter().any(|outcome| matches!(
+            outcome,
+            GenerationMaintenanceOutcome::Failed(failure)
+                if failure.generation_spec_digest == second.spec.digest()
+                    && failure.automatic_rollback.is_none()
+        )));
+        assert!(supervisor.state().active_generation_spec_digest.is_none());
+        assert!(supervisor.state().generations.iter().all(|record| {
+            record.lifecycle == ControlLifecycle::Retired && record.health == ControlHealth::Failed
+        }));
+    });
+}
+
+#[test]
+fn shutdown_does_not_return_an_existing_drain_to_standby() {
+    futures::executor::block_on(async {
+        let first = empty_generation("shutdown-drain-first");
+        let second = empty_generation("shutdown-drain-second");
+        let mut supervisor = DurableGenerationSupervisor::open(
+            "app",
+            FakeRuntime::default(),
+            MemoryControlStateStore::default(),
+        )
+        .unwrap();
+        supervisor
+            .transition(
+                &transition(None, &first, ReplacementMode::Initial, "0"),
+                &first,
+                &BTreeMap::new(),
+                0,
+            )
+            .await
+            .unwrap();
+        let route = supervisor.route().unwrap();
+        supervisor
+            .transition(
+                &transition(
+                    Some(first.spec.digest()),
+                    &second,
+                    ReplacementMode::Overlap,
+                    "10000000000",
+                ),
+                &second,
+                &BTreeMap::new(),
+                1,
+            )
+            .await
+            .unwrap();
+        supervisor.begin_shutdown(2).unwrap();
+        drop(route);
+        supervisor.maintain(3).await.unwrap();
+        assert!(supervisor.is_retired());
+        assert!(
+            supervisor
+                .state()
+                .generations
+                .iter()
+                .all(|record| record.lifecycle == ControlLifecycle::Retired)
+        );
+    });
+}
+
 #[derive(Debug)]
 struct EmptyCatalog;
 
@@ -919,6 +1193,14 @@ fn kernel_generation_runtime_starts_ready_and_shuts_down_real_kernel() {
         let handle = host.stage(&generation, 1_000_000_000).await.unwrap();
         host.shutdown(handle, 1_000_000_000).await.unwrap();
     });
+}
+
+#[test]
+fn lane_local_kernel_generation_runtime_rejects_a_multi_lane_plan() {
+    let generation = generation_with_plan("lane-local-misuse", replicated_empty_plan());
+    let mut host = KernelGenerationRuntime::new(EmptyCatalog);
+    let error = futures::executor::block_on(host.stage(&generation, 1_000_000_000)).unwrap_err();
+    assert!(matches!(error, ControlPlaneError::HostFailure { .. }));
 }
 
 #[test]
