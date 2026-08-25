@@ -674,7 +674,7 @@ source = "git+https://github.com/LioRael/lenso-protocols?rev=9a594895137b45a4298
 
 [[package]]
 name = "lenso-native-adapter"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "futures",
  "inventory",
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-runner"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "cpu-time",
  "futures",
