@@ -600,7 +600,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "lenso"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-browser-driver"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-dylib-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "hex",
@@ -676,7 +676,7 @@ source = "git+https://github.com/LioRael/lenso-protocols?rev=1424ffe25f05c0d3aaf
 
 [[package]]
 name = "lenso-native-adapter"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "inventory",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-native-adapter-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-plugin-bundle"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "lenso-app-plan",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-quickjs-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "hex",
@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-runtime-codec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "hex",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-wasm-component-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "hex",
