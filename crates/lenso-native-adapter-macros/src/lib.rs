@@ -419,7 +419,11 @@ fn expand_provides(
                 > {
                     let module = super::#module_ident::__lenso_construct(context)?;
                     let lifecycle = super::#lifecycle { module: module.clone() };
-                    Ok(super::#capability_namespace::#provide_endpoint!(module, lifecycle))
+                    Ok(super::#capability_namespace::#provide_endpoint!(
+                        module,
+                        lifecycle,
+                        #sdk::__private
+                    ))
                 }
             }
 
