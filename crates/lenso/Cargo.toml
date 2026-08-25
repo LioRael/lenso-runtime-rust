@@ -15,7 +15,7 @@ package-id = "lenso"
 futures.workspace = true
 lenso-kernel.workspace = true
 lenso-module-authoring.workspace = true
-lenso-native-adapter = { version = "0.2.0", path = "../lenso-native-adapter" }
+lenso-native-adapter = { version = "0.2.1", path = "../lenso-native-adapter" }
 serde.workspace = true
 serde_json.workspace = true
 

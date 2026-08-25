@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-guest-sdk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -675,7 +675,7 @@ source = "git+https://github.com/LioRael/lenso-protocols?rev=9a594895137b45a4298
 
 [[package]]
 name = "lenso-native-adapter"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "inventory",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-native-adapter-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-plugin-control-plane"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fs2",
  "futures",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-runner"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cpu-time",
  "futures",
