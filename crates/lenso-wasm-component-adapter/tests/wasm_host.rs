@@ -58,6 +58,38 @@ impl JsonCapabilityCodec for EchoCodec {
     }
 }
 
+#[derive(Debug)]
+struct NarrowCodec;
+
+impl JsonCapabilityCodec for NarrowCodec {
+    fn capability_id(&self) -> &'static str {
+        "test.echo@1"
+    }
+    fn descriptor_version(&self) -> &'static str {
+        "1.0.0"
+    }
+    fn request_operations(&self) -> &'static [&'static str] {
+        &["echo"]
+    }
+    fn encode_request(&self, operation: &str, request: &dyn Any) -> Result<Value, RuntimeFailure> {
+        EchoCodec.encode_request(operation, request)
+    }
+    fn decode_response(
+        &self,
+        operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        EchoCodec.decode_response(operation, value)
+    }
+    fn decode_domain_error(
+        &self,
+        operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        EchoCodec.decode_domain_error(operation, value)
+    }
+}
+
 #[test]
 fn real_component_runs_without_wasi_and_retires_on_trap_or_cancellation() {
     let fixture_target = tempfile::tempdir().unwrap();
@@ -96,6 +128,13 @@ fn real_component_runs_without_wasi_and_retires_on_trap_or_cancellation() {
     let artifacts = ArtifactCatalog::new()
         .with_artifact("plugin", artifact)
         .unwrap();
+    let mismatch = WasmComponentAdapter::new(artifacts.clone()).with_codec(NarrowCodec);
+    assert!(mismatch.recreate(&narrow_plan(), "plugin").is_err());
+    let duplicate = WasmComponentAdapter::new(artifacts.clone())
+        .with_codec(EchoCodec)
+        .with_codec(EchoCodec);
+    assert!(duplicate.recreate(&plan(), "plugin").is_err());
+
     let adapter = WasmComponentAdapter::new(artifacts)
         .with_codec(EchoCodec)
         .with_limits(WasmComponentLimits {
@@ -142,6 +181,22 @@ fn real_component_runs_without_wasi_and_retires_on_trap_or_cancellation() {
         Err(RuntimeFailure::Cancelled { request_id: 3 })
     ));
     assert!(adapter.recreate(&plan, "plugin").is_ok());
+}
+
+fn narrow_plan() -> ResolvedAppPlan {
+    ResolvedAppPlan::new(
+        vec![
+            ModuleInstancePlan::new("plugin", "test.component")
+                .with_entrypoint("plugin")
+                .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
+                .with_capability(CapabilityEndpointPlan::new(
+                    "test.echo@1",
+                    "1.0.0",
+                    ["echo"],
+                )),
+        ],
+        Vec::new(),
+    )
 }
 
 fn plan() -> ResolvedAppPlan {
