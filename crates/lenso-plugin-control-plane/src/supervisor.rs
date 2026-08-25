@@ -23,6 +23,12 @@ pub trait GenerationRuntime: std::fmt::Debug {
         handle: Self::Handle,
         drain_timeout_nanos: u64,
     ) -> futures::future::LocalBoxFuture<'_, Result<(), ControlPlaneError>>;
+
+    /// Returns a terminal failure reported by a staged Generation, when one exists.
+    ///
+    /// A healthy or still-running Generation returns `None`. The Supervisor owns
+    /// the policy decision which records the failure and may switch routes.
+    fn terminal_failure(&self, handle: &Self::Handle) -> Option<ControlPlaneError>;
 }
 
 /// Operator-visible lifecycle state of one staged Generation.

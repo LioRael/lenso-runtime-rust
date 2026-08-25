@@ -1,7 +1,12 @@
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
-use lenso_app_plan::{CapabilityOperationKind, ResolvedAppPlan};
-use lenso_kernel::{ExecutionAdapterCatalog, NativeExecutionAdapter, RuntimeFailure};
+use lenso_app_plan::{
+    CapabilityOperationKind, ModuleCriticality, ModuleInstancePlan, ResolvedAppPlan, RestartPolicy,
+};
+use lenso_kernel::{
+    ActivateContext, ExecutionAdapterCatalog, ModuleFuture, ModuleLifecycle,
+    NativeExecutionAdapter, RuntimeFailure,
+};
 use lenso_native_adapter::{
     NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
 };
@@ -375,6 +380,7 @@ fn built_in_plugin_factory_identity_closes_into_native_preparation() {
 #[derive(Debug, Default)]
 struct FakeRuntime {
     stopped: Vec<String>,
+    failures: Rc<RefCell<BTreeMap<String, ControlPlaneError>>>,
 }
 
 impl GenerationRuntime for FakeRuntime {
@@ -397,6 +403,10 @@ impl GenerationRuntime for FakeRuntime {
             self.stopped.push(handle);
             Ok(())
         })
+    }
+
+    fn terminal_failure(&self, handle: &Self::Handle) -> Option<ControlPlaneError> {
+        self.failures.borrow().get(handle).cloned()
     }
 }
 
@@ -500,15 +510,23 @@ fn overlap_requires_exact_state_compatibility_receipt_closure() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn durable_supervisor_recovers_fences_drains_and_rolls_back() {
     futures::executor::block_on(async {
         let directory = tempfile::tempdir().unwrap();
         let store = FileControlStateStore::open(directory.path()).unwrap();
         let first = empty_generation("durable-first");
         let second = empty_generation("durable-second");
-        let mut supervisor =
-            DurableGenerationSupervisor::open("app", FakeRuntime::default(), store.clone())
-                .unwrap();
+        let failures = Rc::new(RefCell::new(BTreeMap::new()));
+        let mut supervisor = DurableGenerationSupervisor::open(
+            "app",
+            FakeRuntime {
+                failures: failures.clone(),
+                ..FakeRuntime::default()
+            },
+            store.clone(),
+        )
+        .unwrap();
         supervisor
             .transition(
                 &transition(None, &first, ReplacementMode::Initial, "0"),
@@ -550,9 +568,25 @@ fn durable_supervisor_recovers_fences_drains_and_rolls_back() {
             ControlLifecycle::Standby
         );
 
-        let rollback = supervisor
-            .mark_generation_failed(second.spec.digest(), 160)
+        failures.borrow_mut().insert(
+            second.spec.digest().to_owned(),
+            ControlPlaneError::HostFailure {
+                detail: "Generation task failed".to_owned(),
+            },
+        );
+        let failure = supervisor
+            .reconcile_active_generation(160)
             .unwrap()
+            .expect("the runtime failure should be observed exactly once");
+        assert_eq!(failure.generation_spec_digest, second.spec.digest());
+        assert!(
+            supervisor
+                .reconcile_active_generation(160)
+                .unwrap()
+                .is_none()
+        );
+        let rollback = failure
+            .automatic_rollback
             .expect("automatic rollback should activate exact standby");
         assert_eq!(rollback.activation_direction, ActivationDirection::Rollback);
         assert_eq!(rollback.active_generation_spec_digest, first.spec.digest());
@@ -595,6 +629,59 @@ impl CatalogFactory for EmptyCatalog {
     }
 }
 
+#[derive(Debug)]
+struct FailingLifecycle;
+
+impl ModuleLifecycle for FailingLifecycle {
+    fn activate(&self, context: ActivateContext) -> ModuleFuture {
+        context
+            .tasks()
+            .spawn_local(Box::pin(async {
+                tokio::task::yield_now().await;
+                panic!("terminal Generation fixture failure");
+            }))
+            .expect("the Generation task should be admitted");
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[derive(Debug)]
+struct FailingFactory;
+
+impl NativeModuleFactory for FailingFactory {
+    fn package_id(&self) -> &'static str {
+        "example.failing"
+    }
+
+    fn package_version(&self) -> &'static str {
+        "1.0.0"
+    }
+
+    fn instantiate(
+        &self,
+        _context: NativeModuleFactoryContext<'_>,
+    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        Ok(NativeModuleInstance::with_lifecycle(
+            Vec::new(),
+            FailingLifecycle,
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct FailingCatalog;
+
+impl CatalogFactory for FailingCatalog {
+    fn catalog(
+        &self,
+        _generation: &ResolvedGeneration,
+    ) -> Result<ExecutionAdapterCatalog, ControlPlaneError> {
+        Ok(ExecutionAdapterCatalog::single(
+            NativeModuleRegistry::new().with_factory(FailingFactory),
+        ))
+    }
+}
+
 #[test]
 fn kernel_generation_runtime_starts_ready_and_shuts_down_real_kernel() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -610,8 +697,43 @@ fn kernel_generation_runtime_starts_ready_and_shuts_down_real_kernel() {
     });
 }
 
+#[test]
+fn kernel_generation_runtime_reports_a_real_terminal_failure_after_ready() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        let plan = ResolvedAppPlan::new(
+            vec![
+                ModuleInstancePlan::new("failing", "example.failing")
+                    .with_package_revision("1.0.0")
+                    .with_restart_policy(RestartPolicy::never())
+                    .with_criticality(ModuleCriticality::Critical),
+            ],
+            Vec::new(),
+        );
+        let generation = generation_with_plan("kernel-failure", plan);
+        let mut host = KernelGenerationRuntime::new(FailingCatalog);
+        let handle = host.stage(&generation, 1_000_000_000).await.unwrap();
+
+        let failure = loop {
+            if let Some(failure) = host.terminal_failure(&handle) {
+                break failure;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert!(matches!(failure, ControlPlaneError::HostFailure { .. }));
+        host.shutdown(handle, 1_000_000_000).await.unwrap();
+    });
+}
+
 fn empty_generation(marker: &str) -> ResolvedGeneration {
-    let plan = ResolvedAppPlan::empty();
+    generation_with_plan(marker, ResolvedAppPlan::empty())
+}
+
+fn generation_with_plan(marker: &str, plan: ResolvedAppPlan) -> ResolvedGeneration {
     let artifact_set = CanonicalDocument::from_value(
         "artifact set",
         ResolvedArtifactSet {

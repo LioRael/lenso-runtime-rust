@@ -54,6 +54,14 @@ pub struct DurableTransitionOutcome {
     pub activation_direction: ActivationDirection,
 }
 
+/// One newly observed terminal Generation failure and its policy result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenerationFailureOutcome {
+    pub generation_spec_digest: String,
+    pub failure: ControlPlaneError,
+    pub automatic_rollback: Option<DurableTransitionOutcome>,
+}
+
 /// Fenced App Generation state machine with durable CAS authority and recovery.
 #[derive(Debug)]
 pub struct DurableGenerationSupervisor<R: GenerationRuntime, S: ControlStateStore> {
@@ -491,6 +499,34 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             })?;
         self.rollback_inner(&standby, now_unix_nanos, true)
             .map(Some)
+    }
+
+    /// Reconciles the active Generation's runtime health with durable control authority.
+    ///
+    /// A terminal runtime failure is recorded exactly once. When the active
+    /// transition authorized automatic rollback and retains an exact standby,
+    /// this call atomically switches the route back to that Generation.
+    pub fn reconcile_active_generation(
+        &mut self,
+        now_unix_nanos: u128,
+    ) -> Result<Option<GenerationFailureOutcome>, ControlPlaneError> {
+        let Some(digest) = self.state.active_generation_spec_digest.clone() else {
+            return Ok(None);
+        };
+        let record = self.record(&digest).expect("active record must exist");
+        if record.health == ControlHealth::Failed {
+            return Ok(None);
+        }
+        let slot = self.slots.get(&digest).expect("active slot must be live");
+        let Some(failure) = self.runtime.terminal_failure(&slot.handle) else {
+            return Ok(None);
+        };
+        let automatic_rollback = self.mark_generation_failed(&digest, now_unix_nanos)?;
+        Ok(Some(GenerationFailureOutcome {
+            generation_spec_digest: digest,
+            failure,
+            automatic_rollback,
+        }))
     }
 
     /// Expires one standby window and releases its Generation-owned resources.
