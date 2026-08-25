@@ -190,6 +190,7 @@ fn bundled_esm_stream_preserves_messages_half_close_terminal_and_open_error() {
     .with_codec(ChatCodec);
     let plan = stream_plan();
     let generation = adapter.recreate(&plan, "plugin").unwrap();
+    assert!(generation.endpoints().is_empty());
     let endpoint = generation.stream_endpoints()[0].clone();
     let context = InvocationContext::new(10, None, CancellationToken::new());
     let Ok(Ok(session)) =
