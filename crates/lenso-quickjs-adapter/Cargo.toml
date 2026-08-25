@@ -17,7 +17,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
-lenso-runtime-conformance = "0.1.5"
+lenso-runtime-conformance.workspace = true
 sha2.workspace = true
 tempfile = "3"
 

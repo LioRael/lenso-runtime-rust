@@ -9,14 +9,14 @@ description = "Native Tokio Runtime Driver and Runner for Lenso vNext."
 
 [dependencies]
 futures.workspace = true
-lenso-app-plan = "0.1.1"
-lenso-kernel = "0.1.5"
+lenso-app-plan.workspace = true
+lenso-kernel.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 cpu-time = "1.0"
 
 [dev-dependencies]
 lenso-native-adapter = { version = "0.2.1", path = "../lenso-native-adapter" }
-lenso-runtime-conformance = "0.1.5"
+lenso-runtime-conformance.workspace = true
 
 [lints]
 workspace = true
