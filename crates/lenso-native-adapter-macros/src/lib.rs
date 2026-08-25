@@ -1,6 +1,6 @@
 //! Derivation macros for statically linked native Lenso Modules.
 
-use std::{env, fs, path::PathBuf};
+use std::{collections::BTreeSet, env, fs, path::PathBuf};
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -8,7 +8,7 @@ use quote::{format_ident, quote};
 use serde_json::{Map, Value, json};
 use syn::{
     Attribute, Data, DeriveInput, Fields, GenericArgument, Item, ItemFn, ItemImpl, ItemStruct,
-    LitStr, Path, PathArguments, Token, Type, parse_macro_input,
+    LitStr, Path, PathArguments, Token, Type, parse_macro_input, punctuated::Punctuated,
 };
 
 struct ModuleAttributes {
@@ -324,80 +324,162 @@ fn expand_module_function(
     })
 }
 
-/// Derives one provided Capability endpoint, native factory, and static registration.
+/// Derives one or more provided Capability endpoints, one native factory, and static registration.
 ///
-/// Apply this to an inherent implementation of the Capability's domain methods
+/// Apply this to one inherent implementation containing the Capabilities' domain methods
 /// for a struct already annotated with [`module`]. Generated bindings lower the
 /// methods into the Adapter-facing Provider trait. Existing explicit Provider
-/// trait implementations remain supported as a compatibility escape hatch.
+/// trait implementations remain supported as a single-Capability compatibility
+/// escape hatch. Multi-Capability Modules must use one inherent implementation.
 #[proc_macro_attribute]
 pub fn provides(attributes: TokenStream, item: TokenStream) -> TokenStream {
-    let capability = parse_macro_input!(attributes as Path);
+    let capabilities =
+        parse_macro_input!(attributes with Punctuated::<Path, Token![,]>::parse_terminated);
     let implementation = parse_macro_input!(item as ItemImpl);
-    expand_provides(&capability, &implementation)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
+    expand_provides(
+        &capabilities.into_iter().collect::<Vec<_>>(),
+        &implementation,
+    )
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
 }
 
-fn expand_provides(
-    capability: &Path,
+struct CapabilityContribution {
+    namespace: Path,
+    descriptor: syn::Ident,
+    endpoints: syn::Ident,
+    lower: syn::Ident,
+}
+
+fn capability_contributions(capabilities: &[Path]) -> syn::Result<Vec<CapabilityContribution>> {
+    let mut seen = BTreeSet::new();
+    capabilities
+        .iter()
+        .map(|capability| {
+            let path = quote!(#capability).to_string();
+            if !seen.insert(path) {
+                return Err(syn::Error::new_spanned(
+                    capability,
+                    "a Module cannot provide the same Capability more than once",
+                ));
+            }
+            let mut namespace = capability.clone();
+            let capability_ident = namespace
+                .segments
+                .pop()
+                .ok_or_else(|| syn::Error::new_spanned(capability, "Capability path is empty"))?
+                .into_value()
+                .ident;
+            namespace.segments.pop_punct();
+            if namespace.segments.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    capability,
+                    "Capability must be namespace-qualified, for example `agent::Agent`",
+                ));
+            }
+            let capability_snake = snake(&capability_ident.to_string());
+            Ok(CapabilityContribution {
+                namespace,
+                descriptor: format_ident!("__lenso_provided_{capability_snake}"),
+                endpoints: format_ident!("__lenso_native_endpoints_{capability_snake}"),
+                lower: format_ident!("__lenso_native_lower_{capability_snake}"),
+            })
+        })
+        .collect()
+}
+
+fn provided_module(
+    capabilities: &[Path],
     implementation: &ItemImpl,
-) -> syn::Result<proc_macro2::TokenStream> {
-    let sdk = authoring_crate();
-    let lowers_domain_methods = implementation.trait_.is_none();
+) -> syn::Result<(syn::Ident, bool)> {
+    if capabilities.is_empty() {
+        return Err(syn::Error::new_spanned(
+            implementation,
+            "`provides` requires at least one namespace-qualified Capability",
+        ));
+    }
+    if capabilities.len() > 1 && implementation.trait_.is_some() {
+        return Err(syn::Error::new_spanned(
+            implementation,
+            "multiple Capabilities require one inherent impl containing their domain methods",
+        ));
+    }
     let Type::Path(module_type) = implementation.self_ty.as_ref() else {
         return Err(syn::Error::new_spanned(
             &implementation.self_ty,
             "the Module provider type must be a path",
         ));
     };
-    let module_name = module_type.path.segments.last().ok_or_else(|| {
-        syn::Error::new_spanned(&module_type.path, "the Module provider type is empty")
-    })?;
-    let module_ident = &module_name.ident;
-    let mut capability_namespace = capability.clone();
-    let capability_ident = capability_namespace
+    let module_ident = module_type
+        .path
         .segments
-        .pop()
-        .ok_or_else(|| syn::Error::new_spanned(capability, "Capability path is empty"))?
-        .into_value()
-        .ident;
-    capability_namespace.segments.pop_punct();
-    if capability_namespace.segments.is_empty() {
-        return Err(syn::Error::new_spanned(
-            capability,
-            "Capability must be namespace-qualified, for example `agent::Agent`",
-        ));
-    }
+        .last()
+        .ok_or_else(|| {
+            syn::Error::new_spanned(&module_type.path, "the Module provider type is empty")
+        })?
+        .ident
+        .clone();
+    Ok((module_ident, implementation.trait_.is_none()))
+}
+
+fn expand_provides(
+    capabilities: &[Path],
+    implementation: &ItemImpl,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let sdk = authoring_crate();
+    let (module_ident, lowers_domain_methods) = provided_module(capabilities, implementation)?;
+    let contributions = capability_contributions(capabilities)?;
+    let provided_descriptors = contributions
+        .iter()
+        .map(|contribution| {
+            let namespace = &contribution.namespace;
+            let descriptor = &contribution.descriptor;
+            quote!(#namespace::#descriptor!())
+        })
+        .collect::<Vec<_>>();
     let module_descriptor = format_ident!(
         "__lenso_module_descriptor_{}",
         snake(&module_ident.to_string())
     );
-    let capability_snake = snake(&capability_ident.to_string());
-    let provided_descriptor = format_ident!("__lenso_provided_{capability_snake}");
-    let provide_endpoint = format_ident!("__lenso_native_provide_{capability_snake}");
-    let lower_provider = format_ident!("__lenso_native_lower_{capability_snake}");
     let generated_module = format_ident!("__lenso_provider_{}", snake(&module_ident.to_string()));
     let lifecycle = format_ident!("__LensoLifecycle{module_ident}");
     let artifact = format_ident!("__LENSO_MODULE_DESCRIPTOR_ARTIFACT_{module_ident}");
-    let provider_implementation = lowers_domain_methods.then(|| {
+    let provider_implementations = if lowers_domain_methods {
+        contributions
+            .iter()
+            .map(|contribution| {
+                let namespace = &contribution.namespace;
+                let lower = &contribution.lower;
+                quote! { #namespace::#lower!(#module_ident, #sdk::__private); }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let endpoint_contributions = contributions.iter().map(|contribution| {
+        let namespace = &contribution.namespace;
+        let endpoints = &contribution.endpoints;
         quote! {
-            #capability_namespace::#lower_provider!(#module_ident, #sdk::__private);
+            let (provided_requests, provided_streams, provided_events) =
+                super::#namespace::#endpoints!(module.clone(), #sdk::__private);
+            request_endpoints.extend(provided_requests);
+            stream_endpoints.extend(provided_streams);
+            event_endpoints.extend(provided_events);
         }
     });
 
     Ok(quote! {
         #implementation
-        #provider_implementation
+        #(#provider_implementations)*
 
         /// Generated package-owned Module Descriptor bytes.
         pub const MODULE_DESCRIPTOR_JSON: &str = #module_descriptor!(
-            #capability_namespace::#provided_descriptor!()
+            #(#provided_descriptors),*
         );
         #[doc(hidden)]
         const __LENSO_MODULE_DESCRIPTOR_ARTIFACT_TEXT: &str = concat!(
             "LENSO_MODULE_DESCRIPTOR_V1\0",
-            #module_descriptor!(#capability_namespace::#provided_descriptor!()),
+            #module_descriptor!(#(#provided_descriptors),*),
             "\0END_LENSO_MODULE_DESCRIPTOR_V1",
         );
         /// Linker-retained descriptor artifact consumed without executing package code.
@@ -423,10 +505,15 @@ fn expand_provides(
                 > {
                     let module = super::#module_ident::__lenso_construct(context)?;
                     let lifecycle = super::#lifecycle { module: module.clone() };
-                    Ok(super::#capability_namespace::#provide_endpoint!(
-                        module,
+                    let mut request_endpoints = Vec::new();
+                    let mut stream_endpoints = Vec::new();
+                    let mut event_endpoints = Vec::new();
+                    #(#endpoint_contributions)*
+                    Ok(#sdk::__private::NativeModuleInstance::with_all_endpoints(
+                        request_endpoints,
+                        stream_endpoints,
+                        event_endpoints,
                         lifecycle,
-                        #sdk::__private
                     ))
                 }
             }
@@ -501,8 +588,8 @@ fn expand_module_struct(
 
         #[doc(hidden)]
         macro_rules! #descriptor_macro {
-            ($provided:expr) => {
-                concat!(#prefix, #schema, #after_schema, $provided, #suffix #(, #requirement_parts)*, #defaults)
+            ($first:expr $(, $rest:expr)*) => {
+                concat!(#prefix, #schema, #after_schema, $first $(, ",", $rest)*, #suffix #(, #requirement_parts)*, #defaults)
             };
         }
 
@@ -933,6 +1020,7 @@ fn package_id() -> syn::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use syn::parse_quote;
 
     #[test]
     fn generated_descriptor_owns_identity_and_execution_defaults() {
@@ -962,5 +1050,44 @@ mod tests {
 
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"], json!(["name"]));
+    }
+
+    #[test]
+    fn multiple_capabilities_reject_trait_impls() {
+        let implementation: ItemImpl = parse_quote! {
+            impl fixture::Provider for ExampleModule {}
+        };
+        let error = expand_provides(
+            &[parse_quote!(fixture::One), parse_quote!(fixture::Two)],
+            &implementation,
+        )
+        .expect_err("multi-Capability authoring must have one inherent impl");
+
+        assert!(
+            error
+                .to_string()
+                .contains("multiple Capabilities require one inherent impl")
+        );
+    }
+
+    #[test]
+    fn duplicate_capabilities_are_rejected() {
+        let implementation: ItemImpl = parse_quote! { impl ExampleModule {} };
+        let error = expand_provides(
+            &[parse_quote!(fixture::One), parse_quote!(fixture::One)],
+            &implementation,
+        )
+        .expect_err("one Capability cannot be contributed twice");
+
+        assert!(error.to_string().contains("same Capability more than once"));
+    }
+
+    #[test]
+    fn capability_paths_must_be_namespace_qualified() {
+        let implementation: ItemImpl = parse_quote! { impl ExampleModule {} };
+        let error = expand_provides(&[parse_quote!(One)], &implementation)
+            .expect_err("generated Capability macros live in their namespace");
+
+        assert!(error.to_string().contains("namespace-qualified"));
     }
 }

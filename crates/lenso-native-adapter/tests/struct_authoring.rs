@@ -12,19 +12,18 @@ mod echo {
     pub use crate::__test_lenso_provided_echo as __lenso_provided_echo;
 
     #[macro_export]
-    macro_rules! __test_lenso_native_provide_echo {
-        ($provider:expr, $lifecycle:expr, $support:path) => {{
+    macro_rules! __test_lenso_native_endpoints_echo {
+        ($provider:expr, $support:path) => {{
             use $support as __LensoNativeSupport;
             let _ = $provider;
-            __LensoNativeSupport::NativeModuleInstance::with_all_endpoints(
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                $lifecycle,
+            (
+                Vec::<std::rc::Rc<dyn __LensoNativeSupport::NativeRequestEndpoint>>::new(),
+                Vec::<std::rc::Rc<dyn __LensoNativeSupport::NativeStreamEndpoint>>::new(),
+                Vec::<std::rc::Rc<dyn __LensoNativeSupport::NativeEventEndpoint>>::new(),
             )
         }};
     }
-    pub use crate::__test_lenso_native_provide_echo as __lenso_native_provide_echo;
+    pub use crate::__test_lenso_native_endpoints_echo as __lenso_native_endpoints_echo;
 
     pub struct Echo;
 
