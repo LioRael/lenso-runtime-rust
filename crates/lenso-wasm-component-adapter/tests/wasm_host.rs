@@ -2,18 +2,125 @@ use std::{any::Any, process::Command, time::Duration};
 
 use futures::FutureExt;
 use lenso_app_plan::{
-    CapabilityEndpointPlan, ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
+    AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
+    ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
 };
 use lenso_kernel::{
-    CancellationToken, ExecutionAdapter, InvocationContext, NativeStreamItem, RuntimeFailure,
+    CancellationToken, DeterministicDriver, ExecutionAdapter, ExecutionAdapterCatalog,
+    InvocationContext, Kernel, ModuleDependencyHandle, NativeStreamItem, RequestCapability,
+    RuntimeFailure,
 };
-use lenso_runtime_codec::{ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec};
+use lenso_runtime_codec::{
+    ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonHostRequestFuture,
+    JsonInvocationOutcome,
+};
+use lenso_runtime_conformance::{
+    ConformanceExecutionAdapter, ConformanceModule, ConformanceModuleFactory, PROBE_CAPABILITY_ID,
+    PROBE_DESCRIPTOR_VERSION, PROBE_OPERATION, PROBE_PROVIDER_PACKAGE_ID, Probe, ProbeError,
+    ProbeProviderFactory, ProbeRequest,
+};
 use lenso_wasm_component_adapter::{EXECUTION_CLASS, WasmComponentAdapter, WasmComponentLimits};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
 struct EchoCodec;
+
+#[derive(Debug)]
+struct EchoCapability;
+
+impl RequestCapability for EchoCapability {
+    type Request = u64;
+    type Response = u64;
+    type DomainError = String;
+
+    const ID: &'static str = "test.echo@1";
+    const DESCRIPTOR_VERSION: &'static str = "1.0.0";
+}
+
+#[derive(Debug)]
+struct ProbeCodec;
+
+impl JsonCapabilityCodec for ProbeCodec {
+    fn capability_id(&self) -> &'static str {
+        PROBE_CAPABILITY_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        PROBE_DESCRIPTOR_VERSION
+    }
+
+    fn request_operations(&self) -> &'static [&'static str] {
+        &[PROBE_OPERATION]
+    }
+
+    fn encode_request(&self, _: &str, _: &dyn Any) -> Result<Value, RuntimeFailure> {
+        Err(RuntimeFailure::ProtocolViolation {
+            capability: PROBE_CAPABILITY_ID,
+        })
+    }
+
+    fn decode_response(&self, _: &str, _: Value) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(RuntimeFailure::ProtocolViolation {
+            capability: PROBE_CAPABILITY_ID,
+        })
+    }
+
+    fn decode_domain_error(&self, _: &str, _: Value) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(RuntimeFailure::ProtocolViolation {
+            capability: PROBE_CAPABILITY_ID,
+        })
+    }
+
+    fn invoke_host_request(
+        &self,
+        dependency: ModuleDependencyHandle,
+        operation: String,
+        request: Value,
+        context: InvocationContext,
+    ) -> JsonHostRequestFuture {
+        Box::pin(async move {
+            if operation != PROBE_OPERATION {
+                return Err(RuntimeFailure::UnknownOperation {
+                    capability: PROBE_CAPABILITY_ID,
+                    operation,
+                });
+            }
+            let value = request
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or(RuntimeFailure::ProtocolViolation {
+                    capability: PROBE_CAPABILITY_ID,
+                })?
+                .to_owned();
+            match dependency
+                .typed::<Probe>()?
+                .invoke_with_context(PROBE_OPERATION, context, ProbeRequest { value })
+                .await?
+            {
+                Ok(response) => Ok(JsonInvocationOutcome::Success(
+                    serde_json::json!({ "value": response.value }),
+                )),
+                Err(ProbeError::EmptyValue) => Ok(JsonInvocationOutcome::DomainError(
+                    serde_json::json!({ "kind": "empty_value" }),
+                )),
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct EmptyConsumerFactory;
+
+impl ConformanceModuleFactory for EmptyConsumerFactory {
+    fn package_id(&self) -> &'static str {
+        "test.echo-consumer"
+    }
+
+    fn instantiate(&self, _: &ModuleInstancePlan) -> Result<ConformanceModule, RuntimeFailure> {
+        Ok(ConformanceModule::default())
+    }
+}
 
 impl JsonCapabilityCodec for EchoCodec {
     fn capability_id(&self) -> &'static str {
@@ -168,6 +275,76 @@ impl JsonCapabilityCodec for ChatCodec {
                 capability: self.capability_id(),
             })
     }
+}
+
+#[test]
+fn real_component_import_invokes_only_the_plan_bound_host_capability() {
+    let fixture_target = tempfile::tempdir().unwrap();
+    let status = Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--manifest-path",
+            "tests/fixtures/rust-host-import-guest/Cargo.toml",
+            "--target-dir",
+        ])
+        .arg(fixture_target.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let core = std::fs::read(
+        fixture_target
+            .path()
+            .join("wasm32-unknown-unknown/release/lenso_wasm_host_import_test_guest.wasm"),
+    )
+    .unwrap();
+    let component = wit_component::ComponentEncoder::default()
+        .module(&core)
+        .unwrap()
+        .validate(true)
+        .encode()
+        .unwrap();
+    let artifact_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(artifact_file.path(), &component).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&component)));
+    let artifact =
+        ArtifactHandle::open(artifact_file.path(), &digest, component.len() as u64).unwrap();
+    let wasm = WasmComponentAdapter::new(
+        ArtifactCatalog::new()
+            .with_artifact("plugin", artifact)
+            .unwrap(),
+    )
+    .with_codec(NarrowCodec)
+    .with_codec(ProbeCodec);
+    let adapters = ExecutionAdapterCatalog::new()
+        .with_adapter(
+            ConformanceExecutionAdapter::new()
+                .with_factory(ProbeProviderFactory)
+                .with_factory(EmptyConsumerFactory),
+        )
+        .unwrap()
+        .with_adapter(wasm)
+        .unwrap();
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start(
+            wasm_guest_import_plan(),
+            driver.clone(),
+            adapters,
+        ))
+        .expect("the Wasm Guest Import App should activate");
+    let result = driver
+        .run(
+            app.handle::<EchoCapability>("consumer")
+                .unwrap()
+                .invoke("echo", 7),
+        )
+        .expect("the Wasm guest should reach the host")
+        .expect("the host should not return a Domain Error");
+    assert_eq!(result, 7);
 }
 
 #[test]
@@ -385,4 +562,52 @@ fn stream_plan() -> ResolvedAppPlan {
         ],
         Vec::new(),
     )
+}
+
+fn wasm_guest_import_plan() -> ResolvedAppPlan {
+    AppComposition::new(
+        vec![
+            ModuleInstancePlan::new("provider", PROBE_PROVIDER_PACKAGE_ID).with_capability(
+                CapabilityEndpointPlan::new(
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
+                    [PROBE_OPERATION],
+                ),
+            ),
+            ModuleInstancePlan::new("plugin", "test.component")
+                .with_entrypoint("plugin")
+                .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
+                .with_requirement(CapabilityRequirementPlan::one(
+                    PROBE_CAPABILITY_ID,
+                    PROBE_DESCRIPTOR_VERSION,
+                ))
+                .with_capability(CapabilityEndpointPlan::new(
+                    EchoCapability::ID,
+                    EchoCapability::DESCRIPTOR_VERSION,
+                    ["echo"],
+                )),
+            ModuleInstancePlan::new("consumer", "test.echo-consumer").with_requirement(
+                CapabilityRequirementPlan::one(
+                    EchoCapability::ID,
+                    EchoCapability::DESCRIPTOR_VERSION,
+                ),
+            ),
+        ],
+        vec![
+            CapabilityBinding::new(
+                "plugin",
+                PROBE_CAPABILITY_ID,
+                PROBE_DESCRIPTOR_VERSION,
+                "provider",
+            ),
+            CapabilityBinding::new(
+                "consumer",
+                EchoCapability::ID,
+                EchoCapability::DESCRIPTOR_VERSION,
+                "plugin",
+            ),
+        ],
+    )
+    .resolve()
+    .expect("the Wasm Guest Import fixture should resolve")
 }

@@ -13,19 +13,22 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::{FutureExt, select};
+use futures::{FutureExt, StreamExt, channel::mpsc as futures_mpsc, select};
 use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
     ExecutionAdapter, InvocationContext, ModuleLifecycle, PreparedNativeApp, PreparedNativeModule,
     RuntimeFailure,
 };
 use lenso_runtime_codec::{
-    ArtifactCatalog, JsonCapabilityCodec, JsonInvocationOutcome, JsonRequestTransport,
-    JsonStreamFrame, JsonStreamItem, JsonStreamOpenFuture, JsonStreamSessionTransport,
-    JsonStreamTransport, codecs_for_instance, json_request_endpoints, json_stream_endpoints,
-    prepare_request_app, validate_json_module_descriptor,
+    ArtifactCatalog, JsonCapabilityCodec, JsonHostImports, JsonInvocationOutcome,
+    JsonRequestTransport, JsonStreamFrame, JsonStreamItem, JsonStreamOpenFuture,
+    JsonStreamSessionTransport, JsonStreamTransport, codecs_for_instance, codecs_for_requirements,
+    json_host_invocation_envelope, json_request_endpoints, json_runtime_failure,
+    json_stream_endpoints, prepare_request_app, validate_json_module_descriptor,
 };
-use rquickjs::{Context, Function, Module, Persistent, Runtime, promise::MaybePromise};
+use rquickjs::{
+    Context, Function, Module, Persistent, Runtime, function::Func, promise::MaybePromise,
+};
 use serde_json::Value;
 
 /// Stable open execution-class identity.
@@ -40,6 +43,7 @@ pub struct QuickJsLimits {
     pub max_result_bytes: usize,
     pub max_pending_jobs: usize,
     pub max_streams: usize,
+    pub max_host_imports_per_call: usize,
     pub max_turn: Duration,
 }
 
@@ -52,6 +56,7 @@ impl Default for QuickJsLimits {
             max_result_bytes: 1024 * 1024,
             max_pending_jobs: 1024,
             max_streams: 1024,
+            max_host_imports_per_call: 1024,
             max_turn: Duration::from_secs(1),
         }
     }
@@ -135,10 +140,12 @@ impl QuickJsAdapter {
             detail: "QuickJS Module Artifact is not UTF-8 source".to_owned(),
         })?;
         let codecs = codecs_for_instance(instance, &self.codecs)?;
+        let import_codecs = codecs_for_requirements(instance, &self.codecs)?;
         let generation = Rc::new(QuickJsGeneration::load(
             instance.entrypoint(),
             &source,
             instance.clone(),
+            import_codecs,
             self.limits.clone(),
         )?);
         let endpoints = json_request_endpoints(generation.clone(), codecs.clone());
@@ -222,9 +229,42 @@ enum GuestCall {
     },
 }
 
+enum HostImportCall {
+    Bindings,
+    Invoke {
+        binding_id: u32,
+        operation: String,
+        payload: String,
+    },
+    StreamOpen {
+        binding_id: u32,
+        operation: String,
+        payload: String,
+    },
+    StreamSend {
+        stream_id: u64,
+        payload: String,
+    },
+    StreamReceive {
+        stream_id: u64,
+    },
+    StreamCloseSend {
+        stream_id: u64,
+    },
+    StreamCancel {
+        stream_id: u64,
+    },
+}
+
+struct HostImportCommand {
+    call: HostImportCall,
+    response: mpsc::SyncSender<String>,
+}
+
 struct GuestCommand {
     call: GuestCall,
     abandoned: Arc<AtomicBool>,
+    imports: futures_mpsc::Sender<HostImportCommand>,
     outcome: futures::channel::oneshot::Sender<Result<JsonInvocationOutcome, String>>,
 }
 
@@ -241,6 +281,8 @@ struct QuickJsGeneration {
     stopped: Cell<bool>,
     active_streams: Cell<usize>,
     max_streams: usize,
+    max_host_imports_per_call: usize,
+    host_imports: Rc<JsonHostImports>,
 }
 
 impl std::fmt::Debug for QuickJsGeneration {
@@ -263,6 +305,7 @@ impl QuickJsGeneration {
         entrypoint: &str,
         source: &str,
         instance: ModuleInstancePlan,
+        import_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
         limits: QuickJsLimits,
     ) -> Result<Self, RuntimeFailure> {
         let (commands, receiver) = mpsc::sync_channel(1);
@@ -274,6 +317,8 @@ impl QuickJsGeneration {
         let entrypoint = entrypoint.to_owned();
         let source = source.to_owned();
         let max_streams = limits.max_streams;
+        let max_host_imports_per_call = limits.max_host_imports_per_call;
+        let host_imports = Rc::new(JsonHostImports::new(import_codecs, limits.max_streams)?);
         let worker = thread::Builder::new()
             .name("lenso-quickjs".to_owned())
             .spawn(move || {
@@ -304,6 +349,8 @@ impl QuickJsGeneration {
                 stopped: Cell::new(false),
                 active_streams: Cell::new(0),
                 max_streams,
+                max_host_imports_per_call,
+                host_imports,
             }),
             Ok(Err(detail)) => {
                 interrupt.store(true, Ordering::Release);
@@ -351,10 +398,12 @@ impl QuickJsGeneration {
         let abandoned = Arc::new(AtomicBool::new(false));
         let mut abandonment = AbandonmentGuard(Some(abandoned.clone()));
         let (outcome, response) = futures::channel::oneshot::channel();
+        let (imports, import_receiver) = futures_mpsc::channel(1);
         self.commands
             .try_send(WorkerCommand::Call(GuestCommand {
                 call,
                 abandoned,
+                imports,
                 outcome,
             }))
             .map_err(|_| RuntimeFailure::ResourceExhausted {
@@ -363,30 +412,132 @@ impl QuickJsGeneration {
             })?;
         let cancellation = context.cancellation();
         let mut response = response.fuse();
+        let mut import_receiver = import_receiver.fuse();
         let mut cancelled = cancellation.cancelled().fuse();
-        select! {
-            result = response => {
-                abandonment.disarm();
-                match result {
-                    Ok(Ok(outcome)) => Ok(outcome),
-                    Ok(Err(detail)) => {
-                        self.failed.store(true, Ordering::Release);
-                        Err(RuntimeFailure::ModuleFailure { detail: bounded(detail) })
-                    }
-                    Err(_) => {
-                        self.failed.store(true, Ordering::Release);
-                        Err(RuntimeFailure::ModuleFailure {
-                            detail: "QuickJS worker stopped".to_owned(),
-                        })
+        let mut imported = 0_usize;
+        loop {
+            select! {
+                result = response => {
+                    abandonment.disarm();
+                    return match result {
+                        Ok(Ok(outcome)) => Ok(outcome),
+                        Ok(Err(detail)) => {
+                            self.failed.store(true, Ordering::Release);
+                            Err(RuntimeFailure::ModuleFailure { detail: bounded(detail) })
+                        }
+                        Err(_) => {
+                            self.failed.store(true, Ordering::Release);
+                            Err(RuntimeFailure::ModuleFailure {
+                                detail: "QuickJS worker stopped".to_owned(),
+                            })
+                        }
                     }
                 }
-            }
-            () = cancelled => {
-                self.failed.store(true, Ordering::Release);
-                self.interrupt.store(true, Ordering::Release);
-                Err(RuntimeFailure::Cancelled { request_id: context.request_id() })
+                command = import_receiver.next() => {
+                    let Some(command) = command else {
+                        continue;
+                    };
+                    imported = imported.saturating_add(1);
+                    let encoded = if imported > self.max_host_imports_per_call {
+                        serde_json::to_string(&serde_json::json!({
+                            "runtime": json_runtime_failure(&RuntimeFailure::ResourceExhausted {
+                                capability: "lenso.json-host-imports@1",
+                                operation: "invoke".to_owned(),
+                            })
+                        }))
+                        .expect("host import Runtime Failure is JSON")
+                    } else {
+                        self.dispatch_host_import(command.call, context.clone()).await
+                    };
+                    let _ = command.response.send(encoded);
+                }
+                () = cancelled => {
+                    self.failed.store(true, Ordering::Release);
+                    self.interrupt.store(true, Ordering::Release);
+                    return Err(RuntimeFailure::Cancelled { request_id: context.request_id() });
+                }
             }
         }
+    }
+
+    async fn dispatch_host_import(
+        &self,
+        call: HostImportCall,
+        context: InvocationContext,
+    ) -> String {
+        let value = match call {
+            HostImportCall::Bindings => self.host_imports.descriptors().map_or_else(
+                |error| serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                |bindings| serde_json::json!({ "ok": bindings }),
+            ),
+            HostImportCall::Invoke {
+                binding_id,
+                operation,
+                payload,
+            } => match parse_host_payload(&payload) {
+                Ok(payload) => json_host_invocation_envelope(
+                    self.host_imports
+                        .invoke(binding_id, operation, payload, context)
+                        .await,
+                ),
+                Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+            },
+            HostImportCall::StreamOpen {
+                binding_id,
+                operation,
+                payload,
+            } => match parse_host_payload(&payload) {
+                Ok(payload) => match self
+                    .host_imports
+                    .clone()
+                    .open_stream(binding_id, operation, payload, context)
+                    .await
+                {
+                    Ok(Ok(stream_id)) => serde_json::json!({ "ok": stream_id }),
+                    Ok(Err(error)) => serde_json::json!({ "error": error }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                },
+                Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+            },
+            HostImportCall::StreamSend { stream_id, payload } => match parse_host_payload(&payload)
+            {
+                Ok(payload) => match self.host_imports.send_stream(stream_id, payload).await {
+                    Ok(()) => serde_json::json!({ "ok": null }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                },
+                Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+            },
+            HostImportCall::StreamReceive { stream_id } => {
+                match self.host_imports.clone().receive_stream(stream_id).await {
+                    Ok(JsonStreamItem::Message(value)) => serde_json::json!({
+                        "ok": JsonStreamFrame::Message(value),
+                    }),
+                    Ok(JsonStreamItem::PeerHalfClosed) => serde_json::json!({
+                        "ok": JsonStreamFrame::PeerHalfClosed,
+                    }),
+                    Ok(JsonStreamItem::Terminal(Ok(()))) => serde_json::json!({
+                        "ok": JsonStreamFrame::TerminalSuccess,
+                    }),
+                    Ok(JsonStreamItem::Terminal(Err(error))) => serde_json::json!({
+                        "ok": JsonStreamFrame::TerminalError(error),
+                    }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                }
+            }
+            HostImportCall::StreamCloseSend { stream_id } => {
+                match self.host_imports.close_stream_send(stream_id).await {
+                    Ok(()) => serde_json::json!({ "ok": null }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                }
+            }
+            HostImportCall::StreamCancel { stream_id } => {
+                match self.host_imports.cancel_stream(stream_id) {
+                    Ok(()) => serde_json::json!({ "ok": null }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                }
+            }
+        };
+        serde_json::to_string(&value).expect("host import result is JSON")
     }
 
     fn stop(&self) {
@@ -612,6 +763,7 @@ impl JsonStreamSessionTransport for QuickJsStreamSession {
         }
         self.finish();
         let abandoned = Arc::new(AtomicBool::new(false));
+        let (imports, _import_receiver) = futures_mpsc::channel(1);
         let (outcome, _response) = futures::channel::oneshot::channel();
         let _ = self
             .generation
@@ -621,6 +773,7 @@ impl JsonStreamSessionTransport for QuickJsStreamSession {
                     stream_id: self.stream_id,
                 },
                 abandoned,
+                imports,
                 outcome,
             }));
     }
@@ -692,6 +845,9 @@ fn run_quickjs_worker(
         started: Instant::now(),
         abandoned: Arc::new(AtomicBool::new(false)),
     })));
+    let host_import_sender = Rc::new(RefCell::new(
+        None::<futures_mpsc::Sender<HostImportCommand>>,
+    ));
     let interrupt_invocation = invocation.clone();
     let max_turn = limits.max_turn;
     let worker_interrupt = interrupt.clone();
@@ -708,6 +864,7 @@ fn run_quickjs_worker(
         .any(|descriptor| !descriptor.stream_operations().is_empty());
     let (exports, descriptor) = context
         .with(|context| {
+            install_host_imports(&context, host_import_sender.clone(), invocation.clone())?;
             harden_globals(&context)?;
             let (module, promise) = Module::declare(context.clone(), entrypoint, source)?.eval()?;
             finish_promise(&context, &promise, limits.max_pending_jobs)?;
@@ -764,6 +921,7 @@ fn run_quickjs_worker(
                     started: Instant::now(),
                     abandoned: command.abandoned,
                 }));
+                host_import_sender.replace(Some(command.imports));
                 let result = context.with(|js| {
                     let promise: MaybePromise<'_> = match &command.call {
                         GuestCall::Invoke {
@@ -817,6 +975,7 @@ fn run_quickjs_worker(
                     };
                     finish_maybe_promise(&js, &promise, limits.max_pending_jobs)
                 });
+                host_import_sender.replace(None);
                 invocation.replace(None);
                 let outcome = result
                     .map_err(|error| format!("QuickJS invocation failed: {error}"))
@@ -884,16 +1043,151 @@ fn decode_quickjs_result(
     decode_envelope(envelope).map_err(|error| format!("{error:?}"))
 }
 
+fn parse_host_payload(encoded: &str) -> Result<Value, RuntimeFailure> {
+    serde_json::from_str(encoded).map_err(|_| RuntimeFailure::ProtocolViolation {
+        capability: "lenso.json-host-imports@1",
+    })
+}
+
 #[derive(Debug)]
 struct QuickJsLifecycle {
     generation: Rc<QuickJsGeneration>,
 }
 
 impl ModuleLifecycle for QuickJsLifecycle {
+    fn activate(&self, context: lenso_kernel::ActivateContext) -> lenso_kernel::ModuleFuture {
+        let result = self
+            .generation
+            .host_imports
+            .activate(context.dependencies());
+        Box::pin(futures::future::ready(result))
+    }
+
     fn deactivate(&self, _context: lenso_kernel::DeactivateContext) -> lenso_kernel::ModuleFuture {
+        self.generation.host_imports.deactivate();
         self.generation.stop();
         Box::pin(futures::future::ready(Ok(())))
     }
+}
+
+type HostImportSenderSlot = Rc<RefCell<Option<futures_mpsc::Sender<HostImportCommand>>>>;
+
+fn install_host_imports(
+    context: &rquickjs::Ctx<'_>,
+    sender: HostImportSenderSlot,
+    invocation: Rc<RefCell<Option<InvocationGuard>>>,
+) -> rquickjs::Result<()> {
+    let globals = context.globals();
+    let bindings_sender = sender.clone();
+    let bindings_invocation = invocation.clone();
+    globals.set(
+        "lensoHostBindings",
+        Func::from(move || {
+            call_quickjs_host(
+                &bindings_sender,
+                &bindings_invocation,
+                HostImportCall::Bindings,
+            )
+        }),
+    )?;
+    let invoke_sender = sender.clone();
+    let invoke_invocation = invocation.clone();
+    globals.set(
+        "lensoHostInvoke",
+        Func::from(move |binding_id: u32, operation: String, payload: String| {
+            call_quickjs_host(
+                &invoke_sender,
+                &invoke_invocation,
+                HostImportCall::Invoke {
+                    binding_id,
+                    operation,
+                    payload,
+                },
+            )
+        }),
+    )?;
+    let open_sender = sender.clone();
+    let open_invocation = invocation.clone();
+    globals.set(
+        "lensoHostStreamOpen",
+        Func::from(move |binding_id: u32, operation: String, payload: String| {
+            call_quickjs_host(
+                &open_sender,
+                &open_invocation,
+                HostImportCall::StreamOpen {
+                    binding_id,
+                    operation,
+                    payload,
+                },
+            )
+        }),
+    )?;
+    let send_sender = sender.clone();
+    let send_invocation = invocation.clone();
+    globals.set(
+        "lensoHostStreamSend",
+        Func::from(move |stream_id: u64, payload: String| {
+            call_quickjs_host(
+                &send_sender,
+                &send_invocation,
+                HostImportCall::StreamSend { stream_id, payload },
+            )
+        }),
+    )?;
+    let receive_sender = sender.clone();
+    let receive_invocation = invocation.clone();
+    globals.set(
+        "lensoHostStreamReceive",
+        Func::from(move |stream_id: u64| {
+            call_quickjs_host(
+                &receive_sender,
+                &receive_invocation,
+                HostImportCall::StreamReceive { stream_id },
+            )
+        }),
+    )?;
+    let close_sender = sender.clone();
+    let close_invocation = invocation.clone();
+    globals.set(
+        "lensoHostStreamCloseSend",
+        Func::from(move |stream_id: u64| {
+            call_quickjs_host(
+                &close_sender,
+                &close_invocation,
+                HostImportCall::StreamCloseSend { stream_id },
+            )
+        }),
+    )?;
+    globals.set(
+        "lensoHostStreamCancel",
+        Func::from(move |stream_id: u64| {
+            call_quickjs_host(
+                &sender,
+                &invocation,
+                HostImportCall::StreamCancel { stream_id },
+            )
+        }),
+    )?;
+    Ok(())
+}
+
+fn call_quickjs_host(
+    sender: &HostImportSenderSlot,
+    invocation: &Rc<RefCell<Option<InvocationGuard>>>,
+    call: HostImportCall,
+) -> rquickjs::Result<String> {
+    let (response, receiver) = mpsc::sync_channel(1);
+    sender
+        .borrow_mut()
+        .as_mut()
+        .ok_or(rquickjs::Error::Exception)?
+        .try_send(HostImportCommand { call, response })
+        .map_err(|_| rquickjs::Error::Exception)?;
+    let result = receiver.recv().map_err(|_| rquickjs::Error::Exception)?;
+    if let Some(guard) = invocation.borrow_mut().as_mut() {
+        guard.started = Instant::now();
+    }
+    Ok(result)
 }
 
 fn harden_globals(context: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
@@ -903,6 +1197,21 @@ fn harden_globals(context: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
         globalThis.Function = undefined;
         globalThis.Date = undefined;
         Object.defineProperty(Math, "random", { value: undefined, writable: false });
+        for (const name of [
+          "lensoHostBindings",
+          "lensoHostInvoke",
+          "lensoHostStreamOpen",
+          "lensoHostStreamSend",
+          "lensoHostStreamReceive",
+          "lensoHostStreamCloseSend",
+          "lensoHostStreamCancel",
+        ]) {
+          Object.defineProperty(globalThis, name, {
+            value: globalThis[name],
+            writable: false,
+            configurable: false,
+          });
+        }
         "#,
     )
 }

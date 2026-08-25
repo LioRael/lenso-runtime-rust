@@ -12,19 +12,20 @@ use std::{
     time::Duration,
 };
 
-use futures::{FutureExt, select};
+use futures::{FutureExt, StreamExt, channel::mpsc as futures_mpsc, select};
 use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
     ExecutionAdapter, InvocationContext, ModuleLifecycle, PreparedNativeApp, PreparedNativeModule,
     RuntimeFailure,
 };
 use lenso_runtime_codec::{
-    ArtifactCatalog, JsonCapabilityCodec, JsonInvocationOutcome, JsonRequestTransport,
-    JsonStreamFrame, JsonStreamItem, JsonStreamOpenFuture, JsonStreamSessionTransport,
-    JsonStreamTransport, codecs_for_instance, json_request_endpoints, json_stream_endpoints,
-    prepare_request_app, validate_json_module_descriptor,
+    ArtifactCatalog, JsonCapabilityCodec, JsonHostImports, JsonInvocationOutcome,
+    JsonRequestTransport, JsonStreamFrame, JsonStreamItem, JsonStreamOpenFuture,
+    JsonStreamSessionTransport, JsonStreamTransport, codecs_for_instance, codecs_for_requirements,
+    json_host_invocation_envelope, json_request_endpoints, json_runtime_failure,
+    json_stream_endpoints, prepare_request_app, validate_json_module_descriptor,
 };
-use wasmtime::component::{Component, Linker};
+use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
 mod request_abi {
@@ -58,6 +59,31 @@ mod interactions_abi {
     });
 }
 
+mod host_imports_abi {
+    wasmtime::component::bindgen!({
+        inline: r#"
+            package lenso:runtime@1.0.0;
+            world plugin {
+                import host-bindings: func() -> string;
+                import host-invoke: func(binding-id: u32, operation: string, request-json: string) -> string;
+                import host-stream-open: func(binding-id: u32, operation: string, request-json: string) -> string;
+                import host-stream-send: func(stream-id: u64, message-json: string) -> string;
+                import host-stream-receive: func(stream-id: u64) -> string;
+                import host-stream-close-send: func(stream-id: u64) -> string;
+                import host-stream-cancel: func(stream-id: u64) -> string;
+                export describe: func() -> string;
+                export invoke: func(capability: string, operation: string, request-json: string) -> result<string, string>;
+                export stream-open: func(capability: string, operation: string, request-json: string) -> result<u64, string>;
+                export stream-send: func(stream-id: u64, message-json: string) -> result<_, string>;
+                export stream-receive: func(stream-id: u64) -> result<string, string>;
+                export stream-close-send: func(stream-id: u64) -> result<_, string>;
+                export stream-cancel: func(stream-id: u64);
+            }
+        "#,
+        world: "plugin",
+    });
+}
+
 /// Stable open execution-class identity.
 pub const EXECUTION_CLASS: &str = "lenso.wasm-component@1";
 
@@ -70,6 +96,7 @@ pub struct WasmComponentLimits {
     pub max_instances: usize,
     pub max_result_bytes: usize,
     pub max_streams: usize,
+    pub max_host_imports_per_call: usize,
     pub fuel_per_invocation: u64,
     pub max_turn: Duration,
 }
@@ -83,6 +110,7 @@ impl Default for WasmComponentLimits {
             max_instances: 16,
             max_result_bytes: 1024 * 1024,
             max_streams: 1024,
+            max_host_imports_per_call: 1024,
             fuel_per_invocation: 10_000_000,
             max_turn: Duration::from_secs(1),
         }
@@ -164,9 +192,11 @@ impl WasmComponentAdapter {
             return module_failure("Wasm Component exceeds max_component_bytes");
         }
         let codecs = codecs_for_instance(instance, &self.codecs)?;
+        let import_codecs = codecs_for_requirements(instance, &self.codecs)?;
         let generation = Rc::new(WasmGeneration::start(
             bytes,
             instance.clone(),
+            import_codecs,
             self.limits.clone(),
         )?);
         let endpoints = json_request_endpoints(generation.clone(), codecs.clone());
@@ -250,9 +280,42 @@ enum GuestCall {
     },
 }
 
+enum HostImportCall {
+    Bindings,
+    Invoke {
+        binding_id: u32,
+        operation: String,
+        payload: String,
+    },
+    StreamOpen {
+        binding_id: u32,
+        operation: String,
+        payload: String,
+    },
+    StreamSend {
+        stream_id: u64,
+        payload: String,
+    },
+    StreamReceive {
+        stream_id: u64,
+    },
+    StreamCloseSend {
+        stream_id: u64,
+    },
+    StreamCancel {
+        stream_id: u64,
+    },
+}
+
+struct HostImportCommand {
+    call: HostImportCall,
+    response: mpsc::SyncSender<String>,
+}
+
 struct GuestCommand {
     call: GuestCall,
     abandoned: Arc<AtomicBool>,
+    imports: futures_mpsc::Sender<HostImportCommand>,
     outcome: futures::channel::oneshot::Sender<Result<JsonInvocationOutcome, String>>,
 }
 
@@ -275,6 +338,8 @@ struct WasmGeneration {
     stopped: std::cell::Cell<bool>,
     active_streams: std::cell::Cell<usize>,
     max_streams: usize,
+    max_host_imports_per_call: usize,
+    host_imports: Rc<JsonHostImports>,
 }
 
 impl std::fmt::Debug for WasmGeneration {
@@ -290,6 +355,7 @@ impl WasmGeneration {
     fn start(
         bytes: Vec<u8>,
         instance: ModuleInstancePlan,
+        import_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
         limits: WasmComponentLimits,
     ) -> Result<Self, RuntimeFailure> {
         let mut config = Config::new();
@@ -300,11 +366,15 @@ impl WasmGeneration {
             .max_wasm_stack(1024 * 1024);
         let engine = Engine::new(&config).map_err(wasm_failure)?;
         let component = Component::new(&engine, bytes).map_err(wasm_failure)?;
-        let linker = Linker::<HostState>::new(&engine);
+        let mut linker = Linker::<HostState>::new(&engine);
+        host_imports_abi::Plugin::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
+            .map_err(wasm_failure)?;
         let (commands, receiver) = mpsc::sync_channel::<WorkerCommand>(1);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let worker_engine = engine.clone();
         let max_streams = limits.max_streams;
+        let max_host_imports_per_call = limits.max_host_imports_per_call;
+        let host_imports = Rc::new(JsonHostImports::new(import_codecs, limits.max_streams)?);
         let failed = Arc::new(AtomicBool::new(false));
         let worker_failed = failed.clone();
         let worker = thread::Builder::new()
@@ -337,6 +407,8 @@ impl WasmGeneration {
                 stopped: std::cell::Cell::new(false),
                 active_streams: std::cell::Cell::new(0),
                 max_streams,
+                max_host_imports_per_call,
+                host_imports,
             }),
             Ok(Err(detail)) => {
                 engine.increment_epoch();
@@ -390,10 +462,12 @@ impl WasmGeneration {
         let abandoned = Arc::new(AtomicBool::new(false));
         let mut abandonment = WasmAbandonmentGuard::new(abandoned.clone(), self.engine.clone());
         let (outcome, response) = futures::channel::oneshot::channel();
+        let (imports, import_receiver) = futures_mpsc::channel(1);
         self.commands
             .try_send(WorkerCommand::Call(GuestCommand {
                 call,
                 abandoned,
+                imports,
                 outcome,
             }))
             .map_err(|_| RuntimeFailure::ResourceExhausted {
@@ -402,30 +476,132 @@ impl WasmGeneration {
             })?;
         let cancellation = context.cancellation();
         let mut response = response.fuse();
+        let mut import_receiver = import_receiver.fuse();
         let mut cancelled = cancellation.cancelled().fuse();
-        select! {
-            result = response => match result {
-                Ok(Ok(outcome)) => {
+        let mut imported = 0_usize;
+        loop {
+            select! {
+                result = response => {
                     abandonment.disarm();
-                    Ok(outcome)
-                },
-                Ok(Err(detail)) => {
-                    self.failed.store(true, Ordering::Release);
-                    Err(RuntimeFailure::ModuleFailure { detail: bounded(detail) })
+                    return match result {
+                        Ok(Ok(outcome)) => Ok(outcome),
+                        Ok(Err(detail)) => {
+                            self.failed.store(true, Ordering::Release);
+                            Err(RuntimeFailure::ModuleFailure { detail: bounded(detail) })
+                        }
+                        Err(_) => {
+                            self.failed.store(true, Ordering::Release);
+                            Err(RuntimeFailure::ModuleFailure {
+                                detail: "Wasm Component worker stopped".to_owned(),
+                            })
+                        }
+                    };
                 }
-                Err(_) => {
-                    self.failed.store(true, Ordering::Release);
-                    Err(RuntimeFailure::ModuleFailure {
-                        detail: "Wasm Component worker stopped".to_owned(),
-                    })
+                command = import_receiver.next() => {
+                    let Some(command) = command else {
+                        continue;
+                    };
+                    imported = imported.saturating_add(1);
+                    let encoded = if imported > self.max_host_imports_per_call {
+                        serde_json::to_string(&serde_json::json!({
+                            "runtime": json_runtime_failure(&RuntimeFailure::ResourceExhausted {
+                                capability: "lenso.json-host-imports@1",
+                                operation: "invoke".to_owned(),
+                            })
+                        }))
+                        .expect("host import Runtime Failure is JSON")
+                    } else {
+                        self.dispatch_host_import(command.call, context.clone()).await
+                    };
+                    let _ = command.response.send(encoded);
                 }
-            },
-            () = cancelled => {
-                self.failed.store(true, Ordering::Release);
-                self.engine.increment_epoch();
-                Err(RuntimeFailure::Cancelled { request_id: context.request_id() })
+                () = cancelled => {
+                    self.failed.store(true, Ordering::Release);
+                    self.engine.increment_epoch();
+                    return Err(RuntimeFailure::Cancelled { request_id: context.request_id() });
+                }
             }
         }
+    }
+
+    async fn dispatch_host_import(
+        &self,
+        call: HostImportCall,
+        context: InvocationContext,
+    ) -> String {
+        let value = match call {
+            HostImportCall::Bindings => self.host_imports.descriptors().map_or_else(
+                |error| serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                |bindings| serde_json::json!({ "ok": bindings }),
+            ),
+            HostImportCall::Invoke {
+                binding_id,
+                operation,
+                payload,
+            } => match parse_host_payload(&payload) {
+                Ok(payload) => json_host_invocation_envelope(
+                    self.host_imports
+                        .invoke(binding_id, operation, payload, context)
+                        .await,
+                ),
+                Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+            },
+            HostImportCall::StreamOpen {
+                binding_id,
+                operation,
+                payload,
+            } => match parse_host_payload(&payload) {
+                Ok(payload) => match self
+                    .host_imports
+                    .clone()
+                    .open_stream(binding_id, operation, payload, context)
+                    .await
+                {
+                    Ok(Ok(stream_id)) => serde_json::json!({ "ok": stream_id }),
+                    Ok(Err(error)) => serde_json::json!({ "error": error }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                },
+                Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+            },
+            HostImportCall::StreamSend { stream_id, payload } => match parse_host_payload(&payload)
+            {
+                Ok(payload) => match self.host_imports.send_stream(stream_id, payload).await {
+                    Ok(()) => serde_json::json!({ "ok": null }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                },
+                Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+            },
+            HostImportCall::StreamReceive { stream_id } => {
+                match self.host_imports.clone().receive_stream(stream_id).await {
+                    Ok(JsonStreamItem::Message(value)) => serde_json::json!({
+                        "ok": JsonStreamFrame::Message(value),
+                    }),
+                    Ok(JsonStreamItem::PeerHalfClosed) => serde_json::json!({
+                        "ok": JsonStreamFrame::PeerHalfClosed,
+                    }),
+                    Ok(JsonStreamItem::Terminal(Ok(()))) => serde_json::json!({
+                        "ok": JsonStreamFrame::TerminalSuccess,
+                    }),
+                    Ok(JsonStreamItem::Terminal(Err(error))) => serde_json::json!({
+                        "ok": JsonStreamFrame::TerminalError(error),
+                    }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                }
+            }
+            HostImportCall::StreamCloseSend { stream_id } => {
+                match self.host_imports.close_stream_send(stream_id).await {
+                    Ok(()) => serde_json::json!({ "ok": null }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                }
+            }
+            HostImportCall::StreamCancel { stream_id } => {
+                match self.host_imports.cancel_stream(stream_id) {
+                    Ok(()) => serde_json::json!({ "ok": null }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                }
+            }
+        };
+        serde_json::to_string(&value).expect("host import result is JSON")
     }
 
     fn reserve_stream(&self) -> Result<(), RuntimeFailure> {
@@ -641,6 +817,7 @@ impl JsonStreamSessionTransport for WasmStreamSession {
         self.finish();
         let abandoned = Arc::new(AtomicBool::new(false));
         let (outcome, _response) = futures::channel::oneshot::channel();
+        let (imports, _import_receiver) = futures_mpsc::channel(1);
         let _ = self
             .generation
             .commands
@@ -649,6 +826,7 @@ impl JsonStreamSessionTransport for WasmStreamSession {
                     stream_id: self.stream_id,
                 },
                 abandoned,
+                imports,
                 outcome,
             }));
     }
@@ -696,6 +874,87 @@ impl Drop for WasmAbandonmentGuard {
 #[derive(Debug)]
 struct HostState {
     limits: StoreLimits,
+    imports: Option<futures_mpsc::Sender<HostImportCommand>>,
+    deadline: mpsc::Sender<DeadlineCommand>,
+    max_turn: std::time::Duration,
+}
+
+impl host_imports_abi::PluginImports for HostState {
+    fn host_bindings(&mut self) -> String {
+        call_wasm_host(self, HostImportCall::Bindings)
+    }
+
+    fn host_invoke(&mut self, binding_id: u32, operation: String, request_json: String) -> String {
+        call_wasm_host(
+            self,
+            HostImportCall::Invoke {
+                binding_id,
+                operation,
+                payload: request_json,
+            },
+        )
+    }
+
+    fn host_stream_open(
+        &mut self,
+        binding_id: u32,
+        operation: String,
+        request_json: String,
+    ) -> String {
+        call_wasm_host(
+            self,
+            HostImportCall::StreamOpen {
+                binding_id,
+                operation,
+                payload: request_json,
+            },
+        )
+    }
+
+    fn host_stream_send(&mut self, stream_id: u64, message_json: String) -> String {
+        call_wasm_host(
+            self,
+            HostImportCall::StreamSend {
+                stream_id,
+                payload: message_json,
+            },
+        )
+    }
+
+    fn host_stream_receive(&mut self, stream_id: u64) -> String {
+        call_wasm_host(self, HostImportCall::StreamReceive { stream_id })
+    }
+
+    fn host_stream_close_send(&mut self, stream_id: u64) -> String {
+        call_wasm_host(self, HostImportCall::StreamCloseSend { stream_id })
+    }
+
+    fn host_stream_cancel(&mut self, stream_id: u64) -> String {
+        call_wasm_host(self, HostImportCall::StreamCancel { stream_id })
+    }
+}
+
+fn call_wasm_host(state: &mut HostState, call: HostImportCall) -> String {
+    let _ = state.deadline.send(DeadlineCommand::Disarm);
+    let (response, receiver) = mpsc::sync_channel(1);
+    let result = state
+        .imports
+        .as_mut()
+        .ok_or(())
+        .and_then(|sender| {
+            sender
+                .try_send(HostImportCommand { call, response })
+                .map_err(|_| ())
+        })
+        .and_then(|()| receiver.recv().map_err(|_| ()))
+        .unwrap_or_else(|()| {
+            serde_json::json!({
+                "runtime": { "kind": "admission_closed" }
+            })
+            .to_string()
+        });
+    let _ = state.deadline.send(DeadlineCommand::Arm(state.max_turn));
+    result
 }
 
 #[derive(Clone, Copy)]
@@ -710,6 +969,7 @@ struct WasmWorkerInputs<'a> {
 enum WasmBindings {
     Request(request_abi::Plugin),
     Interactions(interactions_abi::Plugin),
+    HostImports(host_imports_abi::Plugin),
 }
 
 #[allow(clippy::too_many_lines)]
@@ -734,10 +994,19 @@ fn run_worker(
         .tables(limits.max_instances)
         .trap_on_grow_failure(true)
         .build();
+    let (deadline_tx, deadline_rx) = mpsc::channel();
+    let deadline_engine = engine.clone();
+    let deadline_worker = thread::Builder::new()
+        .name("lenso-wasm-deadline".to_owned())
+        .spawn(move || run_deadline_worker(&deadline_engine, &deadline_rx))
+        .map_err(|error| error.to_string())?;
     let mut store = Store::new(
         engine,
         HostState {
             limits: store_limits,
+            imports: None,
+            deadline: deadline_tx.clone(),
+            max_turn: limits.max_turn,
         },
     );
     store.limiter(|state| &mut state.limits);
@@ -746,12 +1015,6 @@ fn run_worker(
         .map_err(|error| error.to_string())?;
     store.set_epoch_deadline(1);
     store.epoch_deadline_trap();
-    let (deadline_tx, deadline_rx) = mpsc::channel();
-    let deadline_engine = engine.clone();
-    let deadline_worker = thread::Builder::new()
-        .name("lenso-wasm-deadline".to_owned())
-        .spawn(move || run_deadline_worker(&deadline_engine, &deadline_rx))
-        .map_err(|error| error.to_string())?;
     deadline_tx
         .send(DeadlineCommand::Arm(limits.max_turn))
         .map_err(|error| error.to_string())?;
@@ -759,7 +1022,12 @@ fn run_worker(
         .provided_capabilities()
         .iter()
         .any(|descriptor| !descriptor.stream_operations().is_empty());
-    let bindings = if requires_stream {
+    let bindings = if !instance.required_capabilities().is_empty() {
+        WasmBindings::HostImports(
+            host_imports_abi::Plugin::instantiate(&mut store, component, linker)
+                .map_err(|error| bounded(error.to_string()))?,
+        )
+    } else if requires_stream {
         WasmBindings::Interactions(
             interactions_abi::Plugin::instantiate(&mut store, component, linker)
                 .map_err(|error| bounded(error.to_string()))?,
@@ -773,6 +1041,7 @@ fn run_worker(
     let descriptor = match &bindings {
         WasmBindings::Request(bindings) => bindings.call_describe(&mut store),
         WasmBindings::Interactions(bindings) => bindings.call_describe(&mut store),
+        WasmBindings::HostImports(bindings) => bindings.call_describe(&mut store),
     }
     .map_err(|error| bounded(format!("Wasm Component describe trapped: {error}")))?;
     if descriptor.len() > limits.max_result_bytes {
@@ -804,12 +1073,14 @@ fn run_worker(
                     deadline_tx
                         .send(DeadlineCommand::Arm(limits.max_turn))
                         .map_err(|error| error.to_string())?;
+                    store.data_mut().imports = Some(command.imports);
                     let outcome = call_wasm_guest(
                         &bindings,
                         &mut store,
                         &command.call,
                         limits.max_result_bytes,
                     );
+                    store.data_mut().imports = None;
                     deadline_tx
                         .send(DeadlineCommand::Disarm)
                         .map_err(|error| error.to_string())?;
@@ -830,6 +1101,7 @@ fn run_worker(
     worker_result
 }
 
+#[allow(clippy::too_many_lines)]
 fn call_wasm_guest(
     bindings: &WasmBindings,
     store: &mut Store<HostState>,
@@ -838,11 +1110,22 @@ fn call_wasm_guest(
 ) -> Result<JsonInvocationOutcome, String> {
     let interactions = match bindings {
         WasmBindings::Interactions(bindings) => Some(bindings),
-        WasmBindings::Request(_) => None,
+        WasmBindings::Request(_) | WasmBindings::HostImports(_) => None,
     };
     match (bindings, call) {
         (
             WasmBindings::Request(bindings),
+            GuestCall::Invoke {
+                capability,
+                operation,
+                payload,
+            },
+        ) => decode_wasm_json_result(
+            bindings.call_invoke(store, capability, operation, payload),
+            max_result_bytes,
+        ),
+        (
+            WasmBindings::HostImports(bindings),
             GuestCall::Invoke {
                 capability,
                 operation,
@@ -863,6 +1146,56 @@ fn call_wasm_guest(
             bindings.call_invoke(store, capability, operation, payload),
             max_result_bytes,
         ),
+        (
+            WasmBindings::HostImports(bindings),
+            GuestCall::StreamOpen {
+                capability,
+                operation,
+                payload,
+            },
+        ) => {
+            let result = bindings
+                .call_stream_open(store, capability, operation, payload)
+                .map_err(|error| format!("Wasm Component trapped: {error}"))?;
+            match result {
+                Ok(stream_id) => Ok(JsonInvocationOutcome::Success(stream_id.into())),
+                Err(encoded) => parse_bounded_json(&encoded, max_result_bytes)
+                    .map(JsonInvocationOutcome::DomainError),
+            }
+        }
+        (WasmBindings::HostImports(bindings), GuestCall::StreamSend { stream_id, payload }) => {
+            bindings
+                .call_stream_send(store, *stream_id, payload)
+                .map_err(|error| format!("Wasm Component trapped: {error}"))?
+                .map_err(|detail| {
+                    bounded(format!("Wasm Component stream-send failed: {detail}"))
+                })?;
+            Ok(JsonInvocationOutcome::Success(serde_json::Value::Null))
+        }
+        (WasmBindings::HostImports(bindings), GuestCall::StreamReceive { stream_id }) => {
+            let encoded = bindings
+                .call_stream_receive(store, *stream_id)
+                .map_err(|error| format!("Wasm Component trapped: {error}"))?
+                .map_err(|detail| {
+                    bounded(format!("Wasm Component stream-receive failed: {detail}"))
+                })?;
+            parse_bounded_json(&encoded, max_result_bytes).map(JsonInvocationOutcome::Success)
+        }
+        (WasmBindings::HostImports(bindings), GuestCall::StreamCloseSend { stream_id }) => {
+            bindings
+                .call_stream_close_send(store, *stream_id)
+                .map_err(|error| format!("Wasm Component trapped: {error}"))?
+                .map_err(|detail| {
+                    bounded(format!("Wasm Component stream-close-send failed: {detail}"))
+                })?;
+            Ok(JsonInvocationOutcome::Success(serde_json::Value::Null))
+        }
+        (WasmBindings::HostImports(bindings), GuestCall::StreamCancel { stream_id }) => {
+            bindings
+                .call_stream_cancel(store, *stream_id)
+                .map_err(|error| format!("Wasm Component trapped: {error}"))?;
+            Ok(JsonInvocationOutcome::Success(serde_json::Value::Null))
+        }
         (
             _,
             GuestCall::StreamOpen {
@@ -976,10 +1309,25 @@ struct WasmLifecycle {
 }
 
 impl ModuleLifecycle for WasmLifecycle {
+    fn activate(&self, context: lenso_kernel::ActivateContext) -> lenso_kernel::ModuleFuture {
+        let result = self
+            .generation
+            .host_imports
+            .activate(context.dependencies());
+        Box::pin(futures::future::ready(result))
+    }
+
     fn deactivate(&self, _context: lenso_kernel::DeactivateContext) -> lenso_kernel::ModuleFuture {
+        self.generation.host_imports.deactivate();
         self.generation.stop();
         Box::pin(futures::future::ready(Ok(())))
     }
+}
+
+fn parse_host_payload(encoded: &str) -> Result<serde_json::Value, RuntimeFailure> {
+    serde_json::from_str(encoded).map_err(|_| RuntimeFailure::ProtocolViolation {
+        capability: "lenso.json-host-imports@1",
+    })
 }
 
 fn wasm_failure(error: impl std::fmt::Display) -> RuntimeFailure {

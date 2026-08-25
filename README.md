@@ -43,9 +43,18 @@ The WASIp2 command requires Wasmtime on `PATH`.
 The preview Wasm Component and QuickJS Adapters preserve the stable
 `lenso.json-request@1` ABI and additionally implement
 `lenso.json-interactions@1` for Request plus bidirectional Stream Capabilities.
+Guests with declared requirements use `lenso.json-host-imports@1`. During
+activation the Host exposes an opaque binding table derived only from the
+immutable Plan; there is no ambient Capability lookup or mutable registry.
+Generated Capability codecs translate portable JSON into typed dependency
+handles, so imported calls retain Kernel admission, deadlines, cancellation,
+supervision, and diagnostics. QuickJS exposes hardened synchronous import
+functions and Wasm uses explicit Component Model imports; both support Request
+and bidirectional Stream calls with bounded per-call and live-session limits.
 Before opening readiness, a guest must expose
-an exact `describe` result containing every provided Capability, Descriptor
-version, interaction kind, and Operation selected by the immutable Plan.
+an exact `describe` result containing every provided and required Capability,
+Descriptor version, cardinality, interaction kind, and Operation selected by
+the immutable Plan.
 Generated codecs lower typed open requests, messages, and Domain Errors to
 portable JSON. Stream guests expose explicit open, send, receive, half-close,
 and cancel functions; the Host bounds both worker admission and live sessions.

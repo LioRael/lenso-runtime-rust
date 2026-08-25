@@ -8,11 +8,14 @@ use std::{
     rc::Rc,
 };
 
-use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
+use lenso_app_plan::{
+    CapabilityCardinality, ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
+};
 use lenso_kernel::{
-    InvocationContext, NativeRequestEndpoint, NativeStreamEndpoint, NativeStreamItem,
+    InvocationContext, ModuleDependencies, ModuleDependencyHandle, ModuleStreamDependencyHandle,
+    NativeRequestEndpoint, NativeStream, NativeStreamEndpoint, NativeStreamItem,
     NativeStreamSession, PreparedBinding, PreparedNativeApp, PreparedNativeModule,
-    PreparedStreamBinding, RuntimeFailure,
+    PreparedStreamBinding, RuntimeFailure, StreamCapability, StreamEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -184,6 +187,34 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
         let _ = value;
         Err(unknown_operation(self.capability_id(), operation))
     }
+    /// Invokes one exact Plan-bound host Request dependency from portable JSON.
+    fn invoke_host_request(
+        &self,
+        dependency: ModuleDependencyHandle,
+        operation: String,
+        request: Value,
+        context: InvocationContext,
+    ) -> JsonHostRequestFuture {
+        let _ = (dependency, request, context);
+        Box::pin(futures::future::ready(Err(unknown_operation(
+            self.capability_id(),
+            &operation,
+        ))))
+    }
+    /// Opens one exact Plan-bound host Stream dependency from portable JSON.
+    fn open_host_stream(
+        &self,
+        dependency: ModuleStreamDependencyHandle,
+        operation: String,
+        request: Value,
+        context: InvocationContext,
+    ) -> JsonHostStreamOpenFuture {
+        let _ = (dependency, request, context);
+        Box::pin(futures::future::ready(Err(unknown_operation(
+            self.capability_id(),
+            &operation,
+        ))))
+    }
 }
 
 /// Exact host outcome returned by a byte-oriented Module invocation.
@@ -195,11 +226,182 @@ pub enum JsonInvocationOutcome {
     DomainError(Value),
 }
 
+/// Projects a Runtime Failure into a bounded, secret-free guest ABI value.
+pub fn json_runtime_failure(error: &RuntimeFailure) -> Value {
+    match error {
+        RuntimeFailure::Unavailable { capability } => serde_json::json!({
+            "kind": "unavailable",
+            "capability": capability,
+        }),
+        RuntimeFailure::UnknownOperation {
+            capability,
+            operation,
+        } => serde_json::json!({
+            "kind": "unknown_operation",
+            "capability": capability,
+            "operation": operation,
+        }),
+        RuntimeFailure::AmbiguousBinding {
+            capability,
+            providers,
+        } => serde_json::json!({
+            "kind": "ambiguous_binding",
+            "capability": capability,
+            "providers": providers,
+        }),
+        RuntimeFailure::ProtocolViolation { capability } => serde_json::json!({
+            "kind": "protocol_violation",
+            "capability": capability,
+        }),
+        RuntimeFailure::AdmissionClosed => serde_json::json!({ "kind": "admission_closed" }),
+        RuntimeFailure::ResourceExhausted {
+            capability,
+            operation,
+        } => serde_json::json!({
+            "kind": "resource_exhausted",
+            "capability": capability,
+            "operation": operation,
+        }),
+        RuntimeFailure::DeadlineExceeded { request_id } => serde_json::json!({
+            "kind": "deadline_exceeded",
+            "request_id": request_id.to_string(),
+        }),
+        RuntimeFailure::Cancelled { request_id } => serde_json::json!({
+            "kind": "cancelled",
+            "request_id": request_id.to_string(),
+        }),
+        RuntimeFailure::MissingModuleFactory { .. }
+        | RuntimeFailure::UnavailableExecutionClass { .. }
+        | RuntimeFailure::InvalidResolvedPlan { .. }
+        | RuntimeFailure::Internal { .. }
+        | RuntimeFailure::ModuleFailure { .. }
+        | RuntimeFailure::ModuleRestartExhausted { .. } => {
+            serde_json::json!({ "kind": "internal" })
+        }
+    }
+}
+
+/// Encodes a host import Request result into the stable guest envelope.
+pub fn json_host_invocation_envelope(
+    outcome: Result<JsonInvocationOutcome, RuntimeFailure>,
+) -> Value {
+    match outcome {
+        Ok(JsonInvocationOutcome::Success(value)) => serde_json::json!({ "ok": value }),
+        Ok(JsonInvocationOutcome::DomainError(value)) => serde_json::json!({ "error": value }),
+        Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+    }
+}
+
+/// Result of one Plan-bound host Request import after generated value translation.
+pub type JsonHostRequestFuture =
+    futures::future::LocalBoxFuture<'static, Result<JsonInvocationOutcome, RuntimeFailure>>;
+
+/// Adapter-neutral host Stream session exposed to a byte-oriented guest.
+pub trait JsonHostStreamSession: std::fmt::Debug + 'static {
+    fn send(
+        self: Rc<Self>,
+        message: Value,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>>;
+    fn receive(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonStreamItem, RuntimeFailure>>;
+    fn close_send(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>>;
+    fn cancel(&self);
+}
+
+/// Result of opening one Plan-bound host Stream import.
+pub type JsonHostStreamOpenFuture = futures::future::LocalBoxFuture<
+    'static,
+    Result<Result<Rc<dyn JsonHostStreamSession>, Value>, RuntimeFailure>,
+>;
+
+type DecodeStreamMessage<C> =
+    Rc<dyn Fn(Value) -> Result<<C as StreamCapability>::Message, RuntimeFailure>>;
+type EncodeStreamMessage<C> =
+    Rc<dyn Fn(<C as StreamCapability>::Message) -> Result<Value, RuntimeFailure>>;
+type EncodeStreamError<C> =
+    Rc<dyn Fn(<C as StreamCapability>::DomainError) -> Result<Value, RuntimeFailure>>;
+
+/// Wraps one generated typed host Stream as portable JSON for a guest import.
+pub fn json_host_stream<C: StreamCapability>(
+    stream: NativeStream<C>,
+    decode_message: impl Fn(Value) -> Result<C::Message, RuntimeFailure> + 'static,
+    encode_message: impl Fn(C::Message) -> Result<Value, RuntimeFailure> + 'static,
+    encode_error: impl Fn(C::DomainError) -> Result<Value, RuntimeFailure> + 'static,
+) -> Rc<dyn JsonHostStreamSession> {
+    Rc::new(TypedJsonHostStream {
+        stream: Rc::new(stream),
+        decode_message: Rc::new(decode_message),
+        encode_message: Rc::new(encode_message),
+        encode_error: Rc::new(encode_error),
+    })
+}
+
+struct TypedJsonHostStream<C: StreamCapability> {
+    stream: Rc<NativeStream<C>>,
+    decode_message: DecodeStreamMessage<C>,
+    encode_message: EncodeStreamMessage<C>,
+    encode_error: EncodeStreamError<C>,
+}
+
+impl<C: StreamCapability> std::fmt::Debug for TypedJsonHostStream<C> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TypedJsonHostStream")
+            .field("capability", &C::ID)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<C: StreamCapability> JsonHostStreamSession for TypedJsonHostStream<C> {
+    fn send(
+        self: Rc<Self>,
+        message: Value,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move {
+            let message = (self.decode_message)(message)?;
+            self.stream.send(message).await
+        })
+    }
+
+    fn receive(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonStreamItem, RuntimeFailure>> {
+        Box::pin(async move {
+            match self.stream.receive().await? {
+                StreamEvent::Message(message) => {
+                    (self.encode_message)(message).map(JsonStreamItem::Message)
+                }
+                StreamEvent::PeerHalfClosed => Ok(JsonStreamItem::PeerHalfClosed),
+                StreamEvent::Terminal(Ok(())) => Ok(JsonStreamItem::Terminal(Ok(()))),
+                StreamEvent::Terminal(Err(error)) => {
+                    (self.encode_error)(error).map(|error| JsonStreamItem::Terminal(Err(error)))
+                }
+            }
+        })
+    }
+
+    fn close_send(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move { self.stream.close_send().await })
+    }
+
+    fn cancel(&self) {
+        self.stream.cancel();
+    }
+}
+
 /// Stable request-only guest ABI implemented by byte-oriented Module runtimes.
 pub const JSON_REQUEST_ABI_V1: &str = "lenso.json-request@1";
 
 /// Stable Request and bidirectional Stream guest ABI.
 pub const JSON_INTERACTIONS_ABI_V1: &str = "lenso.json-interactions@1";
+
+/// Stable Request, Stream, and Plan-bound host Capability import ABI.
+pub const JSON_HOST_IMPORTS_ABI_V1: &str = "lenso.json-host-imports@1";
 
 /// Exact guest declaration returned before an Adapter opens readiness.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -207,10 +409,12 @@ pub const JSON_INTERACTIONS_ABI_V1: &str = "lenso.json-interactions@1";
 pub struct JsonModuleDescriptor {
     pub abi: String,
     pub capabilities: Vec<JsonCapabilityDescriptor>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_capabilities: Vec<JsonRequiredCapabilityDescriptor>,
 }
 
 /// One exact request Capability exposed by a guest Module.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JsonCapabilityDescriptor {
     pub capability_id: String,
@@ -218,6 +422,15 @@ pub struct JsonCapabilityDescriptor {
     pub request_operations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stream_operations: Vec<String>,
+}
+
+/// One exact Capability requirement declared by a guest Module.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonRequiredCapabilityDescriptor {
+    pub capability_id: String,
+    pub descriptor_version: String,
+    pub cardinality: CapabilityCardinality,
 }
 
 /// Derives the only guest declaration accepted for one resolved Instance.
@@ -261,8 +474,20 @@ pub fn expected_json_module_descriptor(
             ),
         });
     }
+    let mut required_capabilities = instance
+        .required_capabilities()
+        .iter()
+        .map(|requirement| JsonRequiredCapabilityDescriptor {
+            capability_id: requirement.capability_id().to_owned(),
+            descriptor_version: requirement.descriptor_version().to_owned(),
+            cardinality: requirement.cardinality(),
+        })
+        .collect::<Vec<_>>();
+    sort_required_capabilities(&mut required_capabilities);
     Ok(JsonModuleDescriptor {
-        abi: if capabilities
+        abi: if !required_capabilities.is_empty() {
+            JSON_HOST_IMPORTS_ABI_V1
+        } else if capabilities
             .iter()
             .any(|capability| !capability.stream_operations.is_empty())
         {
@@ -272,6 +497,7 @@ pub fn expected_json_module_descriptor(
         }
         .to_owned(),
         capabilities,
+        required_capabilities,
     })
 }
 
@@ -286,6 +512,7 @@ pub fn validate_json_module_descriptor(
         }
     })?;
     actual.capabilities.sort();
+    sort_required_capabilities(&mut actual.required_capabilities);
     let expected = expected_json_module_descriptor(instance)?;
     if actual != expected {
         return Err(RuntimeFailure::InvalidResolvedPlan {
@@ -296,6 +523,29 @@ pub fn validate_json_module_descriptor(
         });
     }
     Ok(())
+}
+
+fn sort_required_capabilities(requirements: &mut [JsonRequiredCapabilityDescriptor]) {
+    requirements.sort_by(|left, right| {
+        (
+            &left.capability_id,
+            &left.descriptor_version,
+            cardinality_order(left.cardinality),
+        )
+            .cmp(&(
+                &right.capability_id,
+                &right.descriptor_version,
+                cardinality_order(right.cardinality),
+            ))
+    });
+}
+
+const fn cardinality_order(cardinality: CapabilityCardinality) -> u8 {
+    match cardinality {
+        CapabilityCardinality::One => 0,
+        CapabilityCardinality::Optional => 1,
+        CapabilityCardinality::Many => 2,
+    }
 }
 
 /// Guest transport seam shared by Wasm Component and embedded-JavaScript Adapters.
@@ -330,6 +580,310 @@ pub enum JsonStreamFrame {
     PeerHalfClosed,
     TerminalSuccess,
     TerminalError(Value),
+}
+
+/// One exact Plan binding exposed to a guest Module after lifecycle activation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct JsonHostBindingDescriptor {
+    pub binding_id: u32,
+    pub provider_instance: String,
+    pub capability_id: String,
+    pub descriptor_version: String,
+    pub request_operations: Vec<String>,
+    pub stream_operations: Vec<String>,
+}
+
+#[derive(Clone)]
+struct JsonHostBinding {
+    descriptor: JsonHostBindingDescriptor,
+    codec: Rc<dyn JsonCapabilityCodec>,
+    request: Option<ModuleDependencyHandle>,
+    stream: Option<ModuleStreamDependencyHandle>,
+}
+
+impl std::fmt::Debug for JsonHostBinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("JsonHostBinding")
+            .field("descriptor", &self.descriptor)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Activated, Plan-bound Capability imports for one byte-oriented guest generation.
+#[derive(Debug)]
+pub struct JsonHostImports {
+    codecs: BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
+    bindings: std::cell::RefCell<Option<Vec<JsonHostBinding>>>,
+    streams: std::cell::RefCell<BTreeMap<u64, Rc<dyn JsonHostStreamSession>>>,
+    next_stream_id: std::cell::Cell<u64>,
+    max_streams: usize,
+}
+
+impl JsonHostImports {
+    /// Creates a closed import table from the exact generated requirement codecs.
+    pub fn new(
+        codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
+        max_streams: usize,
+    ) -> Result<Self, RuntimeFailure> {
+        let mut by_capability = BTreeMap::new();
+        for codec in codecs {
+            let capability = codec.capability_id().to_owned();
+            if by_capability.insert(capability.clone(), codec).is_some() {
+                return Err(RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!("duplicate guest import codec for Capability `{capability}`"),
+                });
+            }
+        }
+        Ok(Self {
+            codecs: by_capability,
+            bindings: std::cell::RefCell::new(None),
+            streams: std::cell::RefCell::new(BTreeMap::new()),
+            next_stream_id: std::cell::Cell::new(1),
+            max_streams,
+        })
+    }
+
+    /// Installs only the dependencies materialized from the immutable Plan.
+    pub fn activate(&self, dependencies: &ModuleDependencies) -> Result<(), RuntimeFailure> {
+        if self.bindings.borrow().is_some() {
+            return Err(RuntimeFailure::Internal {
+                detail: "guest Capability imports were activated twice".to_owned(),
+            });
+        }
+        let mut bindings = Vec::with_capacity(dependencies.len());
+        for (index, dependency) in dependencies.bindings().iter().enumerate() {
+            let codec = self
+                .codecs
+                .get(dependency.capability_id())
+                .cloned()
+                .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!(
+                        "no generated guest import codec for Capability `{}`",
+                        dependency.capability_id()
+                    ),
+                })?;
+            let request = dependency.handle();
+            let stream = dependency.stream_handle();
+            validate_host_binding(&codec, request.as_ref(), stream.as_ref())?;
+            let binding_id =
+                u32::try_from(index).map_err(|_| RuntimeFailure::InvalidResolvedPlan {
+                    detail: "guest import binding table exceeds u32 identity space".to_owned(),
+                })?;
+            bindings.push(JsonHostBinding {
+                descriptor: JsonHostBindingDescriptor {
+                    binding_id,
+                    provider_instance: dependency.provider_instance().to_owned(),
+                    capability_id: dependency.capability_id().to_owned(),
+                    descriptor_version: codec.descriptor_version().to_owned(),
+                    request_operations: request.as_ref().map_or_else(Vec::new, |handle| {
+                        handle
+                            .operations()
+                            .iter()
+                            .map(|item| (*item).to_owned())
+                            .collect()
+                    }),
+                    stream_operations: stream.as_ref().map_or_else(Vec::new, |handle| {
+                        handle
+                            .operations()
+                            .iter()
+                            .map(|item| (*item).to_owned())
+                            .collect()
+                    }),
+                },
+                codec,
+                request,
+                stream,
+            });
+        }
+        self.bindings.replace(Some(bindings));
+        Ok(())
+    }
+
+    /// Returns the exact activated binding table in resolved provider order.
+    pub fn descriptors(&self) -> Result<Vec<JsonHostBindingDescriptor>, RuntimeFailure> {
+        self.bindings
+            .borrow()
+            .as_ref()
+            .map(|bindings| {
+                bindings
+                    .iter()
+                    .map(|binding| binding.descriptor.clone())
+                    .collect()
+            })
+            .ok_or(RuntimeFailure::AdmissionClosed)
+    }
+
+    /// Invokes one activated Request binding by its unforgeable table index.
+    pub fn invoke(
+        &self,
+        binding_id: u32,
+        operation: String,
+        request: Value,
+        context: InvocationContext,
+    ) -> JsonHostRequestFuture {
+        let binding = match self.binding(binding_id) {
+            Ok(binding) => binding,
+            Err(error) => return Box::pin(futures::future::ready(Err(error))),
+        };
+        let Some(dependency) = binding.request else {
+            return Box::pin(futures::future::ready(Err(
+                RuntimeFailure::UnknownOperation {
+                    capability: binding.codec.capability_id(),
+                    operation,
+                },
+            )));
+        };
+        binding
+            .codec
+            .invoke_host_request(dependency, operation, request, context)
+    }
+
+    /// Opens one activated Stream binding and assigns an Adapter-local import id.
+    pub fn open_stream(
+        self: Rc<Self>,
+        binding_id: u32,
+        operation: String,
+        request: Value,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<Result<u64, Value>, RuntimeFailure>> {
+        Box::pin(async move {
+            if self.streams.borrow().len() >= self.max_streams {
+                return Err(RuntimeFailure::ResourceExhausted {
+                    capability: "lenso.json-host-imports@1",
+                    operation: "stream-open".to_owned(),
+                });
+            }
+            let binding = self.binding(binding_id)?;
+            let dependency = binding
+                .stream
+                .ok_or_else(|| RuntimeFailure::UnknownOperation {
+                    capability: binding.codec.capability_id(),
+                    operation: operation.clone(),
+                })?;
+            match binding
+                .codec
+                .open_host_stream(dependency, operation, request, context)
+                .await?
+            {
+                Ok(stream) => {
+                    let stream_id = self.next_stream_id.get();
+                    let next =
+                        stream_id
+                            .checked_add(1)
+                            .ok_or(RuntimeFailure::ResourceExhausted {
+                                capability: "lenso.json-host-imports@1",
+                                operation: "stream-open".to_owned(),
+                            })?;
+                    self.next_stream_id.set(next);
+                    self.streams.borrow_mut().insert(stream_id, stream);
+                    Ok(Ok(stream_id))
+                }
+                Err(error) => Ok(Err(error)),
+            }
+        })
+    }
+
+    /// Sends one portable message through a guest-owned host Stream.
+    pub fn send_stream(
+        &self,
+        stream_id: u64,
+        message: Value,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        match self.stream(stream_id) {
+            Ok(stream) => stream.send(message),
+            Err(error) => Box::pin(futures::future::ready(Err(error))),
+        }
+    }
+
+    /// Receives the next portable frame from one guest-owned host Stream.
+    pub fn receive_stream(
+        self: Rc<Self>,
+        stream_id: u64,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonStreamItem, RuntimeFailure>> {
+        Box::pin(async move {
+            let stream = self.stream(stream_id)?;
+            let item = stream.receive().await?;
+            if matches!(item, JsonStreamItem::Terminal(_)) {
+                self.streams.borrow_mut().remove(&stream_id);
+            }
+            Ok(item)
+        })
+    }
+
+    /// Half-closes the guest-to-host direction of one guest-owned host Stream.
+    pub fn close_stream_send(
+        &self,
+        stream_id: u64,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        match self.stream(stream_id) {
+            Ok(stream) => stream.close_send(),
+            Err(error) => Box::pin(futures::future::ready(Err(error))),
+        }
+    }
+
+    /// Cancels and removes one guest-owned host Stream.
+    pub fn cancel_stream(&self, stream_id: u64) -> Result<(), RuntimeFailure> {
+        let stream = self
+            .streams
+            .borrow_mut()
+            .remove(&stream_id)
+            .ok_or_else(unknown_host_stream)?;
+        stream.cancel();
+        Ok(())
+    }
+
+    /// Closes admission and cancels every import Stream owned by this generation.
+    pub fn deactivate(&self) {
+        self.bindings.replace(None);
+        for (_, stream) in std::mem::take(&mut *self.streams.borrow_mut()) {
+            stream.cancel();
+        }
+    }
+
+    fn binding(&self, binding_id: u32) -> Result<JsonHostBinding, RuntimeFailure> {
+        let bindings = self.bindings.borrow();
+        let bindings = bindings.as_ref().ok_or(RuntimeFailure::AdmissionClosed)?;
+        bindings
+            .get(binding_id as usize)
+            .cloned()
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: JSON_HOST_IMPORTS_ABI_V1,
+            })
+    }
+
+    fn stream(&self, stream_id: u64) -> Result<Rc<dyn JsonHostStreamSession>, RuntimeFailure> {
+        self.streams
+            .borrow()
+            .get(&stream_id)
+            .cloned()
+            .ok_or_else(unknown_host_stream)
+    }
+}
+
+fn validate_host_binding(
+    codec: &Rc<dyn JsonCapabilityCodec>,
+    request: Option<&ModuleDependencyHandle>,
+    stream: Option<&ModuleStreamDependencyHandle>,
+) -> Result<(), RuntimeFailure> {
+    for (capability, version) in request
+        .map(|handle| (handle.capability_id(), handle.descriptor_version()))
+        .into_iter()
+        .chain(stream.map(|handle| (handle.capability_id(), handle.descriptor_version())))
+    {
+        if capability != codec.capability_id() || version != codec.descriptor_version() {
+            return Err(RuntimeFailure::ProtocolViolation {
+                capability: codec.capability_id(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn unknown_host_stream() -> RuntimeFailure {
+    RuntimeFailure::ProtocolViolation {
+        capability: "lenso.json-host-imports@1",
+    }
 }
 
 impl JsonStreamFrame {
@@ -638,6 +1192,31 @@ pub fn codecs_for_instance(
             || request_operations != expected_request
             || stream_operations != expected_stream
         {
+            return Err(RuntimeFailure::ProtocolViolation {
+                capability: codec.capability_id(),
+            });
+        }
+        selected.push(codec.clone());
+    }
+    Ok(selected)
+}
+
+/// Validates every declared guest requirement against one registered generated codec.
+pub fn codecs_for_requirements(
+    instance: &ModuleInstancePlan,
+    codecs: &BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
+) -> Result<Vec<Rc<dyn JsonCapabilityCodec>>, RuntimeFailure> {
+    let mut selected = Vec::with_capacity(instance.required_capabilities().len());
+    for requirement in instance.required_capabilities() {
+        let codec = codecs.get(requirement.capability_id()).ok_or_else(|| {
+            RuntimeFailure::InvalidResolvedPlan {
+                detail: format!(
+                    "no generated guest import codec for Capability `{}`",
+                    requirement.capability_id()
+                ),
+            }
+        })?;
+        if codec.descriptor_version() != requirement.descriptor_version() {
             return Err(RuntimeFailure::ProtocolViolation {
                 capability: codec.capability_id(),
             });
