@@ -389,6 +389,7 @@ pub fn json_request_endpoints<T: JsonRequestTransport>(
     let transport: Rc<dyn JsonRequestTransport> = transport;
     codecs
         .into_iter()
+        .filter(|codec| !codec.request_operations().is_empty())
         .map(|codec| {
             Rc::new(JsonRequestEndpoint {
                 transport: transport.clone(),
