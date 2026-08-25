@@ -7,6 +7,7 @@ mod durable_supervisor;
 mod kernel_runtime;
 mod model;
 mod multi_execution;
+mod replicated_runtime;
 mod resolver;
 mod store;
 mod supervisor;
@@ -24,6 +25,9 @@ pub use durable_supervisor::{
 pub use kernel_runtime::{CatalogFactory, KernelGenerationHandle, KernelGenerationRuntime};
 pub use model::*;
 pub use multi_execution::MultiExecutionCatalogFactory;
+pub use replicated_runtime::{
+    ReplicatedCatalogFactory, ReplicatedGenerationHandle, ReplicatedGenerationRuntime,
+};
 pub use resolver::{ResolutionInput, ResolvedGeneration, resolve_generation};
 pub use store::{AdmissionPolicy, AdmissionReceipt, AdmittedArtifact, PluginBundle, PluginStore};
 pub use supervisor::{

@@ -305,6 +305,31 @@ pub struct ReplicatedNativeApp {
     epoch: Instant,
 }
 
+#[derive(Clone)]
+struct ReplicatedLaneRoute {
+    id: ExecutionLaneId,
+    commands: LaneSender,
+}
+
+/// Cloneable invocation target for one complete replicated App Generation.
+#[derive(Clone)]
+pub struct ReplicatedAppRoute {
+    plan: Arc<ResolvedAppPlan>,
+    lanes: BTreeMap<ExecutionLaneId, ReplicatedLaneRoute>,
+    diagnostics: Arc<LaneDiagnosticsState>,
+    terminal: Arc<ReplicatedTerminalState>,
+    epoch: Instant,
+}
+
+impl fmt::Debug for ReplicatedAppRoute {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReplicatedAppRoute")
+            .field("lanes", &self.lanes.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
 impl fmt::Debug for ReplicatedNativeApp {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -315,21 +340,45 @@ impl fmt::Debug for ReplicatedNativeApp {
 }
 
 impl ReplicatedNativeApp {
-    fn ensure_running(&self) -> Result<(), RuntimeFailure> {
-        if let Some(failure) = self.terminal.failure() {
-            return Err(RuntimeFailure::Internal {
-                detail: failure.to_string(),
-            });
-        }
-        Ok(())
-    }
-
     /// Starts one unmodified Kernel replica per declared Execution Lane.
     pub fn start<F>(plan: ResolvedAppPlan, adapters: F) -> Result<Self, ReplicatedRunnerError>
     where
         F: Fn(&ExecutionLaneId) -> ExecutionAdapterCatalog + Send + Sync + 'static,
     {
-        Self::start_with_transfer_catalog(plan, adapters, CrossLaneTransferCatalog::new())
+        Self::start_fallible(plan, move |lane| Ok(adapters(lane)))
+    }
+
+    /// Starts every declared lane with fallible lane-local Adapter assembly.
+    pub fn start_fallible<F>(
+        plan: ResolvedAppPlan,
+        adapters: F,
+    ) -> Result<Self, ReplicatedRunnerError>
+    where
+        F: Fn(&ExecutionLaneId) -> Result<ExecutionAdapterCatalog, String> + Send + Sync + 'static,
+    {
+        Self::start_with_fallible_transfer_catalog(
+            plan,
+            adapters,
+            CrossLaneTransferCatalog::new(),
+            None,
+        )
+    }
+
+    /// Starts every lane and fails closed unless the complete Lane Set is Ready in time.
+    pub fn start_fallible_with_timeout<F>(
+        plan: ResolvedAppPlan,
+        adapters: F,
+        ready_timeout: Duration,
+    ) -> Result<Self, ReplicatedRunnerError>
+    where
+        F: Fn(&ExecutionLaneId) -> Result<ExecutionAdapterCatalog, String> + Send + Sync + 'static,
+    {
+        Self::start_with_fallible_transfer_catalog(
+            plan,
+            adapters,
+            CrossLaneTransferCatalog::new(),
+            Some(ready_timeout),
+        )
     }
 
     /// Starts replicated lanes with generated request types allowed to cross them.
@@ -354,6 +403,25 @@ impl ReplicatedNativeApp {
     ) -> Result<Self, ReplicatedRunnerError>
     where
         F: Fn(&ExecutionLaneId) -> ExecutionAdapterCatalog + Send + Sync + 'static,
+    {
+        Self::start_with_fallible_transfer_catalog(
+            plan,
+            move |lane| Ok(adapters(lane)),
+            transfers,
+            None,
+        )
+    }
+
+    /// Starts a complete Lane Set with fallible Adapters, transfers, and one Ready deadline.
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    pub fn start_with_fallible_transfer_catalog<F>(
+        plan: ResolvedAppPlan,
+        adapters: F,
+        transfers: CrossLaneTransferCatalog,
+        ready_timeout: Option<Duration>,
+    ) -> Result<Self, ReplicatedRunnerError>
+    where
+        F: Fn(&ExecutionLaneId) -> Result<ExecutionAdapterCatalog, String> + Send + Sync + 'static,
     {
         plan.validate()
             .map_err(|error| ReplicatedRunnerError::InvalidPlan {
@@ -460,8 +528,16 @@ impl ReplicatedNativeApp {
             );
         }
 
+        let ready_deadline = ready_timeout.and_then(|timeout| Instant::now().checked_add(timeout));
         for (lane, startup) in startups {
-            match startup.recv() {
+            let startup = if let Some(deadline) = ready_deadline {
+                startup.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            } else {
+                startup
+                    .recv()
+                    .map_err(|_| std_mpsc::RecvTimeoutError::Disconnected)
+            };
+            match startup {
                 Ok(Ok(())) => {}
                 Ok(Err(detail)) => {
                     drop(routes);
@@ -473,12 +549,19 @@ impl ReplicatedNativeApp {
                         detail,
                     });
                 }
-                Err(_) => {
+                Err(error) => {
                     drop(routes);
                     drop(senders);
                     let failure = terminal.failure().unwrap_or_else(|| {
-                        ReplicatedRunnerError::LaneUnavailable {
-                            lane: lane.to_string(),
+                        if error == std_mpsc::RecvTimeoutError::Timeout {
+                            ReplicatedRunnerError::LaneStartup {
+                                lane: lane.to_string(),
+                                detail: "complete App Generation Ready Gate timed out".to_owned(),
+                            }
+                        } else {
+                            ReplicatedRunnerError::LaneUnavailable {
+                                lane: lane.to_string(),
+                            }
                         }
                     });
                     terminal.begin_shutdown();
@@ -522,10 +605,64 @@ impl ReplicatedNativeApp {
         self.terminal.wait().await
     }
 
+    /// Projects a cloneable route which remains pinned by its Generation Lease.
+    pub fn route(&self) -> ReplicatedAppRoute {
+        ReplicatedAppRoute {
+            plan: Arc::clone(&self.plan),
+            lanes: self
+                .lanes
+                .iter()
+                .map(|(lane, handle)| {
+                    (
+                        lane.clone(),
+                        ReplicatedLaneRoute {
+                            id: handle.id.clone(),
+                            commands: handle.commands.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            diagnostics: Arc::clone(&self.diagnostics),
+            terminal: Arc::clone(&self.terminal),
+            epoch: self.epoch,
+        }
+    }
+}
+
+impl ReplicatedAppRoute {
+    fn ensure_running(&self) -> Result<(), RuntimeFailure> {
+        if let Some(failure) = self.terminal.failure() {
+            return Err(RuntimeFailure::Internal {
+                detail: failure.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the fixed number of Kernel lanes in this routed Generation.
+    pub fn lane_count(&self) -> usize {
+        self.lanes.len()
+    }
+
+    /// Returns structural evidence for placement decisions without exposing payloads.
+    pub fn diagnostics_snapshot(&self) -> LaneDiagnosticsSnapshot {
+        self.diagnostics.snapshot()
+    }
+
+    /// Returns whether any Kernel lane reached a terminal failure.
+    pub fn is_failed(&self) -> bool {
+        self.terminal.is_failed()
+    }
+
+    /// Returns the first App-terminal lane failure, when one has occurred.
+    pub fn terminal_failure(&self) -> Option<ReplicatedRunnerError> {
+        self.terminal.failure()
+    }
+
     fn resolve_request_lane<C: RequestCapability>(
         &self,
         caller_instance: &str,
-    ) -> Result<(&LaneHandle, Option<CrossLaneDiagnostics>), RuntimeFailure> {
+    ) -> Result<(&ReplicatedLaneRoute, Option<CrossLaneDiagnostics>), RuntimeFailure> {
         let binding = singular_binding::<C>(&self.plan, caller_instance)?;
         let consumer = self.plan.module_instance(caller_instance).ok_or_else(|| {
             RuntimeFailure::InvalidResolvedPlan {
@@ -682,6 +819,43 @@ impl ReplicatedNativeApp {
             detail: format!("Execution Lane `{}` dropped an invocation", lane.id),
         })?
     }
+}
+
+impl ReplicatedNativeApp {
+    /// Invokes one generated request Capability on its Plan-placed provider lane.
+    pub async fn invoke<C: RequestCapability>(
+        &self,
+        caller_instance: &str,
+        operation: &str,
+        request: C::Request,
+    ) -> Result<Result<C::Response, C::DomainError>, RuntimeFailure>
+    where
+        C::Request: Send,
+        C::Response: Send,
+        C::DomainError: Send,
+    {
+        self.route()
+            .invoke::<C>(caller_instance, operation, request)
+            .await
+    }
+
+    /// Invokes one generated request with Driver-relative controls.
+    pub async fn invoke_with_options<C: RequestCapability>(
+        &self,
+        caller_instance: &str,
+        operation: &str,
+        request: C::Request,
+        options: LaneInvocationOptions,
+    ) -> Result<Result<C::Response, C::DomainError>, RuntimeFailure>
+    where
+        C::Request: Send,
+        C::Response: Send,
+        C::DomainError: Send,
+    {
+        self.route()
+            .invoke_with_options::<C>(caller_instance, operation, request, options)
+            .await
+    }
 
     /// Stops every Kernel replica with the same bounded shutdown timeout.
     pub async fn shutdown(self, timeout: Duration) -> Result<(), ReplicatedRunnerError> {
@@ -775,7 +949,7 @@ fn singular_binding<'a, C: RequestCapability>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_lane<F>(
     lane: ExecutionLaneId,
     plan: ResolvedAppPlan,
@@ -788,7 +962,7 @@ fn run_lane<F>(
     terminal: Arc<ReplicatedTerminalState>,
     epoch: Instant,
 ) where
-    F: Fn(&ExecutionLaneId) -> ExecutionAdapterCatalog + Send + Sync + 'static,
+    F: Fn(&ExecutionLaneId) -> Result<ExecutionAdapterCatalog, String> + Send + Sync + 'static,
 {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -803,10 +977,16 @@ fn run_lane<F>(
     let local = tokio::task::LocalSet::new();
     local.block_on(&runtime, async move {
         let cpu_started = ThreadTime::now();
-        let catalog = match adapters(&lane).with_adapter(proxy_adapter) {
-            Ok(catalog) => catalog,
-            Err(error) => {
-                let _ = started.send(Err(error.to_string()));
+        let catalog = match adapters(&lane) {
+            Ok(catalog) => match catalog.with_adapter(proxy_adapter) {
+                Ok(catalog) => catalog,
+                Err(error) => {
+                    let _ = started.send(Err(error.to_string()));
+                    return;
+                }
+            },
+            Err(detail) => {
+                let _ = started.send(Err(detail));
                 return;
             }
         };
@@ -814,17 +994,24 @@ fn run_lane<F>(
         let runtime_diagnostics = RuntimeDiagnostics::new().with_invocation_probe(Rc::new(
             LaneInvocationProbe::new(Arc::clone(&diagnostics), lane.clone()),
         ));
-        let app = match lenso_kernel::Kernel::start_with_diagnostics(
+        let start = lenso_kernel::Kernel::start_with_diagnostics(
             plan,
             driver,
             catalog,
             runtime_diagnostics,
-        )
-        .await
-        {
-            Ok(app) => app,
-            Err(error) => {
+        );
+        tokio::pin!(start);
+        let app = match tokio::select! {
+            result = &mut start => Some(result),
+            _ = &mut shutdown => None,
+        } {
+            Some(Ok(app)) => app,
+            Some(Err(error)) => {
                 let _ = started.send(Err(format!("{error:?}")));
+                return;
+            }
+            None => {
+                let _ = started.send(Err("lane startup cancelled before Ready".to_owned()));
                 return;
             }
         };
