@@ -242,6 +242,8 @@ struct ExampleConfig {
 struct ExampleModule {
     #[config]
     config: ExampleConfig,
+    #[tasks]
+    tasks: ManagedTasks,
 }
 
 #[provides(echo::Echo, conversation::Conversation, audit::Audit)]
@@ -249,6 +251,8 @@ impl ExampleModule {}
 
 #[test]
 fn facade_owns_the_module_authoring_surface() {
+    assert!(!ManagedTasks::default().is_active());
+
     let descriptor: lenso::__private::serde_json::Value =
         lenso::__private::serde_json::from_str(MODULE_DESCRIPTOR_JSON)
             .expect("generated Descriptor should be valid JSON");

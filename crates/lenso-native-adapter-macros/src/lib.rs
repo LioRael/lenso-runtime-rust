@@ -588,6 +588,7 @@ fn expand_module_struct(
     let StructFields {
         config_type,
         ports,
+        tasks,
         initializers,
     } = analyze_struct_fields(&mut module)?;
     let schema = configuration_schema_tokens(
@@ -604,6 +605,7 @@ fn expand_module_struct(
     let connect_ports = ports.iter().map(|(field, _, _)| {
         quote! { self.module.#field.connect(context.dependencies())?; }
     });
+    let connect_tasks = task_connectors(&tasks);
     let requirement_parts = intersperse_commas(requirement_macros);
     let (prefix, after_schema, suffix, defaults) =
         descriptor_affixes(&package_id, &package_version);
@@ -662,7 +664,7 @@ fn expand_module_struct(
     } else {
         hook(attributes.prepare.as_ref(), &sdk)
     };
-    let activate = if attributes.lifecycle {
+    let activate_hook = if attributes.lifecycle {
         quote! {
             let module = self.module.clone();
             Box::pin(async move { #sdk::Lifecycle::activate(&module, context).await })
@@ -670,13 +672,40 @@ fn expand_module_struct(
     } else {
         hook(attributes.activate.as_ref(), &sdk)
     };
-    let deactivate = if attributes.lifecycle {
+    let deactivate_hook = if attributes.lifecycle {
         quote! {
             let module = self.module.clone();
             Box::pin(async move { #sdk::Lifecycle::deactivate(&module, context).await })
         }
     } else {
         hook(attributes.deactivate.as_ref(), &sdk)
+    };
+    let disconnect_tasks = task_disconnectors(&tasks);
+    let activate = if tasks.is_empty() {
+        activate_hook
+    } else {
+        quote! {
+            let module = self.module.clone();
+            let activation = { #activate_hook };
+            Box::pin(async move {
+                let result = activation.await;
+                if result.is_err() {
+                    #(#disconnect_tasks)*
+                }
+                result
+            })
+        }
+    };
+    let disconnect_tasks = task_disconnectors(&tasks);
+    let deactivate = if tasks.is_empty() {
+        deactivate_hook
+    } else {
+        quote! {
+            let module = self.module.clone();
+            #(#disconnect_tasks)*
+            let deactivation = { #deactivate_hook };
+            deactivation
+        }
     };
     let schema_tracking = schema_tracking(attributes.configuration_schema.as_ref());
     let consumer_finalizer = if attributes.consumer {
@@ -783,6 +812,7 @@ fn expand_module_struct(
             fn activate(&self, context: #sdk::__private::ActivateContext) -> #sdk::__private::ModuleFuture {
                 let connected = (|| -> Result<(), #sdk::__private::RuntimeFailure> {
                     #(#connect_ports)*
+                    #(#connect_tasks)*
                     Ok(())
                 })();
                 if let Err(error) = connected {
@@ -869,6 +899,7 @@ fn configuration_schema_tokens(
 struct StructFields {
     config_type: Option<Type>,
     ports: Vec<(syn::Ident, Path, PortCardinality)>,
+    tasks: Vec<syn::Ident>,
     initializers: Vec<proc_macro2::TokenStream>,
 }
 
@@ -887,10 +918,19 @@ fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
     };
     let mut config = None;
     let mut ports = Vec::new();
+    let mut tasks = Vec::new();
     let mut initializers = Vec::new();
     for field in &mut fields.named {
         let name = field.ident.as_ref().expect("named fields have identifiers");
-        if take_marker(&mut field.attrs, "config") {
+        let is_config = take_marker(&mut field.attrs, "config");
+        let is_tasks = take_marker(&mut field.attrs, "tasks");
+        if is_config && is_tasks {
+            return Err(syn::Error::new_spanned(
+                field,
+                "a Module field cannot be both `#[config]` and `#[tasks]`",
+            ));
+        }
+        if is_config {
             if config.replace(field.ty.clone()).is_some() {
                 return Err(syn::Error::new_spanned(
                     field,
@@ -898,6 +938,21 @@ fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
                 ));
             }
             initializers.push(quote!(#name: configuration));
+        } else if is_tasks {
+            if !is_named_type(&field.ty, "ManagedTasks") {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    "a `#[tasks]` field must have type `ManagedTasks`",
+                ));
+            }
+            if !tasks.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "a Module has at most one `#[tasks]` field",
+                ));
+            }
+            tasks.push(name.clone());
+            initializers.push(quote!(#name: ::core::default::Default::default()));
         } else if let Some((client, cardinality)) = port_client(&field.ty)? {
             ports.push((name.clone(), client, cardinality));
             initializers.push(quote!(#name: ::core::default::Default::default()));
@@ -908,8 +963,19 @@ fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
     Ok(StructFields {
         config_type: config,
         ports,
+        tasks,
         initializers,
     })
+}
+
+fn is_named_type(ty: &Type, expected: &str) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == expected && segment.arguments.is_empty())
 }
 
 fn take_marker(attributes: &mut Vec<Attribute>, name: &str) -> bool {
@@ -918,6 +984,22 @@ fn take_marker(attributes: &mut Vec<Attribute>, name: &str) -> bool {
         .any(|attribute| attribute.path().is_ident(name));
     attributes.retain(|attribute| !attribute.path().is_ident(name));
     present
+}
+
+fn task_connectors(tasks: &[syn::Ident]) -> Vec<proc_macro2::TokenStream> {
+    tasks
+        .iter()
+        .map(|field| {
+            quote! { self.module.#field.__lenso_connect(context.tasks().clone())?; }
+        })
+        .collect()
+}
+
+fn task_disconnectors(tasks: &[syn::Ident]) -> Vec<proc_macro2::TokenStream> {
+    tasks
+        .iter()
+        .map(|field| quote! { module.#field.__lenso_disconnect(); })
+        .collect()
 }
 
 fn port_client(ty: &Type) -> syn::Result<Option<(Path, PortCardinality)>> {
@@ -1248,6 +1330,33 @@ mod tests {
         assert!(matches!(one_cardinality, PortCardinality::One));
         assert_eq!(quote!(#many_client).to_string(), "auth :: AuthClient");
         assert!(matches!(many_cardinality, PortCardinality::Many));
+    }
+
+    #[test]
+    fn managed_tasks_fields_are_initialized_and_connected_on_activate() {
+        let mut module: ItemStruct = parse_quote! {
+            struct Worker {
+                #[tasks]
+                tasks: ManagedTasks,
+            }
+        };
+        let fields = analyze_struct_fields(&mut module).unwrap();
+
+        let task_field: syn::Ident = parse_quote!(tasks);
+        assert_eq!(fields.tasks, vec![task_field]);
+        assert_eq!(
+            fields.initializers[0].to_string(),
+            "tasks : :: core :: default :: Default :: default ()"
+        );
+        assert_eq!(
+            task_connectors(&fields.tasks)[0].to_string(),
+            "self . module . tasks . __lenso_connect (context . tasks () . clone ()) ? ;"
+        );
+        assert_eq!(
+            task_disconnectors(&fields.tasks)[0].to_string(),
+            "module . tasks . __lenso_disconnect () ;"
+        );
+        assert!(module.fields.iter().next().unwrap().attrs.is_empty());
     }
 
     #[test]

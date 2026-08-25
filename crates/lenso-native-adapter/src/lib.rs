@@ -1,13 +1,16 @@
 //! Native Rust Execution Adapter for statically linked Module packages.
 
+mod managed_tasks;
+
 use std::{collections::BTreeMap, rc::Rc};
 
 #[doc(hidden)]
 pub use inventory as __inventory;
 use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
-pub use lenso_kernel::RuntimeFailure;
 use lenso_kernel::{ActivateContext, DeactivateContext, PrepareContext};
+pub use lenso_kernel::{CancellationToken, RuntimeFailure};
 pub use lenso_native_adapter_macros::{ModuleConfig, module, provides};
+pub use managed_tasks::{ManagedTasks, ManagedTasksError};
 
 /// Optional convention-based lifecycle hooks for a struct-level Module.
 ///

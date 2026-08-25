@@ -21,6 +21,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 lenso-app-plan.workspace = true
+lenso-test = { path = "../lenso-test" }
 
 [lints]
 workspace = true

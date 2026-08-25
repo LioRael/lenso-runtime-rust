@@ -607,6 +607,7 @@ dependencies = [
  "lenso-kernel",
  "lenso-module-authoring",
  "lenso-native-adapter",
+ "lenso-test",
  "serde",
  "serde_json",
 ]
