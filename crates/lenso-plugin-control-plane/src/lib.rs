@@ -23,6 +23,12 @@ pub use durable_supervisor::{
     DurableTransitionOutcome, GenerationFailureOutcome, GenerationMaintenanceOutcome,
 };
 pub use kernel_runtime::{CatalogFactory, KernelGenerationHandle, KernelGenerationRuntime};
+pub use lenso_plugin_bundle::{
+    ArtifactDeclaration, ArtifactKind, BindingTemplate, CapabilityDeclaration,
+    CapabilityRequirement, DataContribution, ImplementationVariant, ModuleContribution,
+    PermissionRequest, PluginFeature, PluginManifest, ProductMetadataDeclaration,
+    RequirementCardinality, StateDeclaration, SupportChannel, TrustLevel,
+};
 pub use model::*;
 pub use multi_execution::MultiExecutionCatalogFactory;
 pub use replicated_runtime::{

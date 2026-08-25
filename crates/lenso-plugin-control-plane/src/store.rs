@@ -1,10 +1,11 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
+use lenso_plugin_bundle::{BundleError, ManifestDocument, verify_bundle_files};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -117,74 +118,30 @@ impl PluginStore {
         }
         let manifest =
             CanonicalDocument::<PluginManifest>::parse("lenso-plugin.json", &bundle.manifest)?;
-        validate_manifest(manifest.value())?;
-
-        let declared_paths: BTreeSet<_> = manifest
+        if manifest
             .value()
             .artifacts
             .iter()
-            .map(|artifact| artifact.path.as_str())
-            .chain(
-                manifest
-                    .value()
-                    .product_metadata
-                    .iter()
-                    .map(|metadata| metadata.path.as_str()),
-            )
-            .collect();
-        if declared_paths.len()
-            != manifest.value().artifacts.len() + manifest.value().product_metadata.len()
+            .any(|artifact| artifact.size > self.max_artifact_bytes)
+            || manifest.value().product_metadata.iter().any(|metadata| {
+                bundle.files.get(&metadata.path).is_some_and(|bytes| {
+                    u64::try_from(bytes.len()).unwrap_or(u64::MAX) > self.max_artifact_bytes
+                })
+            })
         {
-            return rejected("Plugin Manifest declares a duplicate Bundle path");
+            return rejected("Bundle file exceeds Store byte limit");
         }
-        if bundle
-            .files
-            .keys()
-            .any(|path| !declared_paths.contains(path.as_str()))
-        {
-            return rejected("Bundle contains an undeclared file");
+        let bundle_manifest =
+            ManifestDocument::from_value(manifest.value().clone()).map_err(bundle_error)?;
+        if bundle_manifest.digest() != manifest.digest() {
+            return Err(ControlPlaneError::DigestMismatch {
+                subject: "Plugin Manifest".to_owned(),
+            });
         }
-
-        let mut artifact_digests = Vec::with_capacity(manifest.value().artifacts.len());
-        for declaration in &manifest.value().artifacts {
-            validate_relative_path(&declaration.path)?;
-            let bytes = bundle.files.get(&declaration.path).ok_or_else(|| {
-                ControlPlaneError::AdmissionRejected {
-                    detail: format!("Bundle is missing Artifact `{}`", declaration.id),
-                }
-            })?;
-            if declaration.size > self.max_artifact_bytes
-                || u64::try_from(bytes.len()).unwrap_or(u64::MAX) != declaration.size
-            {
-                return rejected("Artifact exceeds its declared or Store byte limit");
-            }
-            if sha256_digest(bytes) != declaration.digest {
-                return Err(ControlPlaneError::DigestMismatch {
-                    subject: format!("Artifact `{}`", declaration.id),
-                });
-            }
-            artifact_digests.push(declaration.digest.clone());
-        }
-        artifact_digests.sort();
-        artifact_digests.dedup();
-
-        let mut product_metadata_digests = Vec::new();
-        for metadata in &manifest.value().product_metadata {
-            validate_relative_path(&metadata.path)?;
-            let bytes = bundle.files.get(&metadata.path).ok_or_else(|| {
-                ControlPlaneError::AdmissionRejected {
-                    detail: format!("Bundle is missing Product Metadata `{}`", metadata.id),
-                }
-            })?;
-            if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > self.max_artifact_bytes
-                || sha256_digest(bytes) != metadata.digest
-            {
-                return rejected("Product Metadata exceeds limits or its declared digest");
-            }
-            product_metadata_digests.push(metadata.digest.clone());
-        }
-        product_metadata_digests.sort();
-        product_metadata_digests.dedup();
+        let verified =
+            verify_bundle_files(&bundle_manifest, &bundle.files).map_err(bundle_error)?;
+        let artifact_digests = verified.artifact_digests;
+        let product_metadata_digests = verified.product_metadata_digests;
 
         let evidence = policy.admit(
             manifest.value(),
@@ -295,297 +252,6 @@ impl PluginStore {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-fn validate_manifest(manifest: &PluginManifest) -> Result<(), ControlPlaneError> {
-    if manifest.schema_version != 1 {
-        return rejected("unsupported Plugin Manifest schema version");
-    }
-    if manifest.plugin_id.is_empty() || semver::Version::parse(&manifest.release_version).is_err() {
-        return rejected("Plugin identity or Release version is invalid");
-    }
-    let artifact_ids: Vec<_> = manifest
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.id.as_str())
-        .collect();
-    ensure_strictly_sorted_unique(&artifact_ids, "Artifact ID")?;
-    let contribution_ids: Vec<_> = manifest
-        .module_contributions
-        .iter()
-        .map(|contribution| contribution.id.as_str())
-        .collect();
-    ensure_strictly_sorted_unique(&contribution_ids, "Module contribution ID")?;
-    let data_ids = manifest
-        .data_contributions
-        .iter()
-        .map(|contribution| contribution.id.as_str())
-        .collect::<Vec<_>>();
-    ensure_strictly_sorted_unique(&data_ids, "Data contribution ID")?;
-    let permission_ids = manifest
-        .permission_requests
-        .iter()
-        .map(|request| request.id.as_str())
-        .collect::<Vec<_>>();
-    ensure_strictly_sorted_unique(&permission_ids, "permission request ID")?;
-    let feature_ids = manifest
-        .features
-        .iter()
-        .map(|feature| feature.id.as_str())
-        .collect::<Vec<_>>();
-    ensure_strictly_sorted_unique(&feature_ids, "Feature ID")?;
-    let metadata_ids = manifest
-        .product_metadata
-        .iter()
-        .map(|metadata| metadata.id.as_str())
-        .collect::<Vec<_>>();
-    ensure_strictly_sorted_unique(&metadata_ids, "Product Metadata ID")?;
-    let artifact_id_set = artifact_ids.iter().copied().collect::<BTreeSet<_>>();
-    let contribution_id_set = contribution_ids.iter().copied().collect::<BTreeSet<_>>();
-    let data_id_set = data_ids.iter().copied().collect::<BTreeSet<_>>();
-    let permission_id_set = permission_ids.iter().copied().collect::<BTreeSet<_>>();
-    let metadata_id_set = metadata_ids.iter().copied().collect::<BTreeSet<_>>();
-    for artifact in &manifest.artifacts {
-        digest_component(&artifact.digest)?;
-        if artifact.id.is_empty() || artifact.media_type.is_empty() || artifact.targets.is_empty() {
-            return rejected("Artifact identity, media type, and targets must be explicit");
-        }
-        let targets = artifact
-            .targets
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        ensure_strictly_sorted_unique(&targets, "Artifact target")?;
-    }
-    for contribution in &manifest.module_contributions {
-        digest_component(&contribution.configuration_schema_digest)?;
-        if contribution.id.is_empty()
-            || contribution.package_id.is_empty()
-            || contribution.implementations.is_empty()
-        {
-            return rejected("Module contribution identity and implementation set are required");
-        }
-        let provided = contribution
-            .provides
-            .iter()
-            .map(|capability| capability.capability_id.as_str())
-            .collect::<Vec<_>>();
-        ensure_strictly_sorted_unique(&provided, "provided Capability")?;
-        for capability in &contribution.provides {
-            digest_component(&capability.descriptor_digest)?;
-            semver::Version::parse(&capability.descriptor_version).map_err(|_| {
-                ControlPlaneError::AdmissionRejected {
-                    detail: "Capability Descriptor version is not SemVer".to_owned(),
-                }
-            })?;
-            let operations = capability
-                .request_operations
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            ensure_strictly_sorted_unique(&operations, "Capability Operation")?;
-            if capability
-                .operation_kinds
-                .keys()
-                .any(|operation| !operations.contains(&operation.as_str()))
-            {
-                return rejected("Capability interaction kind references an unknown Operation");
-            }
-        }
-        let required = contribution
-            .requires
-            .iter()
-            .map(|capability| capability.capability_id.as_str())
-            .collect::<Vec<_>>();
-        ensure_strictly_sorted_unique(&required, "required Capability")?;
-        for capability in &contribution.requires {
-            semver::Version::parse(&capability.descriptor_version).map_err(|_| {
-                ControlPlaneError::AdmissionRejected {
-                    detail: "required Capability Descriptor version is not SemVer".to_owned(),
-                }
-            })?;
-        }
-        let requests = contribution
-            .permission_request_ids
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        ensure_strictly_sorted_unique(&requests, "Module permission request")?;
-        if requests
-            .iter()
-            .any(|request| !permission_id_set.contains(request))
-        {
-            return rejected("Module contribution references an unknown permission request");
-        }
-        if let Some(state) = &contribution.state {
-            if state.state_schema_id.is_empty() {
-                return rejected("state Schema identity is empty");
-            }
-            digest_component(&state.state_schema_digest)?;
-        }
-        let variants: Vec<_> = contribution
-            .implementations
-            .iter()
-            .map(|variant| variant.id.as_str())
-            .collect();
-        ensure_strictly_sorted_unique(&variants, "implementation variant ID")?;
-        for variant in &contribution.implementations {
-            if variant.artifact.is_some() == variant.built_in_factory.is_some() {
-                return rejected("implementation variant must select exactly one execution input");
-            }
-            if variant.built_in_factory.is_some()
-                && variant.execution_class != "lenso.native-rust@1"
-            {
-                return rejected("only native Rust may select a built-in factory");
-            }
-            if variant
-                .artifact
-                .as_deref()
-                .is_some_and(|artifact| !artifact_id_set.contains(artifact))
-            {
-                return rejected("implementation variant references an unknown Artifact");
-            }
-            if variant.entrypoint.is_empty()
-                || variant.execution_class.is_empty()
-                || variant.targets.is_empty()
-                || variant.profiles.is_empty()
-            {
-                return rejected(
-                    "implementation entrypoint, class, targets, and Profiles are required",
-                );
-            }
-            let targets = variant
-                .targets
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            let profiles = variant
-                .profiles
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            ensure_strictly_sorted_unique(&targets, "implementation target")?;
-            ensure_strictly_sorted_unique(&profiles, "implementation Profile")?;
-        }
-    }
-    for contribution in &manifest.data_contributions {
-        if !artifact_id_set.contains(contribution.artifact.as_str())
-            || contribution.media_type.is_empty()
-            || contribution.content_schema_id.is_empty()
-        {
-            return rejected("Data contribution references unknown or incomplete authority");
-        }
-        digest_component(&contribution.content_schema_digest)?;
-        digest_component(&contribution.product_metadata_digest)?;
-    }
-    for request in &manifest.permission_requests {
-        if request.id.is_empty()
-            || request.resource_kind.is_empty()
-            || request.explanation_key.is_empty()
-        {
-            return rejected("permission request identity is incomplete");
-        }
-    }
-    for metadata in &manifest.product_metadata {
-        if metadata.id.is_empty() || metadata.namespace.is_empty() || metadata.schema_id.is_empty()
-        {
-            return rejected("Product Metadata identity is incomplete");
-        }
-        validate_relative_path(&metadata.path)?;
-        digest_component(&metadata.digest)?;
-    }
-    for feature in &manifest.features {
-        validate_feature_refs(
-            &feature.module_contribution_ids,
-            &contribution_id_set,
-            "Module contribution",
-        )?;
-        validate_feature_refs(
-            &feature.data_contribution_ids,
-            &data_id_set,
-            "Data contribution",
-        )?;
-        validate_feature_refs(&feature.artifact_ids, &artifact_id_set, "Artifact")?;
-        validate_feature_refs(
-            &feature.permission_request_ids,
-            &permission_id_set,
-            "permission request",
-        )?;
-        validate_feature_refs(
-            &feature.product_metadata_ids,
-            &metadata_id_set,
-            "Product Metadata",
-        )?;
-    }
-    for template in &manifest.binding_templates {
-        if !contribution_id_set.contains(template.consumer_contribution_id.as_str())
-            || !contribution_id_set.contains(template.provider_contribution_id.as_str())
-            || template.capability_id.is_empty()
-        {
-            return rejected("binding template references unknown contribution authority");
-        }
-        let consumer = manifest
-            .module_contributions
-            .iter()
-            .find(|contribution| contribution.id == template.consumer_contribution_id)
-            .expect("contribution identity was validated");
-        let provider = manifest
-            .module_contributions
-            .iter()
-            .find(|contribution| contribution.id == template.provider_contribution_id)
-            .expect("contribution identity was validated");
-        if !consumer
-            .requires
-            .iter()
-            .any(|requirement| requirement.capability_id == template.capability_id)
-            || !provider
-                .provides
-                .iter()
-                .any(|capability| capability.capability_id == template.capability_id)
-        {
-            return rejected("binding template Capability is not required and provided exactly");
-        }
-    }
-    Ok(())
-}
-
-fn validate_feature_refs<'a>(
-    values: &'a [String],
-    known: &BTreeSet<&'a str>,
-    kind: &str,
-) -> Result<(), ControlPlaneError> {
-    let refs = values.iter().map(String::as_str).collect::<Vec<_>>();
-    ensure_strictly_sorted_unique(&refs, kind)?;
-    if refs.iter().any(|value| !known.contains(value)) {
-        return rejected(format!("Feature references an unknown {kind}"));
-    }
-    Ok(())
-}
-
-fn validate_relative_path(path: &str) -> Result<(), ControlPlaneError> {
-    if path.is_empty() || path.contains('\\') {
-        return rejected("Bundle path is empty or platform-ambiguous");
-    }
-    let path = Path::new(path);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return rejected("Bundle path must contain only normalized relative segments");
-    }
-    Ok(())
-}
-
-fn ensure_strictly_sorted_unique<T: Ord + std::fmt::Display>(
-    values: &[T],
-    kind: &str,
-) -> Result<(), ControlPlaneError> {
-    if values.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return rejected(format!("{kind} entries must be sorted and unique"));
-    }
-    Ok(())
-}
-
 fn digest_component(digest: &str) -> Result<&str, ControlPlaneError> {
     let Some(value) = digest.strip_prefix("sha256:") else {
         return rejected("digest does not use sha256 prefix");
@@ -686,6 +352,15 @@ fn store_error(error: impl std::fmt::Display) -> ControlPlaneError {
     }
 }
 
+fn bundle_error(error: BundleError) -> ControlPlaneError {
+    match error {
+        BundleError::DigestMismatch(subject) => ControlPlaneError::DigestMismatch { subject },
+        error => ControlPlaneError::AdmissionRejected {
+            detail: error.to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use lenso_app_plan::CapabilityOperationKind;
@@ -739,7 +414,7 @@ mod tests {
             product_metadata: Vec::new(),
         };
 
-        let error = validate_manifest(&manifest).unwrap_err();
+        let error = lenso_plugin_bundle::validate_manifest(&manifest).unwrap_err();
         assert!(error.to_string().contains("unknown Operation"));
     }
 }

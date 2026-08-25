@@ -699,6 +699,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-plugin-bundle"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "lenso-app-plan",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "wit-component",
+]
+
+[[package]]
 name = "lenso-plugin-control-plane"
 version = "0.1.0"
 dependencies = [
@@ -709,11 +723,11 @@ dependencies = [
  "lenso-dylib-adapter",
  "lenso-kernel",
  "lenso-native-adapter",
+ "lenso-plugin-bundle",
  "lenso-quickjs-adapter",
  "lenso-runner",
  "lenso-runtime-codec",
  "lenso-wasm-component-adapter",
- "semver",
  "serde",
  "serde_json",
  "sha2",
