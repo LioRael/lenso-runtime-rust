@@ -773,6 +773,44 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
         }))
     }
 
+    /// Stops this Host incarnation while preserving durable Generation routing authority.
+    ///
+    /// The Supervisor must terminate immediately after success. A later Host uses `recover` to
+    /// restage the exact durable Active and Standby Generations.
+    pub async fn suspend_host(&mut self) -> Result<DurableControlState, ControlPlaneError> {
+        if self.slots.values().any(|slot| slot.leases.get() != 0) {
+            return rejected("cannot suspend Host while a Generation lease is active");
+        }
+        let live = self
+            .slots
+            .keys()
+            .map(|digest| {
+                let record = self
+                    .record(digest)
+                    .expect("every live slot has one durable record");
+                parse_nanos(&record.drain_timeout_nanos, "drain timeout")
+                    .map(|timeout| (digest.clone(), timeout))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut failures = Vec::new();
+        for (digest, timeout) in live {
+            let slot = self
+                .slots
+                .remove(&digest)
+                .expect("the live slot list was closed before suspension");
+            if let Err(error) = self.runtime.shutdown(slot.handle, timeout).await {
+                failures.push(format!("Generation `{digest}`: {error:?}"));
+            }
+        }
+        if failures.is_empty() {
+            Ok(self.state.clone())
+        } else {
+            Err(ControlPlaneError::HostFailure {
+                detail: format!("Host suspension cleanup failed: {}", failures.join("; ")),
+            })
+        }
+    }
+
     /// Fences new routes and begins bounded retirement of every live Generation.
     pub fn begin_shutdown(&mut self, now_unix_nanos: u128) -> Result<(), ControlPlaneError> {
         let mut next = self.state.clone();

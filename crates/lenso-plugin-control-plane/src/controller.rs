@@ -14,6 +14,7 @@ use crate::{
 pub enum GenerationControllerEvent {
     Transitioned(DurableTransitionOutcome),
     Maintained(GenerationMaintenanceOutcome),
+    Suspended,
     ShutdownStarted,
     Stopped,
 }
@@ -35,6 +36,9 @@ enum GenerationCommand<T: Clone + std::fmt::Debug> {
     },
     Inspect {
         reply: oneshot::Sender<DurableControlState>,
+    },
+    Suspend {
+        reply: oneshot::Sender<Result<DurableControlState, ControlPlaneError>>,
     },
     Shutdown {
         reply: oneshot::Sender<Result<DurableControlState, ControlPlaneError>>,
@@ -131,6 +135,16 @@ impl<T: Clone + std::fmt::Debug> GenerationControllerClient<T> {
         response.await.map_err(|_| stopped())
     }
 
+    /// Stops this Host incarnation without retiring the durable active Generation.
+    pub async fn suspend(&self) -> Result<DurableControlState, ControlPlaneError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(GenerationCommand::Suspend { reply })
+            .await
+            .map_err(|_| stopped())?;
+        response.await.map_err(|_| stopped())?
+    }
+
     pub async fn shutdown(&self) -> Result<DurableControlState, ControlPlaneError> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -189,7 +203,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> GenerationController<R, S> {
                                 for outcome in outcomes {
                                     let _ = self.events.send(GenerationControllerEvent::Maintained(outcome));
                                 }
-                                Ok(())
+                                Ok(None)
                             }
                             Err(error) => Err(error),
                         },
@@ -199,15 +213,22 @@ impl<R: GenerationRuntime, S: ControlStateStore> GenerationController<R, S> {
                 command = self.commands.recv(), if !shutting_down => {
                     match command {
                         Some(command) => self.handle_command(command, &mut shutting_down, &mut shutdown_replies).await,
-                        None => self.start_shutdown(&mut shutting_down),
+                        None => self.start_shutdown(&mut shutting_down).map(|()| None),
                     }
                 }
             };
-            if let Err(error) = step {
-                for reply in shutdown_replies {
-                    let _ = reply.send(Err(error.clone()));
+            match step {
+                Err(error) => {
+                    for reply in shutdown_replies {
+                        let _ = reply.send(Err(error.clone()));
+                    }
+                    return Err(error);
                 }
-                return Err(error);
+                Ok(Some(state)) => {
+                    let _ = self.events.send(GenerationControllerEvent::Stopped);
+                    return Ok(state);
+                }
+                Ok(None) => {}
             }
             if shutting_down && self.supervisor.is_retired() {
                 let state = self.supervisor.state().clone();
@@ -225,7 +246,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> GenerationController<R, S> {
         command: GenerationCommand<R::Route>,
         shutting_down: &mut bool,
         shutdown_replies: &mut Vec<oneshot::Sender<Result<DurableControlState, ControlPlaneError>>>,
-    ) -> Result<(), ControlPlaneError> {
+    ) -> Result<Option<DurableControlState>, ControlPlaneError> {
         match command {
             GenerationCommand::Transition {
                 transition,
@@ -269,12 +290,26 @@ impl<R: GenerationRuntime, S: ControlStateStore> GenerationController<R, S> {
             GenerationCommand::Inspect { reply } => {
                 let _ = reply.send(self.supervisor.state().clone());
             }
+            GenerationCommand::Suspend { reply } => match self.supervisor.suspend_host().await {
+                Ok(state) => {
+                    let _ = self.events.send(GenerationControllerEvent::Suspended);
+                    let _ = reply.send(Ok(state.clone()));
+                    return Ok(Some(state));
+                }
+                Err(error @ ControlPlaneError::TransitionRejected { .. }) => {
+                    let _ = reply.send(Err(error));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error.clone()));
+                    return Err(error);
+                }
+            },
             GenerationCommand::Shutdown { reply } => {
                 shutdown_replies.push(reply);
                 self.start_shutdown(shutting_down)?;
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     fn start_shutdown(&mut self, shutting_down: &mut bool) -> Result<(), ControlPlaneError> {
