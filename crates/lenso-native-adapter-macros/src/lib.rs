@@ -860,14 +860,18 @@ fn port_client(ty: &Type) -> syn::Result<Option<(Path, PortCardinality)>> {
             "Port or ManyPort requires one Capability client type",
         ));
     };
-    let [syn::GenericArgument::Type(Type::Path(client))] =
-        arguments.args.iter().collect::<Vec<_>>().as_slice()
-    else {
+    let Some(syn::GenericArgument::Type(Type::Path(client))) = arguments.args.first() else {
         return Err(syn::Error::new_spanned(
             ty,
             "Port or ManyPort requires one Capability client type",
         ));
     };
+    if arguments.args.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "Port or ManyPort requires one Capability client type",
+        ));
+    }
     Ok(Some((client.path.clone(), cardinality)))
 }
 
@@ -1150,6 +1154,20 @@ mod tests {
 
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"], json!(["name"]));
+    }
+
+    #[test]
+    fn typed_ports_preserve_client_paths_and_cardinality() {
+        let one: Type = parse_quote!(Port<secrets::SecretsClient>);
+        let many: Type = parse_quote!(ManyPort<auth::AuthClient>);
+
+        let (one_client, one_cardinality) = port_client(&one).unwrap().unwrap();
+        let (many_client, many_cardinality) = port_client(&many).unwrap().unwrap();
+
+        assert_eq!(quote!(#one_client).to_string(), "secrets :: SecretsClient");
+        assert!(matches!(one_cardinality, PortCardinality::One));
+        assert_eq!(quote!(#many_client).to_string(), "auth :: AuthClient");
+        assert!(matches!(many_cardinality, PortCardinality::Many));
     }
 
     #[test]
