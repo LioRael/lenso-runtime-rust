@@ -640,6 +640,85 @@ fn durable_supervisor_recovers_fences_drains_and_rolls_back() {
 }
 
 #[test]
+fn maintenance_can_reactivate_an_exact_retired_generation() {
+    futures::executor::block_on(async {
+        let first = empty_generation("reactivate-first");
+        let second = empty_generation("reactivate-second");
+        let mut supervisor = DurableGenerationSupervisor::open(
+            "app",
+            FakeRuntime::default(),
+            MemoryControlStateStore::default(),
+        )
+        .unwrap();
+        supervisor
+            .transition(
+                &transition(None, &first, ReplacementMode::Initial, "0"),
+                &first,
+                &BTreeMap::new(),
+                0,
+            )
+            .await
+            .unwrap();
+        supervisor
+            .transition(
+                &transition(
+                    Some(first.spec.digest()),
+                    &second,
+                    ReplacementMode::Maintenance,
+                    "0",
+                ),
+                &second,
+                &BTreeMap::new(),
+                1,
+            )
+            .await
+            .unwrap();
+
+        supervisor
+            .transition(
+                &transition(
+                    Some(second.spec.digest()),
+                    &first,
+                    ReplacementMode::Maintenance,
+                    "0",
+                ),
+                &first,
+                &BTreeMap::new(),
+                2,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            supervisor.state().active_generation_spec_digest.as_deref(),
+            Some(first.spec.digest())
+        );
+        assert_eq!(supervisor.state().generations.len(), 2);
+        assert_eq!(
+            supervisor
+                .state()
+                .generations
+                .iter()
+                .find(|record| record.generation_spec_digest == first.spec.digest())
+                .unwrap()
+                .lifecycle,
+            ControlLifecycle::Active
+        );
+        assert_eq!(
+            supervisor
+                .state()
+                .generations
+                .iter()
+                .find(|record| record.generation_spec_digest == second.spec.digest())
+                .unwrap()
+                .lifecycle,
+            ControlLifecycle::Retired
+        );
+        assert!(supervisor.route().is_ok());
+    });
+}
+
+#[test]
 fn recovery_fences_the_old_supervisor_and_rolls_back_failed_active_staging() {
     futures::executor::block_on(async {
         let directory = tempfile::tempdir().unwrap();

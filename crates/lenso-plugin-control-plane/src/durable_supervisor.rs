@@ -320,7 +320,10 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             )
         };
         let candidate_digest = candidate.spec.digest().to_owned();
-        if self.record(&candidate_digest).is_some() {
+        if self
+            .record(&candidate_digest)
+            .is_some_and(|record| record.lifecycle != ControlLifecycle::Retired)
+        {
             return rejected("candidate Generation already has a control record");
         }
 
@@ -341,7 +344,15 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             retirement_reason: None,
         };
         let mut next = self.state.clone();
-        next.generations.push(record);
+        if let Some(retired) = next
+            .generations
+            .iter_mut()
+            .find(|existing| existing.generation_spec_digest == candidate_digest)
+        {
+            *retired = record;
+        } else {
+            next.generations.push(record);
+        }
         self.commit(next)?;
 
         if edge.replacement_mode == ReplacementMode::Maintenance {
