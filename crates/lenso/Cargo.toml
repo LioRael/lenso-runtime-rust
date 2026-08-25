@@ -15,7 +15,7 @@ package-id = "lenso"
 futures.workspace = true
 lenso-kernel.workspace = true
 lenso-module-authoring.workspace = true
-lenso-native-adapter = { version = "0.1.2", path = "../lenso-native-adapter" }
+lenso-native-adapter = { version = "0.2.0", path = "../lenso-native-adapter" }
 
 [dev-dependencies]
 lenso-app-plan.workspace = true
