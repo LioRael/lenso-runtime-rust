@@ -326,8 +326,10 @@ fn expand_module_function(
 
 /// Derives one provided Capability endpoint, native factory, and static registration.
 ///
-/// Apply this to the generated Capability Provider trait implementation for a
-/// struct already annotated with [`module`].
+/// Apply this to an inherent implementation of the Capability's domain methods
+/// for a struct already annotated with [`module`]. Generated bindings lower the
+/// methods into the Adapter-facing Provider trait. Existing explicit Provider
+/// trait implementations remain supported as a compatibility escape hatch.
 #[proc_macro_attribute]
 pub fn provides(attributes: TokenStream, item: TokenStream) -> TokenStream {
     let capability = parse_macro_input!(attributes as Path);
@@ -342,12 +344,7 @@ fn expand_provides(
     implementation: &ItemImpl,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let sdk = authoring_crate();
-    if implementation.trait_.is_none() {
-        return Err(syn::Error::new_spanned(
-            implementation,
-            "`provides` must annotate a generated Capability Provider trait implementation",
-        ));
-    }
+    let lowers_domain_methods = implementation.trait_.is_none();
     let Type::Path(module_type) = implementation.self_ty.as_ref() else {
         return Err(syn::Error::new_spanned(
             &implementation.self_ty,
@@ -379,12 +376,19 @@ fn expand_provides(
     let capability_snake = snake(&capability_ident.to_string());
     let provided_descriptor = format_ident!("__lenso_provided_{capability_snake}");
     let provide_endpoint = format_ident!("__lenso_native_provide_{capability_snake}");
+    let lower_provider = format_ident!("__lenso_native_lower_{capability_snake}");
     let generated_module = format_ident!("__lenso_provider_{}", snake(&module_ident.to_string()));
     let lifecycle = format_ident!("__LensoLifecycle{module_ident}");
     let artifact = format_ident!("__LENSO_MODULE_DESCRIPTOR_ARTIFACT_{module_ident}");
+    let provider_implementation = lowers_domain_methods.then(|| {
+        quote! {
+            #capability_namespace::#lower_provider!(#module_ident, #sdk::__private);
+        }
+    });
 
     Ok(quote! {
         #implementation
+        #provider_implementation
 
         /// Generated package-owned Module Descriptor bytes.
         pub const MODULE_DESCRIPTOR_JSON: &str = #module_descriptor!(

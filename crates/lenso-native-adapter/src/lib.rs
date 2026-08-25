@@ -16,9 +16,11 @@ pub mod __private {
         NativeModuleInstance, RuntimeFailure,
     };
     pub use futures;
+    pub use futures::future::LocalBoxFuture;
     pub use lenso_kernel::{
-        ActivateContext, DeactivateContext, ModuleFuture, ModuleLifecycle, NativeEventEndpoint,
-        NativeRequestEndpoint, NativeStreamEndpoint, PrepareContext,
+        ActivateContext, DeactivateContext, InvocationContext, ModuleFuture, ModuleLifecycle,
+        NativeEventEndpoint, NativeRequestEndpoint, NativeRequestFuture, NativeStreamEndpoint,
+        NativeStreamSession, PrepareContext,
     };
     pub use serde_json;
 }
