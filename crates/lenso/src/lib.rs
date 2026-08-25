@@ -18,12 +18,18 @@ pub use lenso_kernel::{
 /// A Module operation result that can explicitly preserve Domain and Runtime failures.
 pub type ModuleResult<T, DomainError> = Result<T, ModuleError<DomainError, RuntimeFailure>>;
 
+/// An asynchronous Event handler outcome observed by the Adapter after admission.
+///
+/// Event handlers have no publisher-visible Domain result. Returning a Runtime Failure lets the
+/// Adapter report diagnostics and apply Module supervision after the Event was admitted.
+pub type ModuleEventResult = Result<(), RuntimeFailure>;
+
 /// Common imports for native Rust Module authors.
 pub mod prelude {
     pub use crate::{
         ActivateContext, CapabilityClient, Ctx, DeactivateContext, ManagedTaskScope, ModuleConfig,
-        ModuleError, ModuleFuture, ModuleResult, Port, PrepareContext, ProviderStream,
-        ProviderStreamChannel, RuntimeFailure, StreamInput, module, provides,
+        ModuleError, ModuleEventResult, ModuleFuture, ModuleResult, Port, PrepareContext,
+        ProviderStream, ProviderStreamChannel, RuntimeFailure, StreamInput, module, provides,
     };
 }
 
