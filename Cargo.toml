@@ -4,6 +4,7 @@ members = [
     "crates/lenso",
     "crates/lenso-browser-driver",
     "crates/lenso-dylib-adapter",
+    "crates/lenso-guest-sdk",
     "crates/lenso-native-adapter",
     "crates/lenso-native-adapter-macros",
     "crates/lenso-plugin-control-plane",
