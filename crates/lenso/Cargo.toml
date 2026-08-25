@@ -1,0 +1,23 @@
+[package]
+name = "lenso"
+version = "0.4.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+description = "Rust authoring facade for Lenso vNext Modules."
+readme = "README.md"
+
+[package.metadata.lenso]
+package-id = "lenso"
+
+[dependencies]
+lenso-kernel.workspace = true
+lenso-module-authoring = { git = "https://github.com/LioRael/lenso-protocols", rev = "5b8b60db181706d0a23c9025c78d4decbad0dbaf" }
+lenso-native-adapter = { version = "0.1.2", path = "../lenso-native-adapter" }
+
+[dev-dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true
