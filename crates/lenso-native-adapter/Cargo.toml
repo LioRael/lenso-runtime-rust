@@ -7,11 +7,19 @@ publish = true
 repository.workspace = true
 description = "Native Rust Execution Adapter for Lenso vNext."
 
+[package.metadata.lenso]
+package-id = "lenso.native-adapter"
+
 [dependencies]
 inventory.workspace = true
 lenso-app-plan = "0.1.0"
 lenso-kernel = "0.1.1"
 lenso-native-adapter-macros = { version = "0.1.0", path = "../lenso-native-adapter-macros" }
+
+[dev-dependencies]
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

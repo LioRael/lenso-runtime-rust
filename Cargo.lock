@@ -651,10 +651,13 @@ dependencies = [
 name = "lenso-native-adapter"
 version = "0.1.2"
 dependencies = [
+ "futures",
  "inventory",
  "lenso-app-plan",
  "lenso-kernel",
  "lenso-native-adapter-macros",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
