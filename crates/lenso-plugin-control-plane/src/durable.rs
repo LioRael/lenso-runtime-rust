@@ -51,6 +51,7 @@ pub enum RetirementReason {
     TerminalFailure,
     SupervisorShutdown,
     RecoveryCleanup,
+    HostBuildReplaced,
 }
 
 /// Durable authority and recovery facts for one Generation.
@@ -82,6 +83,9 @@ pub struct DurableControlState {
     pub revision: u64,
     pub supervisor_epoch: u64,
     pub routing_epoch: u64,
+    /// True only after this Supervisor durably released every process-local resource.
+    #[serde(default)]
+    pub host_suspended: bool,
     pub active_generation_spec_digest: Option<String>,
     pub generations: Vec<GenerationControlRecord>,
 }
@@ -94,6 +98,7 @@ impl DurableControlState {
             revision: 0,
             supervisor_epoch: 0,
             routing_epoch: 0,
+            host_suspended: false,
             active_generation_spec_digest: None,
             generations: Vec::new(),
         }

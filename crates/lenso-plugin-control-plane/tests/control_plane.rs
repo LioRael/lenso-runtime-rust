@@ -926,6 +926,7 @@ fn controller_suspends_and_recovers_the_same_active_generation() {
             Some(generation.spec.digest())
         );
         assert_eq!(suspended.generations[0].lifecycle, ControlLifecycle::Active);
+        assert!(suspended.host_suspended);
         assert_eq!(task.await.unwrap().unwrap(), suspended);
 
         let recovered = DurableGenerationSupervisor::recover(
@@ -937,7 +938,96 @@ fn controller_suspends_and_recovers_the_same_active_generation() {
         )
         .await
         .unwrap();
+        assert!(!recovered.state().host_suspended);
         assert!(recovered.route().is_ok());
+    });
+}
+
+#[test]
+fn cleanly_suspended_host_can_be_replaced_without_restaging_the_old_build() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        let directory = tempfile::tempdir().unwrap();
+        let store = FileControlStateStore::open(directory.path()).unwrap();
+        let old_generation = empty_generation("old-host-build");
+        let mut old_host =
+            DurableGenerationSupervisor::open("app", FakeRuntime::default(), store.clone())
+                .unwrap();
+        old_host
+            .transition(
+                &transition(None, &old_generation, ReplacementMode::Initial, "0"),
+                &old_generation,
+                &BTreeMap::new(),
+                0,
+            )
+            .await
+            .unwrap();
+        old_host.suspend_host().await.unwrap();
+
+        let mut replacement = DurableGenerationSupervisor::replace_suspended_host(
+            "app",
+            FakeRuntime::default(),
+            store,
+        )
+        .unwrap();
+        assert!(!replacement.state().host_suspended);
+        assert!(replacement.state().active_generation_spec_digest.is_none());
+        assert_eq!(
+            replacement.state().generations[0].retirement_reason,
+            Some(RetirementReason::HostBuildReplaced)
+        );
+
+        let new_generation = empty_generation("new-host-build");
+        replacement
+            .transition(
+                &transition(None, &new_generation, ReplacementMode::Initial, "0"),
+                &new_generation,
+                &BTreeMap::new(),
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replacement.route().unwrap().target(),
+            new_generation.spec.digest()
+        );
+    });
+}
+
+#[test]
+fn host_replacement_rejects_live_or_unclean_control_state() {
+    futures::executor::block_on(async {
+        let directory = tempfile::tempdir().unwrap();
+        let store = FileControlStateStore::open(directory.path()).unwrap();
+        let generation = empty_generation("still-live-host");
+        let mut live =
+            DurableGenerationSupervisor::open("app", FakeRuntime::default(), store.clone())
+                .unwrap();
+        live.transition(
+            &transition(None, &generation, ReplacementMode::Initial, "0"),
+            &generation,
+            &BTreeMap::new(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let error = DurableGenerationSupervisor::replace_suspended_host(
+            "app",
+            FakeRuntime::default(),
+            store,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ControlPlaneError::TransitionRejected { detail }
+                if detail.contains("clean durable suspension")
+        ));
+        assert!(live.route().is_ok());
     });
 }
 

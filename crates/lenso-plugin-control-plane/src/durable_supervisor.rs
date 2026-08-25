@@ -136,11 +136,65 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             return rejected("live durable control state requires explicit recovery");
         }
         let mut next = state.clone();
+        next.host_suspended = false;
         next.supervisor_epoch = next.supervisor_epoch.checked_add(1).ok_or_else(|| {
             ControlPlaneError::TransitionRejected {
                 detail: "Supervisor epoch exhausted".to_owned(),
             }
         })?;
+        let state = store.compare_and_swap(&app_id, state.revision, next)?;
+        Ok(Self {
+            app_id,
+            runtime,
+            store,
+            state,
+            slots: BTreeMap::new(),
+        })
+    }
+
+    /// Opens a fresh Host incarnation after a proven clean suspension when the previous
+    /// Generation cannot be restaged by the replacement Host build.
+    ///
+    /// The previous process must have committed `host_suspended` only after releasing every
+    /// process-local Generation resource. Unclean or concurrent Host replacement fails closed.
+    pub fn replace_suspended_host(
+        app_id: impl Into<String>,
+        runtime: R,
+        store: S,
+    ) -> Result<Self, ControlPlaneError> {
+        let app_id = app_id.into();
+        let state = store.load(&app_id)?;
+        if !state.host_suspended {
+            return rejected("Host replacement requires a clean durable suspension");
+        }
+        let mut next = state.clone();
+        next.host_suspended = false;
+        next.supervisor_epoch = next.supervisor_epoch.checked_add(1).ok_or_else(|| {
+            ControlPlaneError::TransitionRejected {
+                detail: "Supervisor epoch exhausted".to_owned(),
+            }
+        })?;
+        if next.active_generation_spec_digest.take().is_some() {
+            next.routing_epoch = next.routing_epoch.checked_add(1).ok_or_else(|| {
+                ControlPlaneError::TransitionRejected {
+                    detail: "Routing Epoch exhausted".to_owned(),
+                }
+            })?;
+        }
+        for record in &mut next.generations {
+            if matches!(
+                record.lifecycle,
+                ControlLifecycle::Staged
+                    | ControlLifecycle::Ready
+                    | ControlLifecycle::Active
+                    | ControlLifecycle::Draining
+                    | ControlLifecycle::Standby
+            ) {
+                record.lifecycle = ControlLifecycle::Retired;
+                record.drain_deadline_unix_nanos = None;
+                record.retirement_reason = Some(RetirementReason::HostBuildReplaced);
+            }
+        }
         let state = store.compare_and_swap(&app_id, state.revision, next)?;
         Ok(Self {
             app_id,
@@ -163,6 +217,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
     ) -> Result<Self, ControlPlaneError> {
         let app_id = app_id.into();
         let mut state = store.load(&app_id)?;
+        state.host_suspended = false;
         state.supervisor_epoch = state.supervisor_epoch.checked_add(1).ok_or_else(|| {
             ControlPlaneError::TransitionRejected {
                 detail: "Supervisor epoch exhausted".to_owned(),
@@ -814,6 +869,9 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             }
         }
         if failures.is_empty() {
+            let mut next = self.state.clone();
+            next.host_suspended = true;
+            self.commit(next)?;
             Ok(self.state.clone())
         } else {
             Err(ControlPlaneError::HostFailure {
