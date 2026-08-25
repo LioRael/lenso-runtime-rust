@@ -33,6 +33,14 @@ mod echo {
     }
     pub use crate::__test_lenso_native_provide_echo as __lenso_native_provide_echo;
 
+    #[macro_export]
+    macro_rules! __test_lenso_native_lower_echo {
+        ($module:ty, $support:path) => {
+            impl $crate::echo::EchoProvider for $module {}
+        };
+    }
+    pub use crate::__test_lenso_native_lower_echo as __lenso_native_lower_echo;
+
     pub struct Echo;
     pub trait EchoProvider {}
 }
@@ -50,7 +58,7 @@ struct ExampleModule {
 }
 
 #[provides(echo::Echo)]
-impl echo::EchoProvider for ExampleModule {}
+impl ExampleModule {}
 
 #[test]
 fn facade_owns_the_module_authoring_surface() {
