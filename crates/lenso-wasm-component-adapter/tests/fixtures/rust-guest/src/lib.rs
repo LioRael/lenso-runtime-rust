@@ -3,11 +3,26 @@ wit_bindgen::generate!({
     world: "plugin",
 });
 
+mod echo {
+    pub const CAPABILITY_ID: &str = "test.echo@1";
+    pub const DESCRIPTOR_VERSION: &str = "1.0.0";
+    pub const ECHO: &str = "echo";
+    pub const FAIL: &str = "fail";
+    pub const TRAP: &str = "trap";
+    pub const LOOP: &str = "loop";
+}
+
 struct GuestComponent;
 
 impl Guest for GuestComponent {
     fn describe() -> String {
-        r#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":"test.echo@1","descriptor_version":"1.0.0","request_operations":["echo","fail","trap","loop"]}]}"#.to_owned()
+        lenso_guest_sdk::guest_descriptor! {
+            provides: [echo {
+                requests: [echo::ECHO, echo::FAIL, echo::TRAP, echo::LOOP],
+                streams: [],
+            }],
+            requires: [],
+        }
     }
 
     fn invoke(
