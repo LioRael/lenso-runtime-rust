@@ -91,4 +91,13 @@ impl<F: CatalogFactory> GenerationRuntime for KernelGenerationRuntime<F> {
             }
         })
     }
+
+    fn terminal_failure(&self, handle: &Self::Handle) -> Option<ControlPlaneError> {
+        handle
+            .app
+            .terminal_failure()
+            .map(|error| ControlPlaneError::HostFailure {
+                detail: format!("Kernel Generation failed after Ready: {error:?}"),
+            })
+    }
 }

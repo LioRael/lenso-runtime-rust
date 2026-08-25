@@ -17,6 +17,7 @@ pub use durable::{
 };
 pub use durable_supervisor::{
     DurableGenerationLease, DurableGenerationSupervisor, DurableTransitionOutcome,
+    GenerationFailureOutcome,
 };
 pub use kernel_runtime::{CatalogFactory, KernelGenerationHandle, KernelGenerationRuntime};
 pub use model::*;
