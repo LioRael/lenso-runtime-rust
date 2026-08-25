@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, rc::Rc};
 pub use inventory as __inventory;
 use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
 pub use lenso_kernel::RuntimeFailure;
-pub use lenso_native_adapter_macros::module;
+pub use lenso_native_adapter_macros::{module, provides};
 
 use lenso_kernel::{
     ModuleLifecycle, NativeEndpointSet, NativeEventEndpoint, NativeExecutionAdapter,
