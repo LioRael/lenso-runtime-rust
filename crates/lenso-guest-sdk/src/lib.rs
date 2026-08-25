@@ -1,6 +1,9 @@
 //! Typed, Plan-bound Capability imports for byte-oriented Lenso guest Modules.
 
-use std::{collections::BTreeSet, marker::PhantomData};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    marker::PhantomData,
+};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -14,6 +17,85 @@ pub trait HostImports: Clone + std::fmt::Debug + 'static {
     fn stream_receive(&self, stream_id: u64) -> String;
     fn stream_close_send(&self, stream_id: u64) -> String;
     fn stream_cancel(&self, stream_id: u64) -> String;
+}
+
+/// Guest-owned Stream sessions with monotonic, non-zero ABI identities.
+///
+/// Keep one instance in guest-local state and delegate `stream_open`, the
+/// message functions, and `stream_cancel` to it instead of reimplementing ID
+/// allocation and lookup for every guest Module.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuestSessions<T> {
+    next_id: u64,
+    sessions: BTreeMap<u64, T>,
+}
+
+impl<T> Default for GuestSessions<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> GuestSessions<T> {
+    /// Creates an empty session table. Stream identity zero is never issued.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            next_id: 1,
+            sessions: BTreeMap::new(),
+        }
+    }
+
+    /// Inserts one session and returns its stable ABI identity.
+    ///
+    /// Exhaustion is reported explicitly instead of wrapping and aliasing a
+    /// live session. In practice it can only occur after issuing `u64::MAX`
+    /// identities in one guest instance.
+    pub fn insert(&mut self, session: T) -> Result<u64, GuestSessionError> {
+        if self.next_id == 0 {
+            return Err(GuestSessionError::IdentityExhausted);
+        }
+        let id = self.next_id;
+        self.next_id = self.next_id.checked_add(1).unwrap_or(0);
+        let previous = self.sessions.insert(id, session);
+        debug_assert!(previous.is_none(), "monotonic guest session ID collided");
+        Ok(id)
+    }
+
+    /// Borrows one live session by ABI identity.
+    pub fn get_mut(&mut self, id: u64) -> Result<&mut T, GuestSessionError> {
+        self.sessions
+            .get_mut(&id)
+            .ok_or(GuestSessionError::UnknownSession(id))
+    }
+
+    /// Removes one live session, returning its owned state.
+    pub fn remove(&mut self, id: u64) -> Result<T, GuestSessionError> {
+        self.sessions
+            .remove(&id)
+            .ok_or(GuestSessionError::UnknownSession(id))
+    }
+
+    /// Number of live sessions retained by this guest instance.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Whether no live sessions are retained.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
+}
+
+/// Bounded failures from guest Stream session management.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuestSessionError {
+    /// No further non-zero `u64` identity can be issued safely.
+    IdentityExhausted,
+    /// The Host referenced an identity that is not live in this guest.
+    UnknownSession(u64),
 }
 
 /// Defines a zero-sized [`HostImports`] implementation over `wit-bindgen` world imports.
@@ -555,6 +637,25 @@ mod tests {
         assert_eq!(
             host.invoke(0, "operation", "{}"),
             json!({ "ok": null }).to_string()
+        );
+    }
+
+    #[test]
+    fn guest_sessions_issue_non_zero_ids_and_fail_closed_for_unknown_sessions() {
+        let mut sessions = GuestSessions::new();
+        let first = sessions.insert("first").unwrap();
+        let second = sessions.insert("second").unwrap();
+        assert_eq!((first, second), (1, 2));
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(*sessions.get_mut(first).unwrap(), "first");
+        assert_eq!(sessions.remove(first).unwrap(), "first");
+        assert_eq!(
+            sessions.get_mut(first),
+            Err(GuestSessionError::UnknownSession(first))
+        );
+        assert_eq!(
+            sessions.remove(0),
+            Err(GuestSessionError::UnknownSession(0))
         );
     }
 
