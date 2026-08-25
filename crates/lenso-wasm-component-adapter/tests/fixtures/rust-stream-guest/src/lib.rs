@@ -1,4 +1,6 @@
-use std::{cell::RefCell, collections::{BTreeMap, VecDeque}};
+use std::{cell::RefCell, collections::VecDeque};
+
+use lenso_guest_sdk::GuestSessions;
 
 wit_bindgen::generate!({
     path: "wit",
@@ -11,14 +13,8 @@ struct Session {
     closed: bool,
 }
 
-#[derive(Default)]
-struct State {
-    next_id: u64,
-    sessions: BTreeMap<u64, Session>,
-}
-
 thread_local! {
-    static STATE: RefCell<State> = RefCell::new(State { next_id: 1, sessions: BTreeMap::new() });
+    static SESSIONS: RefCell<GuestSessions<Session>> = const { RefCell::new(GuestSessions::new()) };
 }
 
 struct GuestComponent;
@@ -32,32 +28,39 @@ impl Guest for GuestComponent {
         Ok("null".to_owned())
     }
 
-    fn stream_open(capability: String, operation: String, request_json: String) -> Result<u64, String> {
+    fn stream_open(
+        capability: String,
+        operation: String,
+        request_json: String,
+    ) -> Result<u64, String> {
         assert_eq!(capability, "test.chat@1");
         assert_eq!(operation, "chat");
         if request_json == "0" {
             return Err("\"rejected\"".to_owned());
         }
-        STATE.with_borrow_mut(|state| {
-            let id = state.next_id;
-            state.next_id += 1;
-            state.sessions.insert(id, Session::default());
-            Ok(id)
+        SESSIONS.with_borrow_mut(|sessions| {
+            sessions
+                .insert(Session::default())
+                .map_err(|error| format!("failed to allocate stream: {error:?}"))
         })
     }
 
     fn stream_send(stream_id: u64, message_json: String) -> Result<(), String> {
-        STATE.with_borrow_mut(|state| {
-            state.sessions.get_mut(&stream_id)
-                .ok_or_else(|| "unknown stream".to_owned())?
-                .messages.push_back(message_json);
+        SESSIONS.with_borrow_mut(|sessions| {
+            sessions
+                .get_mut(stream_id)
+                .map_err(|_| "unknown stream".to_owned())?
+                .messages
+                .push_back(message_json);
             Ok(())
         })
     }
 
     fn stream_receive(stream_id: u64) -> Result<String, String> {
-        STATE.with_borrow_mut(|state| {
-            let session = state.sessions.get_mut(&stream_id).ok_or_else(|| "unknown stream".to_owned())?;
+        SESSIONS.with_borrow_mut(|sessions| {
+            let session = sessions
+                .get_mut(stream_id)
+                .map_err(|_| "unknown stream".to_owned())?;
             if let Some(message) = session.messages.pop_front() {
                 return Ok(format!(r#"{{"kind":"message","value":{message}}}"#));
             }
@@ -70,16 +73,19 @@ impl Guest for GuestComponent {
     }
 
     fn stream_close_send(stream_id: u64) -> Result<(), String> {
-        STATE.with_borrow_mut(|state| {
-            state.sessions.get_mut(&stream_id)
-                .ok_or_else(|| "unknown stream".to_owned())?
+        SESSIONS.with_borrow_mut(|sessions| {
+            sessions
+                .get_mut(stream_id)
+                .map_err(|_| "unknown stream".to_owned())?
                 .closed = true;
             Ok(())
         })
     }
 
     fn stream_cancel(stream_id: u64) {
-        STATE.with_borrow_mut(|state| { state.sessions.remove(&stream_id); });
+        SESSIONS.with_borrow_mut(|sessions| {
+            let _ = sessions.remove(stream_id);
+        });
     }
 }
 
