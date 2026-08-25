@@ -28,6 +28,7 @@ hex = "0.4"
 inventory = "0.3"
 lenso-app-plan = "0.1.1"
 lenso-kernel = "0.1.5"
+lenso-module-authoring = { git = "https://github.com/LioRael/lenso-protocols", rev = "9a594895137b45a429876b34d8b7cfff008aa335" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

@@ -578,9 +578,9 @@ fn expand_module_struct(
     let descriptor_macro = format_ident!("__lenso_module_descriptor_{}", snake(&name.to_string()));
     let requirement_macros = ports
         .iter()
-        .map(|(_, client)| requirement_macro(client))
+        .map(|(_, client, cardinality)| requirement_macro(client, *cardinality))
         .collect::<syn::Result<Vec<_>>>()?;
-    let connect_ports = ports.iter().map(|(field, _)| {
+    let connect_ports = ports.iter().map(|(field, _, _)| {
         quote! { self.module.#field.connect(context.dependencies())?; }
     });
     let requirement_parts = intersperse_commas(requirement_macros);
@@ -788,8 +788,14 @@ fn configuration_schema_tokens(
 
 struct StructFields {
     config_type: Option<Type>,
-    ports: Vec<(syn::Ident, Path)>,
+    ports: Vec<(syn::Ident, Path, PortCardinality)>,
     initializers: Vec<proc_macro2::TokenStream>,
+}
+
+#[derive(Clone, Copy)]
+enum PortCardinality {
+    One,
+    Many,
 }
 
 fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
@@ -812,8 +818,8 @@ fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
                 ));
             }
             initializers.push(quote!(#name: configuration));
-        } else if let Some(client) = port_client(&field.ty)? {
-            ports.push((name.clone(), client));
+        } else if let Some((client, cardinality)) = port_client(&field.ty)? {
+            ports.push((name.clone(), client, cardinality));
             initializers.push(quote!(#name: ::core::default::Default::default()));
         } else {
             initializers.push(quote!(#name: ::core::default::Default::default()));
@@ -834,34 +840,45 @@ fn take_marker(attributes: &mut Vec<Attribute>, name: &str) -> bool {
     present
 }
 
-fn port_client(ty: &Type) -> syn::Result<Option<Path>> {
+fn port_client(ty: &Type) -> syn::Result<Option<(Path, PortCardinality)>> {
     let Type::Path(path) = ty else {
         return Ok(None);
     };
     let Some(segment) = path.path.segments.last() else {
         return Ok(None);
     };
-    if segment.ident != "Port" {
+    let cardinality = if segment.ident == "Port" {
+        PortCardinality::One
+    } else if segment.ident == "ManyPort" {
+        PortCardinality::Many
+    } else {
         return Ok(None);
-    }
+    };
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
         return Err(syn::Error::new_spanned(
             ty,
-            "Port requires one Capability client type",
+            "Port or ManyPort requires one Capability client type",
         ));
     };
-    let [syn::GenericArgument::Type(Type::Path(client))] =
-        arguments.args.iter().collect::<Vec<_>>().as_slice()
-    else {
+    let Some(syn::GenericArgument::Type(Type::Path(client))) = arguments.args.first() else {
         return Err(syn::Error::new_spanned(
             ty,
-            "Port requires one Capability client type",
+            "Port or ManyPort requires one Capability client type",
         ));
     };
-    Ok(Some(client.path.clone()))
+    if arguments.args.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "Port or ManyPort requires one Capability client type",
+        ));
+    }
+    Ok(Some((client.path.clone(), cardinality)))
 }
 
-fn requirement_macro(client: &Path) -> syn::Result<proc_macro2::TokenStream> {
+fn requirement_macro(
+    client: &Path,
+    cardinality: PortCardinality,
+) -> syn::Result<proc_macro2::TokenStream> {
     if client.segments.len() < 2 {
         return Err(syn::Error::new_spanned(
             client,
@@ -876,7 +893,11 @@ fn requirement_macro(client: &Path) -> syn::Result<proc_macro2::TokenStream> {
         .into_value()
         .ident;
     namespace.segments.pop_punct();
-    let macro_name = format_ident!("__lenso_required_{}", snake(&client_name.to_string()));
+    let prefix = match cardinality {
+        PortCardinality::One => "__lenso_required_",
+        PortCardinality::Many => "__lenso_required_many_",
+    };
+    let macro_name = format_ident!("{}{}", prefix, snake(&client_name.to_string()));
     Ok(quote!(#namespace::#macro_name!()))
 }
 
@@ -1133,6 +1154,20 @@ mod tests {
 
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"], json!(["name"]));
+    }
+
+    #[test]
+    fn typed_ports_preserve_client_paths_and_cardinality() {
+        let one: Type = parse_quote!(Port<secrets::SecretsClient>);
+        let many: Type = parse_quote!(ManyPort<auth::AuthClient>);
+
+        let (one_client, one_cardinality) = port_client(&one).unwrap().unwrap();
+        let (many_client, many_cardinality) = port_client(&many).unwrap().unwrap();
+
+        assert_eq!(quote!(#one_client).to_string(), "secrets :: SecretsClient");
+        assert!(matches!(one_cardinality, PortCardinality::One));
+        assert_eq!(quote!(#many_client).to_string(), "auth :: AuthClient");
+        assert!(matches!(many_cardinality, PortCardinality::Many));
     }
 
     #[test]
