@@ -10,13 +10,13 @@ description = "Dynamic Plugin admission, resolution, and App Generation supervis
 [dependencies]
 hex.workspace = true
 lenso-app-plan.workspace = true
-lenso-plugin-bundle = { path = "../lenso-plugin-bundle" }
+lenso-plugin-bundle = { version = "0.1.0", path = "../lenso-plugin-bundle" }
 lenso-kernel.workspace = true
-lenso-dylib-adapter = { path = "../lenso-dylib-adapter" }
-lenso-quickjs-adapter = { path = "../lenso-quickjs-adapter" }
-lenso-runner = { path = "../lenso-runner" }
-lenso-runtime-codec = { path = "../lenso-runtime-codec" }
-lenso-wasm-component-adapter = { path = "../lenso-wasm-component-adapter" }
+lenso-dylib-adapter = { version = "0.1.0", path = "../lenso-dylib-adapter" }
+lenso-quickjs-adapter = { version = "0.1.0", path = "../lenso-quickjs-adapter" }
+lenso-runner = { version = "0.1.7", path = "../lenso-runner" }
+lenso-runtime-codec = { version = "0.1.0", path = "../lenso-runtime-codec" }
+lenso-wasm-component-adapter = { version = "0.1.0", path = "../lenso-wasm-component-adapter" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -25,7 +25,7 @@ fs2 = "0.4"
 tokio.workspace = true
 
 [dev-dependencies]
-lenso-native-adapter = { path = "../lenso-native-adapter" }
+lenso-native-adapter = { version = "0.2.0", path = "../lenso-native-adapter" }
 tempfile = "3"
 
 [lints]

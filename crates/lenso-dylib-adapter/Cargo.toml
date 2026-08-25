@@ -11,7 +11,7 @@ description = "Trusted versioned C-ABI dynamic-library Execution Adapter for Len
 futures.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
-lenso-runtime-codec = { path = "../lenso-runtime-codec" }
+lenso-runtime-codec = { version = "0.1.0", path = "../lenso-runtime-codec" }
 libloading = "0.9"
 serde.workspace = true
 serde_json.workspace = true
