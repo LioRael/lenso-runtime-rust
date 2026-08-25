@@ -13,8 +13,8 @@ package-id = "lenso.native-adapter"
 [dependencies]
 futures.workspace = true
 inventory.workspace = true
-lenso-app-plan = "0.1.0"
-lenso-kernel = "0.1.1"
+lenso-app-plan.workspace = true
+lenso-kernel.workspace = true
 lenso-native-adapter-macros = { version = "0.1.1", path = "../lenso-native-adapter-macros" }
 serde_json.workspace = true
 
