@@ -12,8 +12,9 @@ readme = "README.md"
 package-id = "lenso"
 
 [dependencies]
+futures.workspace = true
 lenso-kernel.workspace = true
-lenso-module-authoring = { git = "https://github.com/LioRael/lenso-protocols", rev = "016644ba642e3954798d50336550ec4eddcb0e4c" }
+lenso-module-authoring = { git = "https://github.com/LioRael/lenso-protocols", rev = "0622953544e19ee1509465255427cd12c7d26089" }
 lenso-native-adapter = { version = "0.1.2", path = "../lenso-native-adapter" }
 
 [dev-dependencies]
