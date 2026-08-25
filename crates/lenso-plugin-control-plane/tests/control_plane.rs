@@ -814,6 +814,55 @@ fn controller_routes_rolls_back_during_drain_and_shuts_down_after_leases() {
 }
 
 #[test]
+fn controller_suspends_and_recovers_the_same_active_generation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        let directory = tempfile::tempdir().unwrap();
+        let store = FileControlStateStore::open(directory.path()).unwrap();
+        let generation = empty_generation("suspend-recover");
+        let supervisor =
+            DurableGenerationSupervisor::open("app", FakeRuntime::default(), store.clone())
+                .unwrap();
+        let (controller, client) =
+            GenerationController::new(supervisor, std::time::Duration::from_millis(2)).unwrap();
+        let task = tokio::task::spawn_local(controller.run());
+        client
+            .transition(
+                transition(None, &generation, ReplacementMode::Initial, "0"),
+                generation.clone(),
+                BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+        let route = client.route().await.unwrap();
+        assert!(client.suspend().await.is_err());
+        drop(route);
+        let suspended = client.suspend().await.unwrap();
+        assert_eq!(
+            suspended.active_generation_spec_digest.as_deref(),
+            Some(generation.spec.digest())
+        );
+        assert_eq!(suspended.generations[0].lifecycle, ControlLifecycle::Active);
+        assert_eq!(task.await.unwrap().unwrap(), suspended);
+
+        let recovered = DurableGenerationSupervisor::recover(
+            "app",
+            FakeRuntime::default(),
+            store,
+            &BTreeMap::from([(generation.spec.digest().to_owned(), generation)]),
+            10,
+        )
+        .await
+        .unwrap();
+        assert!(recovered.route().is_ok());
+    });
+}
+
+#[test]
 fn maintenance_forces_retirement_after_the_durable_drain_deadline() {
     futures::executor::block_on(async {
         let first = empty_generation("deadline-first");
