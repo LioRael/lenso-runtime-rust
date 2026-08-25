@@ -8,9 +8,11 @@ repository.workspace = true
 description = "Shared artifact and Capability codec seams for Lenso Execution Adapters."
 
 [dependencies]
+futures.workspace = true
 hex.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 

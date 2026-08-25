@@ -65,8 +65,19 @@ impl JsonCapabilityCodec for EchoCodec {
 #[test]
 fn bundled_esm_runs_without_ambient_host_apis_and_recreates_after_interrupt() {
     let source = br#"
-        export async function invoke(operation, requestJson) {
+        export function describe() {
+          return JSON.stringify({
+            abi: "lenso.json-request@1",
+            capabilities: [{
+              capability_id: "test.echo@1",
+              descriptor_version: "1.0.0",
+              request_operations: ["echo", "fail", "loop"]
+            }]
+          });
+        }
+        export async function invoke(capability, operation, requestJson) {
           if (globalThis.Date !== undefined || Math.random !== undefined) throw new Error("ambient");
+          if (capability !== "test.echo@1") throw new Error("capability");
           if (operation === "loop") while (true) {}
           if (operation === "fail") return JSON.stringify({error: "declared"});
           return JSON.stringify({ok: JSON.parse(requestJson)});
@@ -125,6 +136,30 @@ fn bundled_esm_runs_without_ambient_host_apis_and_recreates_after_interrupt() {
         Err(RuntimeFailure::Cancelled { request_id: 4 })
     ));
     assert!(adapter.recreate(&plan, "plugin").is_ok());
+}
+
+#[test]
+fn readiness_rejects_descriptor_drift_and_duplicate_codecs() {
+    let source = br#"
+        export function describe() {
+          return JSON.stringify({abi: "lenso.json-request@1", capabilities: []});
+        }
+        export function invoke() { return JSON.stringify({ok: null}); }
+    "#;
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), source).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(source)));
+    let artifact = ArtifactHandle::open(file.path(), &digest, source.len() as u64).unwrap();
+    let artifacts = ArtifactCatalog::new()
+        .with_artifact("plugin", artifact)
+        .unwrap();
+    let mismatch = QuickJsAdapter::new(artifacts.clone()).with_codec(EchoCodec);
+    assert!(mismatch.recreate(&plan(), "plugin").is_err());
+
+    let duplicate = QuickJsAdapter::new(artifacts)
+        .with_codec(EchoCodec)
+        .with_codec(EchoCodec);
+    assert!(duplicate.recreate(&plan(), "plugin").is_err());
 }
 
 fn plan() -> ResolvedAppPlan {

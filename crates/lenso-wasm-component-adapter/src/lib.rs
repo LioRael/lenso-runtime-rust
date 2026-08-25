@@ -1,8 +1,7 @@
 //! Bounded Wasmtime Component Model Execution Adapter.
 
 use std::{
-    any::Any,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     rc::Rc,
     sync::{
         Arc,
@@ -16,12 +15,13 @@ use std::{
 use futures::{FutureExt, select};
 use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
-    ExecutionAdapter, InvocationContext, ModuleLifecycle, NativeRequestEndpoint, PreparedNativeApp,
-    PreparedNativeModule, RuntimeFailure,
+    ExecutionAdapter, InvocationContext, ModuleLifecycle, PreparedNativeApp, PreparedNativeModule,
+    RuntimeFailure,
 };
 use lenso_runtime_codec::{
-    ArtifactCatalog, JsonCapabilityCodec, JsonInvocationOutcome, codecs_for_instance,
-    prepare_request_app,
+    ArtifactCatalog, JsonCapabilityCodec, JsonInvocationOutcome, JsonRequestTransport,
+    codecs_for_instance, json_request_endpoints, prepare_request_app,
+    validate_json_module_descriptor,
 };
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
@@ -31,7 +31,8 @@ wasmtime::component::bindgen!({
         package lenso:runtime@1.0.0;
 
         world plugin {
-            export invoke: func(operation: string, request-json: string) -> result<string, string>;
+            export describe: func() -> string;
+            export invoke: func(capability: string, operation: string, request-json: string) -> result<string, string>;
         }
     "#,
     world: "plugin",
@@ -71,6 +72,7 @@ impl Default for WasmComponentLimits {
 pub struct WasmComponentAdapter {
     artifacts: ArtifactCatalog,
     codecs: BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
+    duplicate_codecs: BTreeSet<String>,
     limits: WasmComponentLimits,
 }
 
@@ -80,6 +82,7 @@ impl WasmComponentAdapter {
         Self {
             artifacts,
             codecs: BTreeMap::new(),
+            duplicate_codecs: BTreeSet::new(),
             limits: WasmComponentLimits::default(),
         }
     }
@@ -87,15 +90,24 @@ impl WasmComponentAdapter {
     /// Registers one generated Capability codec.
     #[must_use]
     pub fn with_codec(mut self, codec: impl JsonCapabilityCodec) -> Self {
-        self.codecs
-            .insert(codec.capability_id().to_owned(), Rc::new(codec));
+        let capability = codec.capability_id().to_owned();
+        if self
+            .codecs
+            .insert(capability.clone(), Rc::new(codec))
+            .is_some()
+        {
+            self.duplicate_codecs.insert(capability);
+        }
         self
     }
 
     /// Registers an already shared generated Capability codec.
     #[must_use]
     pub fn with_shared_codec(mut self, codec: Rc<dyn JsonCapabilityCodec>) -> Self {
-        self.codecs.insert(codec.capability_id().to_owned(), codec);
+        let capability = codec.capability_id().to_owned();
+        if self.codecs.insert(capability.clone(), codec).is_some() {
+            self.duplicate_codecs.insert(capability);
+        }
         self
     }
 
@@ -110,6 +122,18 @@ impl WasmComponentAdapter {
         &self,
         instance: &ModuleInstancePlan,
     ) -> Result<PreparedNativeModule, RuntimeFailure> {
+        if instance.entrypoint() != "plugin" {
+            return invalid(format!(
+                "Wasm Component Instance `{}` requires the `plugin` world entrypoint",
+                instance.instance_key()
+            ));
+        }
+        if !self.duplicate_codecs.is_empty() {
+            return invalid(format!(
+                "duplicate generated codecs registered for {:?}",
+                self.duplicate_codecs
+            ));
+        }
         let bytes = self
             .artifacts
             .require(instance.instance_key())?
@@ -118,16 +142,12 @@ impl WasmComponentAdapter {
             return module_failure("Wasm Component exceeds max_component_bytes");
         }
         let codecs = codecs_for_instance(instance, &self.codecs)?;
-        let generation = Rc::new(WasmGeneration::start(bytes, self.limits.clone())?);
-        let endpoints = codecs
-            .into_iter()
-            .map(|codec| {
-                Rc::new(WasmEndpoint {
-                    generation: generation.clone(),
-                    codec,
-                }) as Rc<dyn NativeRequestEndpoint>
-            })
-            .collect();
+        let generation = Rc::new(WasmGeneration::start(
+            bytes,
+            instance.clone(),
+            self.limits.clone(),
+        )?);
+        let endpoints = json_request_endpoints(generation.clone(), codecs);
         Ok(PreparedNativeModule::new(
             endpoints,
             WasmLifecycle { generation },
@@ -181,8 +201,10 @@ impl ExecutionAdapter for WasmComponentAdapter {
 }
 
 struct InvokeCommand {
+    capability: String,
     operation: String,
     request_json: String,
+    abandoned: Arc<AtomicBool>,
     outcome: futures::channel::oneshot::Sender<Result<JsonInvocationOutcome, String>>,
 }
 
@@ -215,7 +237,11 @@ impl std::fmt::Debug for WasmGeneration {
 }
 
 impl WasmGeneration {
-    fn start(bytes: Vec<u8>, limits: WasmComponentLimits) -> Result<Self, RuntimeFailure> {
+    fn start(
+        bytes: Vec<u8>,
+        instance: ModuleInstancePlan,
+        limits: WasmComponentLimits,
+    ) -> Result<Self, RuntimeFailure> {
         let mut config = Config::new();
         config
             .wasm_component_model(true)
@@ -233,15 +259,14 @@ impl WasmGeneration {
         let worker = thread::Builder::new()
             .name("lenso-wasm-component".to_owned())
             .spawn(move || {
-                let result = run_worker(
-                    &worker_engine,
-                    &component,
-                    &linker,
-                    &limits,
-                    &receiver,
-                    &worker_failed,
-                    &ready_tx,
-                );
+                let inputs = WasmWorkerInputs {
+                    engine: &worker_engine,
+                    component: &component,
+                    linker: &linker,
+                    instance: &instance,
+                    limits: &limits,
+                };
+                let result = run_worker(inputs, &receiver, &worker_failed, &ready_tx);
                 if let Err(detail) = result {
                     let _ = ready_tx.try_send(Err(detail));
                 }
@@ -279,8 +304,9 @@ impl WasmGeneration {
         }
     }
 
-    async fn invoke(
+    async fn invoke_inner(
         &self,
+        capability: String,
         operation: String,
         request_json: String,
         context: InvocationContext,
@@ -290,11 +316,15 @@ impl WasmGeneration {
                 detail: "Wasm Component generation is retired".to_owned(),
             });
         }
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let mut abandonment = WasmAbandonmentGuard::new(abandoned.clone(), self.engine.clone());
         let (outcome, response) = futures::channel::oneshot::channel();
         self.commands
             .try_send(WorkerCommand::Invoke(InvokeCommand {
+                capability,
                 operation,
                 request_json,
+                abandoned,
                 outcome,
             }))
             .map_err(|_| RuntimeFailure::ResourceExhausted {
@@ -306,7 +336,10 @@ impl WasmGeneration {
         let mut cancelled = cancellation.cancelled().fuse();
         select! {
             result = response => match result {
-                Ok(Ok(outcome)) => Ok(outcome),
+                Ok(Ok(outcome)) => {
+                    abandonment.disarm();
+                    Ok(outcome)
+                },
                 Ok(Err(detail)) => {
                     self.failed.store(true, Ordering::Release);
                     Err(RuntimeFailure::ModuleFailure { detail: bounded(detail) })
@@ -327,9 +360,52 @@ impl WasmGeneration {
     }
 }
 
+impl JsonRequestTransport for WasmGeneration {
+    fn invoke(
+        self: Rc<Self>,
+        capability: String,
+        operation: String,
+        request_json: String,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonInvocationOutcome, RuntimeFailure>>
+    {
+        Box::pin(async move {
+            self.invoke_inner(capability, operation, request_json, context)
+                .await
+        })
+    }
+}
+
 impl Drop for WasmGeneration {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+struct WasmAbandonmentGuard {
+    abandoned: Option<Arc<AtomicBool>>,
+    engine: Engine,
+}
+
+impl WasmAbandonmentGuard {
+    fn new(abandoned: Arc<AtomicBool>, engine: Engine) -> Self {
+        Self {
+            abandoned: Some(abandoned),
+            engine,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.abandoned = None;
+    }
+}
+
+impl Drop for WasmAbandonmentGuard {
+    fn drop(&mut self) {
+        if let Some(abandoned) = &self.abandoned {
+            abandoned.store(true, Ordering::Release);
+            self.engine.increment_epoch();
+        }
     }
 }
 
@@ -338,15 +414,29 @@ struct HostState {
     limits: StoreLimits,
 }
 
+#[derive(Clone, Copy)]
+struct WasmWorkerInputs<'a> {
+    engine: &'a Engine,
+    component: &'a Component,
+    linker: &'a Linker<HostState>,
+    instance: &'a ModuleInstancePlan,
+    limits: &'a WasmComponentLimits,
+}
+
+#[allow(clippy::too_many_lines)]
 fn run_worker(
-    engine: &Engine,
-    component: &Component,
-    linker: &Linker<HostState>,
-    limits: &WasmComponentLimits,
+    inputs: WasmWorkerInputs<'_>,
     receiver: &mpsc::Receiver<WorkerCommand>,
     failed: &Arc<AtomicBool>,
     ready: &mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
+    let WasmWorkerInputs {
+        engine,
+        component,
+        linker,
+        instance,
+        limits,
+    } = inputs;
     let store_limits = StoreLimitsBuilder::new()
         .memory_size(limits.max_memory_bytes)
         .table_elements(limits.max_table_elements)
@@ -365,15 +455,29 @@ fn run_worker(
     store
         .set_fuel(limits.fuel_per_invocation)
         .map_err(|error| error.to_string())?;
-    store.set_epoch_deadline(u64::MAX / 2);
+    store.set_epoch_deadline(1);
     store.epoch_deadline_trap();
-    let bindings = Plugin::instantiate(&mut store, component, linker)
-        .map_err(|error| bounded(error.to_string()))?;
     let (deadline_tx, deadline_rx) = mpsc::channel();
     let deadline_engine = engine.clone();
     let deadline_worker = thread::Builder::new()
         .name("lenso-wasm-deadline".to_owned())
         .spawn(move || run_deadline_worker(&deadline_engine, &deadline_rx))
+        .map_err(|error| error.to_string())?;
+    deadline_tx
+        .send(DeadlineCommand::Arm(limits.max_turn))
+        .map_err(|error| error.to_string())?;
+    let bindings = Plugin::instantiate(&mut store, component, linker)
+        .map_err(|error| bounded(error.to_string()))?;
+    let descriptor = bindings
+        .call_describe(&mut store)
+        .map_err(|error| bounded(format!("Wasm Component describe trapped: {error}")))?;
+    if descriptor.len() > limits.max_result_bytes {
+        return Err("Wasm Component descriptor exceeds max_result_bytes".to_owned());
+    }
+    validate_json_module_descriptor(instance, &descriptor)
+        .map_err(|error| bounded(format!("Wasm Component descriptor mismatch: {error:?}")))?;
+    deadline_tx
+        .send(DeadlineCommand::Disarm)
         .map_err(|error| error.to_string())?;
     ready.send(Ok(())).map_err(|error| error.to_string())?;
     let worker_result = (|| {
@@ -381,6 +485,13 @@ fn run_worker(
             match command {
                 WorkerCommand::Shutdown => return Ok(()),
                 WorkerCommand::Invoke(command) => {
+                    if command.abandoned.load(Ordering::Acquire) {
+                        failed.store(true, Ordering::Release);
+                        let _ = command
+                            .outcome
+                            .send(Err("Wasm Component invocation was abandoned".to_owned()));
+                        return Ok(());
+                    }
                     store
                         .set_fuel(limits.fuel_per_invocation)
                         .map_err(|error| error.to_string())?;
@@ -389,8 +500,12 @@ fn run_worker(
                     deadline_tx
                         .send(DeadlineCommand::Arm(limits.max_turn))
                         .map_err(|error| error.to_string())?;
-                    let result =
-                        bindings.call_invoke(&mut store, &command.operation, &command.request_json);
+                    let result = bindings.call_invoke(
+                        &mut store,
+                        &command.capability,
+                        &command.operation,
+                        &command.request_json,
+                    );
                     deadline_tx
                         .send(DeadlineCommand::Disarm)
                         .map_err(|error| error.to_string())?;
@@ -454,64 +569,6 @@ fn run_deadline_worker(engine: &Engine, commands: &mpsc::Receiver<DeadlineComman
             DeadlineCommand::Disarm => {}
             DeadlineCommand::Shutdown => return,
         }
-    }
-}
-
-#[derive(Debug)]
-struct WasmEndpoint {
-    generation: Rc<WasmGeneration>,
-    codec: Rc<dyn JsonCapabilityCodec>,
-}
-
-impl NativeRequestEndpoint for WasmEndpoint {
-    fn capability_id(&self) -> &'static str {
-        self.codec.capability_id()
-    }
-
-    fn descriptor_version(&self) -> &'static str {
-        self.codec.descriptor_version()
-    }
-
-    fn operations(&self) -> &'static [&'static str] {
-        self.codec.request_operations()
-    }
-
-    fn invoke(
-        &self,
-        operation: &str,
-        request: Box<dyn Any>,
-        context: InvocationContext,
-    ) -> futures::future::LocalBoxFuture<
-        'static,
-        Result<Result<Box<dyn Any>, Box<dyn Any>>, RuntimeFailure>,
-    > {
-        let generation = self.generation.clone();
-        let codec = self.codec.clone();
-        let operation = operation.to_owned();
-        Box::pin(async move {
-            if !codec.request_operations().contains(&operation.as_str()) {
-                return Err(RuntimeFailure::UnknownOperation {
-                    capability: codec.capability_id(),
-                    operation,
-                });
-            }
-            let request = codec.encode_request(&operation, request.as_ref())?;
-            let request =
-                serde_json::to_string(&request).map_err(|_| RuntimeFailure::ProtocolViolation {
-                    capability: codec.capability_id(),
-                })?;
-            match generation
-                .invoke(operation.clone(), request, context)
-                .await?
-            {
-                JsonInvocationOutcome::Success(value) => {
-                    codec.decode_response(&operation, value).map(Ok)
-                }
-                JsonInvocationOutcome::DomainError(value) => {
-                    codec.decode_domain_error(&operation, value).map(Err)
-                }
-            }
-        })
     }
 }
 

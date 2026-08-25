@@ -9,7 +9,11 @@ use std::{
 };
 
 use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
-use lenso_kernel::{PreparedBinding, PreparedNativeApp, PreparedNativeModule, RuntimeFailure};
+use lenso_kernel::{
+    InvocationContext, NativeRequestEndpoint, PreparedBinding, PreparedNativeApp,
+    PreparedNativeModule, RuntimeFailure,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -148,6 +152,178 @@ pub enum JsonInvocationOutcome {
     Success(Value),
     /// Declared generated Domain Error value.
     DomainError(Value),
+}
+
+/// Stable request-only guest ABI implemented by byte-oriented Module runtimes.
+pub const JSON_REQUEST_ABI_V1: &str = "lenso.json-request@1";
+
+/// Exact guest declaration returned before an Adapter opens readiness.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonModuleDescriptor {
+    pub abi: String,
+    pub capabilities: Vec<JsonCapabilityDescriptor>,
+}
+
+/// One exact request Capability exposed by a guest Module.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonCapabilityDescriptor {
+    pub capability_id: String,
+    pub descriptor_version: String,
+    pub request_operations: Vec<String>,
+}
+
+/// Derives the only guest declaration accepted for one resolved Instance.
+pub fn expected_json_module_descriptor(
+    instance: &ModuleInstancePlan,
+) -> Result<JsonModuleDescriptor, RuntimeFailure> {
+    let mut capabilities = Vec::with_capacity(instance.provided_capabilities().len());
+    for descriptor in instance.provided_capabilities() {
+        if !descriptor.stream_operations().is_empty() || !descriptor.event_operations().is_empty() {
+            return Err(RuntimeFailure::InvalidResolvedPlan {
+                detail: format!(
+                    "Execution class `{}` supports Request endpoints only",
+                    instance.execution_class()
+                ),
+            });
+        }
+        capabilities.push(JsonCapabilityDescriptor {
+            capability_id: descriptor.capability_id().to_owned(),
+            descriptor_version: descriptor.descriptor_version().to_owned(),
+            request_operations: descriptor.operations().to_vec(),
+        });
+    }
+    capabilities.sort();
+    if capabilities
+        .windows(2)
+        .any(|pair| pair[0].capability_id == pair[1].capability_id)
+    {
+        return Err(RuntimeFailure::InvalidResolvedPlan {
+            detail: format!(
+                "Instance `{}` declares a duplicate Capability",
+                instance.instance_key()
+            ),
+        });
+    }
+    Ok(JsonModuleDescriptor {
+        abi: JSON_REQUEST_ABI_V1.to_owned(),
+        capabilities,
+    })
+}
+
+/// Parses and compares a guest Ready declaration with exact Plan authority.
+pub fn validate_json_module_descriptor(
+    instance: &ModuleInstancePlan,
+    encoded: &str,
+) -> Result<(), RuntimeFailure> {
+    let mut actual = serde_json::from_str::<JsonModuleDescriptor>(encoded).map_err(|_| {
+        RuntimeFailure::ProtocolViolation {
+            capability: "lenso.json-request@1",
+        }
+    })?;
+    actual.capabilities.sort();
+    let expected = expected_json_module_descriptor(instance)?;
+    if actual != expected {
+        return Err(RuntimeFailure::InvalidResolvedPlan {
+            detail: format!(
+                "guest descriptor does not match resolved Instance `{}`",
+                instance.instance_key()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Guest transport seam shared by Wasm Component and embedded-JavaScript Adapters.
+pub trait JsonRequestTransport: std::fmt::Debug + 'static {
+    fn invoke(
+        self: Rc<Self>,
+        capability: String,
+        operation: String,
+        request_json: String,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonInvocationOutcome, RuntimeFailure>>;
+}
+
+/// Builds typed Kernel endpoints over one exact guest transport generation.
+pub fn json_request_endpoints<T: JsonRequestTransport>(
+    transport: Rc<T>,
+    codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
+) -> Vec<Rc<dyn NativeRequestEndpoint>> {
+    let transport: Rc<dyn JsonRequestTransport> = transport;
+    codecs
+        .into_iter()
+        .map(|codec| {
+            Rc::new(JsonRequestEndpoint {
+                transport: transport.clone(),
+                codec,
+            }) as Rc<dyn NativeRequestEndpoint>
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct JsonRequestEndpoint {
+    transport: Rc<dyn JsonRequestTransport>,
+    codec: Rc<dyn JsonCapabilityCodec>,
+}
+
+impl NativeRequestEndpoint for JsonRequestEndpoint {
+    fn capability_id(&self) -> &'static str {
+        self.codec.capability_id()
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        self.codec.descriptor_version()
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        self.codec.request_operations()
+    }
+
+    fn invoke(
+        &self,
+        operation: &str,
+        request: Box<dyn Any>,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<
+        'static,
+        Result<Result<Box<dyn Any>, Box<dyn Any>>, RuntimeFailure>,
+    > {
+        let transport = self.transport.clone();
+        let codec = self.codec.clone();
+        let operation = operation.to_owned();
+        Box::pin(async move {
+            if !codec.request_operations().contains(&operation.as_str()) {
+                return Err(RuntimeFailure::UnknownOperation {
+                    capability: codec.capability_id(),
+                    operation,
+                });
+            }
+            let request = codec.encode_request(&operation, request.as_ref())?;
+            let request =
+                serde_json::to_string(&request).map_err(|_| RuntimeFailure::ProtocolViolation {
+                    capability: codec.capability_id(),
+                })?;
+            match transport
+                .invoke(
+                    codec.capability_id().to_owned(),
+                    operation.clone(),
+                    request,
+                    context,
+                )
+                .await?
+            {
+                JsonInvocationOutcome::Success(value) => {
+                    codec.decode_response(&operation, value).map(Ok)
+                }
+                JsonInvocationOutcome::DomainError(value) => {
+                    codec.decode_domain_error(&operation, value).map(Err)
+                }
+            }
+        })
+    }
 }
 
 /// Validates Plan descriptors against registered generated codecs.

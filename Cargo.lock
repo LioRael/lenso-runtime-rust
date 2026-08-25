@@ -744,9 +744,11 @@ dependencies = [
 name = "lenso-runtime-codec"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "hex",
  "lenso-app-plan",
  "lenso-kernel",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",

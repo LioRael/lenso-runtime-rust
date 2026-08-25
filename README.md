@@ -38,6 +38,21 @@ The WASIp2 command requires Wasmtime on `PATH`.
 - Native fallback implementations exist to keep host-independent development
   tests fast. Passing a fallback test is not accepted as target-host evidence.
 
+## Byte-oriented guest ABI
+
+The preview Wasm Component and QuickJS Adapters implement the same
+`lenso.json-request@1` guest ABI. Before opening readiness, a guest must expose
+an exact `describe` result containing every provided Capability, Descriptor
+version, and Request Operation selected by the immutable Plan. Invocation then
+receives `capability_id`, `operation`, and validated request JSON; the result is
+one JSON success or Domain Error value. Descriptor drift, duplicate host codecs,
+unsupported Stream or Event Operations, missing entrypoints, and unadmitted
+Artifacts fail before Module activation.
+
+This ABI is request-only. Stream and Event support require reviewed generated
+codec and guest-lifecycle contracts; the Adapters do not emulate them through
+unbounded arrays, callbacks, or hidden runtime negotiation.
+
 ## Releases
 
 Published crates use release PRs and crates.io Trusted Publishing through

@@ -1,9 +1,8 @@
 //! Bounded QuickJS-NG Execution Adapter for immutable bundled ES modules.
 
 use std::{
-    any::Any,
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     rc::Rc,
     sync::{
         Arc,
@@ -17,12 +16,13 @@ use std::{
 use futures::{FutureExt, select};
 use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
-    ExecutionAdapter, InvocationContext, ModuleLifecycle, NativeRequestEndpoint, PreparedNativeApp,
-    PreparedNativeModule, RuntimeFailure,
+    ExecutionAdapter, InvocationContext, ModuleLifecycle, PreparedNativeApp, PreparedNativeModule,
+    RuntimeFailure,
 };
 use lenso_runtime_codec::{
-    ArtifactCatalog, JsonCapabilityCodec, JsonInvocationOutcome, codecs_for_instance,
-    prepare_request_app,
+    ArtifactCatalog, JsonCapabilityCodec, JsonInvocationOutcome, JsonRequestTransport,
+    codecs_for_instance, json_request_endpoints, prepare_request_app,
+    validate_json_module_descriptor,
 };
 use rquickjs::{Context, Function, Module, Persistent, Runtime, promise::MaybePromise};
 use serde_json::Value;
@@ -59,6 +59,7 @@ impl Default for QuickJsLimits {
 pub struct QuickJsAdapter {
     artifacts: ArtifactCatalog,
     codecs: BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
+    duplicate_codecs: BTreeSet<String>,
     limits: QuickJsLimits,
 }
 
@@ -68,6 +69,7 @@ impl QuickJsAdapter {
         Self {
             artifacts,
             codecs: BTreeMap::new(),
+            duplicate_codecs: BTreeSet::new(),
             limits: QuickJsLimits::default(),
         }
     }
@@ -75,15 +77,24 @@ impl QuickJsAdapter {
     /// Registers the generated codec for one exact Capability Descriptor.
     #[must_use]
     pub fn with_codec(mut self, codec: impl JsonCapabilityCodec) -> Self {
-        self.codecs
-            .insert(codec.capability_id().to_owned(), Rc::new(codec));
+        let capability = codec.capability_id().to_owned();
+        if self
+            .codecs
+            .insert(capability.clone(), Rc::new(codec))
+            .is_some()
+        {
+            self.duplicate_codecs.insert(capability);
+        }
         self
     }
 
     /// Registers an already shared generated Capability codec.
     #[must_use]
     pub fn with_shared_codec(mut self, codec: Rc<dyn JsonCapabilityCodec>) -> Self {
-        self.codecs.insert(codec.capability_id().to_owned(), codec);
+        let capability = codec.capability_id().to_owned();
+        if self.codecs.insert(capability.clone(), codec).is_some() {
+            self.duplicate_codecs.insert(capability);
+        }
         self
     }
 
@@ -104,6 +115,12 @@ impl QuickJsAdapter {
                 instance.instance_key()
             ));
         }
+        if !self.duplicate_codecs.is_empty() {
+            return invalid(format!(
+                "duplicate generated codecs registered for {:?}",
+                self.duplicate_codecs
+            ));
+        }
         let source = self
             .artifacts
             .require(instance.instance_key())?
@@ -118,17 +135,10 @@ impl QuickJsAdapter {
         let generation = Rc::new(QuickJsGeneration::load(
             instance.entrypoint(),
             &source,
+            instance.clone(),
             self.limits.clone(),
         )?);
-        let endpoints = codecs
-            .into_iter()
-            .map(|codec| {
-                Rc::new(QuickJsEndpoint {
-                    generation: generation.clone(),
-                    codec,
-                }) as Rc<dyn NativeRequestEndpoint>
-            })
-            .collect();
+        let endpoints = json_request_endpoints(generation.clone(), codecs);
         Ok(PreparedNativeModule::new(
             endpoints,
             QuickJsLifecycle { generation },
@@ -182,6 +192,7 @@ impl ExecutionAdapter for QuickJsAdapter {
 }
 
 struct InvokeCommand {
+    capability: String,
     operation: String,
     request_json: String,
     abandoned: Arc<AtomicBool>,
@@ -217,7 +228,12 @@ struct InvocationGuard {
 }
 
 impl QuickJsGeneration {
-    fn load(entrypoint: &str, source: &str, limits: QuickJsLimits) -> Result<Self, RuntimeFailure> {
+    fn load(
+        entrypoint: &str,
+        source: &str,
+        instance: ModuleInstancePlan,
+        limits: QuickJsLimits,
+    ) -> Result<Self, RuntimeFailure> {
         let (commands, receiver) = mpsc::sync_channel(1);
         let (ready, ready_receiver) = mpsc::sync_channel(1);
         let failed = Arc::new(AtomicBool::new(false));
@@ -229,10 +245,14 @@ impl QuickJsGeneration {
         let worker = thread::Builder::new()
             .name("lenso-quickjs".to_owned())
             .spawn(move || {
+                let inputs = QuickJsWorkerInputs {
+                    entrypoint: &entrypoint,
+                    source: &source,
+                    instance: &instance,
+                    limits: &limits,
+                };
                 let result = run_quickjs_worker(
-                    &entrypoint,
-                    &source,
-                    &limits,
+                    inputs,
                     &receiver,
                     &worker_failed,
                     &worker_interrupt,
@@ -264,8 +284,9 @@ impl QuickJsGeneration {
         }
     }
 
-    async fn invoke(
+    async fn invoke_inner(
         &self,
+        capability: String,
         operation: String,
         request_json: String,
         context: InvocationContext,
@@ -280,6 +301,7 @@ impl QuickJsGeneration {
         let (outcome, response) = futures::channel::oneshot::channel();
         self.commands
             .try_send(WorkerCommand::Invoke(InvokeCommand {
+                capability,
                 operation,
                 request_json,
                 abandoned,
@@ -329,6 +351,22 @@ impl QuickJsGeneration {
     }
 }
 
+impl JsonRequestTransport for QuickJsGeneration {
+    fn invoke(
+        self: Rc<Self>,
+        capability: String,
+        operation: String,
+        request_json: String,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonInvocationOutcome, RuntimeFailure>>
+    {
+        Box::pin(async move {
+            self.invoke_inner(capability, operation, request_json, context)
+                .await
+        })
+    }
+}
+
 impl Drop for QuickJsGeneration {
     fn drop(&mut self) {
         self.stop();
@@ -351,15 +389,27 @@ impl Drop for AbandonmentGuard {
     }
 }
 
+#[derive(Clone, Copy)]
+struct QuickJsWorkerInputs<'a> {
+    entrypoint: &'a str,
+    source: &'a str,
+    instance: &'a ModuleInstancePlan,
+    limits: &'a QuickJsLimits,
+}
+
 fn run_quickjs_worker(
-    entrypoint: &str,
-    source: &str,
-    limits: &QuickJsLimits,
+    inputs: QuickJsWorkerInputs<'_>,
     commands: &mpsc::Receiver<WorkerCommand>,
     failed: &Arc<AtomicBool>,
     interrupt: &Arc<AtomicBool>,
     ready: &mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
+    let QuickJsWorkerInputs {
+        entrypoint,
+        source,
+        instance,
+        limits,
+    } = inputs;
     let runtime = Runtime::new().map_err(|error| error.to_string())?;
     runtime.set_memory_limit(limits.max_heap_bytes);
     runtime.set_max_stack_size(limits.max_stack_bytes);
@@ -377,15 +427,23 @@ fn run_quickjs_worker(
             })
     })));
     let context = Context::full(&runtime).map_err(|error| error.to_string())?;
-    let invoke = context
+    let (invoke, descriptor) = context
         .with(|context| {
             harden_globals(&context)?;
             let (module, promise) = Module::declare(context.clone(), entrypoint, source)?.eval()?;
             finish_promise(&context, &promise, limits.max_pending_jobs)?;
+            let describe: Function<'_> = module.get("describe")?;
+            let descriptor: MaybePromise<'_> = describe.call(())?;
+            let descriptor = finish_maybe_promise(&context, &descriptor, limits.max_pending_jobs)?;
             let invoke: Function<'_> = module.get("invoke")?;
-            Ok::<_, rquickjs::Error>(Persistent::save(&context, invoke))
+            Ok::<_, rquickjs::Error>((Persistent::save(&context, invoke), descriptor))
         })
         .map_err(|error| error.to_string())?;
+    if descriptor.len() > limits.max_result_bytes {
+        return Err("QuickJS descriptor exceeds max_result_bytes".to_owned());
+    }
+    validate_json_module_descriptor(instance, &descriptor)
+        .map_err(|error| bounded(format!("QuickJS descriptor mismatch: {error:?}")))?;
     invocation.replace(None);
     ready.send(Ok(())).map_err(|error| error.to_string())?;
     while let Ok(command) = commands.recv() {
@@ -399,8 +457,11 @@ fn run_quickjs_worker(
                 }));
                 let result = context.with(|js| {
                     let function = invoke.clone().restore(&js)?;
-                    let promise: MaybePromise<'_> =
-                        function.call((&command.operation, &command.request_json))?;
+                    let promise: MaybePromise<'_> = function.call((
+                        &command.capability,
+                        &command.operation,
+                        &command.request_json,
+                    ))?;
                     finish_maybe_promise(&js, &promise, limits.max_pending_jobs)
                 });
                 invocation.replace(None);
@@ -468,64 +529,6 @@ fn decode_quickjs_result(
     let envelope: Value = serde_json::from_str(encoded)
         .map_err(|error| format!("QuickJS returned invalid JSON: {error}"))?;
     decode_envelope(envelope).map_err(|error| format!("{error:?}"))
-}
-
-#[derive(Debug)]
-struct QuickJsEndpoint {
-    generation: Rc<QuickJsGeneration>,
-    codec: Rc<dyn JsonCapabilityCodec>,
-}
-
-impl NativeRequestEndpoint for QuickJsEndpoint {
-    fn capability_id(&self) -> &'static str {
-        self.codec.capability_id()
-    }
-
-    fn descriptor_version(&self) -> &'static str {
-        self.codec.descriptor_version()
-    }
-
-    fn operations(&self) -> &'static [&'static str] {
-        self.codec.request_operations()
-    }
-
-    fn invoke(
-        &self,
-        operation: &str,
-        request: Box<dyn Any>,
-        context: InvocationContext,
-    ) -> futures::future::LocalBoxFuture<
-        'static,
-        Result<Result<Box<dyn Any>, Box<dyn Any>>, RuntimeFailure>,
-    > {
-        let codec = self.codec.clone();
-        let generation = self.generation.clone();
-        let operation = operation.to_owned();
-        Box::pin(async move {
-            if !codec.request_operations().contains(&operation.as_str()) {
-                return Err(RuntimeFailure::UnknownOperation {
-                    capability: codec.capability_id(),
-                    operation,
-                });
-            }
-            let request = codec.encode_request(&operation, request.as_ref())?;
-            let request =
-                serde_json::to_string(&request).map_err(|_| RuntimeFailure::ProtocolViolation {
-                    capability: codec.capability_id(),
-                })?;
-            match generation
-                .invoke(operation.clone(), request, context)
-                .await?
-            {
-                JsonInvocationOutcome::Success(value) => {
-                    codec.decode_response(&operation, value).map(Ok)
-                }
-                JsonInvocationOutcome::DomainError(value) => {
-                    codec.decode_domain_error(&operation, value).map(Err)
-                }
-            }
-        })
-    }
 }
 
 #[derive(Debug)]
