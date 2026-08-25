@@ -21,8 +21,9 @@ use lenso_kernel::{
 };
 use lenso_runtime_codec::{
     ArtifactCatalog, JsonCapabilityCodec, JsonInvocationOutcome, JsonRequestTransport,
-    codecs_for_instance, json_request_endpoints, prepare_request_app,
-    validate_json_module_descriptor,
+    JsonStreamFrame, JsonStreamItem, JsonStreamOpenFuture, JsonStreamSessionTransport,
+    JsonStreamTransport, codecs_for_instance, json_request_endpoints, json_stream_endpoints,
+    prepare_request_app, validate_json_module_descriptor,
 };
 use rquickjs::{Context, Function, Module, Persistent, Runtime, promise::MaybePromise};
 use serde_json::Value;
@@ -38,6 +39,7 @@ pub struct QuickJsLimits {
     pub max_stack_bytes: usize,
     pub max_result_bytes: usize,
     pub max_pending_jobs: usize,
+    pub max_streams: usize,
     pub max_turn: Duration,
 }
 
@@ -49,6 +51,7 @@ impl Default for QuickJsLimits {
             max_stack_bytes: 512 * 1024,
             max_result_bytes: 1024 * 1024,
             max_pending_jobs: 1024,
+            max_streams: 1024,
             max_turn: Duration::from_secs(1),
         }
     }
@@ -138,9 +141,11 @@ impl QuickJsAdapter {
             instance.clone(),
             self.limits.clone(),
         )?);
-        let endpoints = json_request_endpoints(generation.clone(), codecs);
-        Ok(PreparedNativeModule::new(
+        let endpoints = json_request_endpoints(generation.clone(), codecs.clone());
+        let stream_endpoints = json_stream_endpoints(generation.clone(), codecs);
+        Ok(PreparedNativeModule::with_endpoints(
             endpoints,
+            stream_endpoints,
             QuickJsLifecycle { generation },
         ))
     }
@@ -191,16 +196,40 @@ impl ExecutionAdapter for QuickJsAdapter {
     }
 }
 
-struct InvokeCommand {
-    capability: String,
-    operation: String,
-    request_json: String,
+enum GuestCall {
+    Invoke {
+        capability: String,
+        operation: String,
+        payload: String,
+    },
+    StreamOpen {
+        capability: String,
+        operation: String,
+        payload: String,
+    },
+    StreamSend {
+        stream_id: u64,
+        payload: String,
+    },
+    StreamReceive {
+        stream_id: u64,
+    },
+    StreamCloseSend {
+        stream_id: u64,
+    },
+    StreamCancel {
+        stream_id: u64,
+    },
+}
+
+struct GuestCommand {
+    call: GuestCall,
     abandoned: Arc<AtomicBool>,
     outcome: futures::channel::oneshot::Sender<Result<JsonInvocationOutcome, String>>,
 }
 
 enum WorkerCommand {
-    Invoke(InvokeCommand),
+    Call(GuestCommand),
     Shutdown,
 }
 
@@ -210,6 +239,8 @@ struct QuickJsGeneration {
     interrupt: Arc<AtomicBool>,
     worker: RefCell<Option<thread::JoinHandle<()>>>,
     stopped: Cell<bool>,
+    active_streams: Cell<usize>,
+    max_streams: usize,
 }
 
 impl std::fmt::Debug for QuickJsGeneration {
@@ -242,6 +273,7 @@ impl QuickJsGeneration {
         let worker_interrupt = interrupt.clone();
         let entrypoint = entrypoint.to_owned();
         let source = source.to_owned();
+        let max_streams = limits.max_streams;
         let worker = thread::Builder::new()
             .name("lenso-quickjs".to_owned())
             .spawn(move || {
@@ -270,6 +302,8 @@ impl QuickJsGeneration {
                 interrupt,
                 worker: RefCell::new(Some(worker)),
                 stopped: Cell::new(false),
+                active_streams: Cell::new(0),
+                max_streams,
             }),
             Ok(Err(detail)) => {
                 interrupt.store(true, Ordering::Release);
@@ -291,6 +325,24 @@ impl QuickJsGeneration {
         request_json: String,
         context: InvocationContext,
     ) -> Result<JsonInvocationOutcome, RuntimeFailure> {
+        self.call_inner(
+            GuestCall::Invoke {
+                capability,
+                operation,
+                payload: request_json,
+            },
+            context,
+            "invoke",
+        )
+        .await
+    }
+
+    async fn call_inner(
+        &self,
+        call: GuestCall,
+        context: InvocationContext,
+        operation_name: &'static str,
+    ) -> Result<JsonInvocationOutcome, RuntimeFailure> {
         if self.failed.load(Ordering::Acquire) {
             return Err(RuntimeFailure::ModuleFailure {
                 detail: "QuickJS generation is retired".to_owned(),
@@ -300,16 +352,14 @@ impl QuickJsGeneration {
         let mut abandonment = AbandonmentGuard(Some(abandoned.clone()));
         let (outcome, response) = futures::channel::oneshot::channel();
         self.commands
-            .try_send(WorkerCommand::Invoke(InvokeCommand {
-                capability,
-                operation,
-                request_json,
+            .try_send(WorkerCommand::Call(GuestCommand {
+                call,
                 abandoned,
                 outcome,
             }))
             .map_err(|_| RuntimeFailure::ResourceExhausted {
                 capability: "lenso.quickjs@1",
-                operation: "invoke".to_owned(),
+                operation: operation_name.to_owned(),
             })?;
         let cancellation = context.cancellation();
         let mut response = response.fuse();
@@ -349,6 +399,23 @@ impl QuickJsGeneration {
             let _ = worker.join();
         }
     }
+
+    fn reserve_stream(&self) -> Result<(), RuntimeFailure> {
+        let active = self.active_streams.get();
+        if active >= self.max_streams {
+            return Err(RuntimeFailure::ResourceExhausted {
+                capability: EXECUTION_CLASS,
+                operation: "stream-open".to_owned(),
+            });
+        }
+        self.active_streams.set(active + 1);
+        Ok(())
+    }
+
+    fn release_stream(&self) {
+        self.active_streams
+            .set(self.active_streams.get().saturating_sub(1));
+    }
 }
 
 impl JsonRequestTransport for QuickJsGeneration {
@@ -364,6 +431,204 @@ impl JsonRequestTransport for QuickJsGeneration {
             self.invoke_inner(capability, operation, request_json, context)
                 .await
         })
+    }
+}
+
+impl JsonStreamTransport for QuickJsGeneration {
+    fn open(
+        self: Rc<Self>,
+        capability: String,
+        operation: String,
+        request_json: String,
+        context: InvocationContext,
+    ) -> JsonStreamOpenFuture {
+        Box::pin(async move {
+            self.reserve_stream()?;
+            let outcome = self
+                .call_inner(
+                    GuestCall::StreamOpen {
+                        capability,
+                        operation,
+                        payload: request_json,
+                    },
+                    context.clone(),
+                    "stream-open",
+                )
+                .await;
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.release_stream();
+                    return Err(error);
+                }
+            };
+            match outcome {
+                JsonInvocationOutcome::Success(Value::Number(id)) => {
+                    let stream_id = id.as_u64().ok_or(RuntimeFailure::ProtocolViolation {
+                        capability: EXECUTION_CLASS,
+                    })?;
+                    Ok(Ok(Rc::new(QuickJsStreamSession {
+                        generation: self,
+                        stream_id,
+                        context,
+                        cancelled: Cell::new(false),
+                        finished: Cell::new(false),
+                    })
+                        as Rc<dyn JsonStreamSessionTransport>))
+                }
+                JsonInvocationOutcome::Success(_) => {
+                    self.release_stream();
+                    Err(RuntimeFailure::ProtocolViolation {
+                        capability: EXECUTION_CLASS,
+                    })
+                }
+                JsonInvocationOutcome::DomainError(error) => {
+                    self.release_stream();
+                    Ok(Err(error))
+                }
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct QuickJsStreamSession {
+    generation: Rc<QuickJsGeneration>,
+    stream_id: u64,
+    context: InvocationContext,
+    cancelled: Cell<bool>,
+    finished: Cell<bool>,
+}
+
+impl QuickJsStreamSession {
+    fn finish(&self) {
+        if !self.finished.replace(true) {
+            self.generation.release_stream();
+        }
+    }
+    async fn call(
+        &self,
+        call: GuestCall,
+        operation: &'static str,
+    ) -> Result<JsonInvocationOutcome, RuntimeFailure> {
+        if self.cancelled.get() {
+            return Err(RuntimeFailure::Cancelled {
+                request_id: self.context.request_id(),
+            });
+        }
+        self.generation
+            .call_inner(call, self.context.clone(), operation)
+            .await
+    }
+}
+
+impl JsonStreamSessionTransport for QuickJsStreamSession {
+    fn send(
+        self: Rc<Self>,
+        message_json: String,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move {
+            match self
+                .call(
+                    GuestCall::StreamSend {
+                        stream_id: self.stream_id,
+                        payload: message_json,
+                    },
+                    "stream-send",
+                )
+                .await?
+            {
+                JsonInvocationOutcome::Success(Value::Null) => Ok(()),
+                _ => Err(RuntimeFailure::ProtocolViolation {
+                    capability: EXECUTION_CLASS,
+                }),
+            }
+        })
+    }
+
+    fn receive(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonStreamItem, RuntimeFailure>> {
+        Box::pin(async move {
+            match self
+                .call(
+                    GuestCall::StreamReceive {
+                        stream_id: self.stream_id,
+                    },
+                    "stream-receive",
+                )
+                .await?
+            {
+                JsonInvocationOutcome::Success(value) => {
+                    let frame: JsonStreamFrame = serde_json::from_value(value).map_err(|_| {
+                        RuntimeFailure::ProtocolViolation {
+                            capability: EXECUTION_CLASS,
+                        }
+                    })?;
+                    Ok(match frame {
+                        JsonStreamFrame::Message(value) => JsonStreamItem::Message(value),
+                        JsonStreamFrame::PeerHalfClosed => JsonStreamItem::PeerHalfClosed,
+                        JsonStreamFrame::TerminalSuccess => {
+                            self.finish();
+                            JsonStreamItem::Terminal(Ok(()))
+                        }
+                        JsonStreamFrame::TerminalError(value) => {
+                            self.finish();
+                            JsonStreamItem::Terminal(Err(value))
+                        }
+                    })
+                }
+                JsonInvocationOutcome::DomainError(_) => Err(RuntimeFailure::ProtocolViolation {
+                    capability: EXECUTION_CLASS,
+                }),
+            }
+        })
+    }
+
+    fn close_send(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move {
+            match self
+                .call(
+                    GuestCall::StreamCloseSend {
+                        stream_id: self.stream_id,
+                    },
+                    "stream-close-send",
+                )
+                .await?
+            {
+                JsonInvocationOutcome::Success(Value::Null) => Ok(()),
+                _ => Err(RuntimeFailure::ProtocolViolation {
+                    capability: EXECUTION_CLASS,
+                }),
+            }
+        })
+    }
+
+    fn cancel(&self) {
+        if self.cancelled.replace(true) {
+            return;
+        }
+        self.finish();
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let (outcome, _response) = futures::channel::oneshot::channel();
+        let _ = self
+            .generation
+            .commands
+            .try_send(WorkerCommand::Call(GuestCommand {
+                call: GuestCall::StreamCancel {
+                    stream_id: self.stream_id,
+                },
+                abandoned,
+                outcome,
+            }));
+    }
+}
+
+impl Drop for QuickJsStreamSession {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -397,6 +662,16 @@ struct QuickJsWorkerInputs<'a> {
     limits: &'a QuickJsLimits,
 }
 
+struct QuickJsExports {
+    invoke: Persistent<Function<'static>>,
+    stream_open: Option<Persistent<Function<'static>>>,
+    stream_send: Option<Persistent<Function<'static>>>,
+    stream_receive: Option<Persistent<Function<'static>>>,
+    stream_close_send: Option<Persistent<Function<'static>>>,
+    stream_cancel: Option<Persistent<Function<'static>>>,
+}
+
+#[allow(clippy::too_many_lines)]
 fn run_quickjs_worker(
     inputs: QuickJsWorkerInputs<'_>,
     commands: &mpsc::Receiver<WorkerCommand>,
@@ -427,7 +702,11 @@ fn run_quickjs_worker(
             })
     })));
     let context = Context::full(&runtime).map_err(|error| error.to_string())?;
-    let (invoke, descriptor) = context
+    let requires_stream = instance
+        .provided_capabilities()
+        .iter()
+        .any(|descriptor| !descriptor.stream_operations().is_empty());
+    let (exports, descriptor) = context
         .with(|context| {
             harden_globals(&context)?;
             let (module, promise) = Module::declare(context.clone(), entrypoint, source)?.eval()?;
@@ -436,7 +715,37 @@ fn run_quickjs_worker(
             let descriptor: MaybePromise<'_> = describe.call(())?;
             let descriptor = finish_maybe_promise(&context, &descriptor, limits.max_pending_jobs)?;
             let invoke: Function<'_> = module.get("invoke")?;
-            Ok::<_, rquickjs::Error>((Persistent::save(&context, invoke), descriptor))
+            let stream_open = requires_stream
+                .then(|| module.get::<_, Function<'_>>("streamOpen"))
+                .transpose()?
+                .map(|function| Persistent::save(&context, function));
+            let stream_send = requires_stream
+                .then(|| module.get::<_, Function<'_>>("streamSend"))
+                .transpose()?
+                .map(|function| Persistent::save(&context, function));
+            let stream_receive = requires_stream
+                .then(|| module.get::<_, Function<'_>>("streamReceive"))
+                .transpose()?
+                .map(|function| Persistent::save(&context, function));
+            let stream_close_send = requires_stream
+                .then(|| module.get::<_, Function<'_>>("streamCloseSend"))
+                .transpose()?
+                .map(|function| Persistent::save(&context, function));
+            let stream_cancel = requires_stream
+                .then(|| module.get::<_, Function<'_>>("streamCancel"))
+                .transpose()?
+                .map(|function| Persistent::save(&context, function));
+            Ok::<_, rquickjs::Error>((
+                QuickJsExports {
+                    invoke: Persistent::save(&context, invoke),
+                    stream_open,
+                    stream_send,
+                    stream_receive,
+                    stream_close_send,
+                    stream_cancel,
+                },
+                descriptor,
+            ))
         })
         .map_err(|error| error.to_string())?;
     if descriptor.len() > limits.max_result_bytes {
@@ -449,19 +758,63 @@ fn run_quickjs_worker(
     while let Ok(command) = commands.recv() {
         match command {
             WorkerCommand::Shutdown => return Ok(()),
-            WorkerCommand::Invoke(command) => {
+            WorkerCommand::Call(command) => {
                 interrupt.store(false, Ordering::Release);
                 invocation.replace(Some(InvocationGuard {
                     started: Instant::now(),
                     abandoned: command.abandoned,
                 }));
                 let result = context.with(|js| {
-                    let function = invoke.clone().restore(&js)?;
-                    let promise: MaybePromise<'_> = function.call((
-                        &command.capability,
-                        &command.operation,
-                        &command.request_json,
-                    ))?;
+                    let promise: MaybePromise<'_> = match &command.call {
+                        GuestCall::Invoke {
+                            capability,
+                            operation,
+                            payload,
+                        } => exports
+                            .invoke
+                            .clone()
+                            .restore(&js)?
+                            .call((capability, operation, payload))?,
+                        GuestCall::StreamOpen {
+                            capability,
+                            operation,
+                            payload,
+                        } => exports
+                            .stream_open
+                            .as_ref()
+                            .ok_or(rquickjs::Error::Exception)?
+                            .clone()
+                            .restore(&js)?
+                            .call((capability, operation, payload))?,
+                        GuestCall::StreamSend { stream_id, payload } => exports
+                            .stream_send
+                            .as_ref()
+                            .ok_or(rquickjs::Error::Exception)?
+                            .clone()
+                            .restore(&js)?
+                            .call((*stream_id, payload))?,
+                        GuestCall::StreamReceive { stream_id } => exports
+                            .stream_receive
+                            .as_ref()
+                            .ok_or(rquickjs::Error::Exception)?
+                            .clone()
+                            .restore(&js)?
+                            .call((*stream_id,))?,
+                        GuestCall::StreamCloseSend { stream_id } => exports
+                            .stream_close_send
+                            .as_ref()
+                            .ok_or(rquickjs::Error::Exception)?
+                            .clone()
+                            .restore(&js)?
+                            .call((*stream_id,))?,
+                        GuestCall::StreamCancel { stream_id } => exports
+                            .stream_cancel
+                            .as_ref()
+                            .ok_or(rquickjs::Error::Exception)?
+                            .clone()
+                            .restore(&js)?
+                            .call((*stream_id,))?,
+                    };
                     finish_maybe_promise(&js, &promise, limits.max_pending_jobs)
                 });
                 invocation.replace(None);

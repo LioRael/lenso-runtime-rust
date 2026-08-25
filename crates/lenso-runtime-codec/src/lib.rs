@@ -10,8 +10,9 @@ use std::{
 
 use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
-    InvocationContext, NativeRequestEndpoint, PreparedBinding, PreparedNativeApp,
-    PreparedNativeModule, RuntimeFailure,
+    InvocationContext, NativeRequestEndpoint, NativeStreamEndpoint, NativeStreamItem,
+    NativeStreamSession, PreparedBinding, PreparedNativeApp, PreparedNativeModule,
+    PreparedStreamBinding, RuntimeFailure,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -129,6 +130,10 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
     fn descriptor_version(&self) -> &'static str;
     /// Exact request Operation table.
     fn request_operations(&self) -> &'static [&'static str];
+    /// Exact bidirectional stream Operation table.
+    fn stream_operations(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Converts one generated request into validated portable JSON.
     fn encode_request(&self, operation: &str, request: &dyn Any) -> Result<Value, RuntimeFailure>;
     /// Converts portable JSON into the generated response value.
@@ -143,6 +148,42 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
         operation: &str,
         value: Value,
     ) -> Result<Box<dyn Any>, RuntimeFailure>;
+    /// Converts one generated stream-open request into validated portable JSON.
+    fn encode_stream_open(
+        &self,
+        operation: &str,
+        request: &dyn Any,
+    ) -> Result<Value, RuntimeFailure> {
+        let _ = request;
+        Err(unknown_operation(self.capability_id(), operation))
+    }
+    /// Converts one generated outbound stream message into validated portable JSON.
+    fn encode_stream_message(
+        &self,
+        operation: &str,
+        message: &dyn Any,
+    ) -> Result<Value, RuntimeFailure> {
+        let _ = message;
+        Err(unknown_operation(self.capability_id(), operation))
+    }
+    /// Converts one portable JSON stream message into its generated value.
+    fn decode_stream_message(
+        &self,
+        operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        let _ = value;
+        Err(unknown_operation(self.capability_id(), operation))
+    }
+    /// Converts one portable JSON stream terminal error into its generated value.
+    fn decode_stream_domain_error(
+        &self,
+        operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        let _ = value;
+        Err(unknown_operation(self.capability_id(), operation))
+    }
 }
 
 /// Exact host outcome returned by a byte-oriented Module invocation.
@@ -156,6 +197,9 @@ pub enum JsonInvocationOutcome {
 
 /// Stable request-only guest ABI implemented by byte-oriented Module runtimes.
 pub const JSON_REQUEST_ABI_V1: &str = "lenso.json-request@1";
+
+/// Stable Request and bidirectional Stream guest ABI.
+pub const JSON_INTERACTIONS_ABI_V1: &str = "lenso.json-interactions@1";
 
 /// Exact guest declaration returned before an Adapter opens readiness.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -172,6 +216,8 @@ pub struct JsonCapabilityDescriptor {
     pub capability_id: String,
     pub descriptor_version: String,
     pub request_operations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stream_operations: Vec<String>,
 }
 
 /// Derives the only guest declaration accepted for one resolved Instance.
@@ -180,10 +226,10 @@ pub fn expected_json_module_descriptor(
 ) -> Result<JsonModuleDescriptor, RuntimeFailure> {
     let mut capabilities = Vec::with_capacity(instance.provided_capabilities().len());
     for descriptor in instance.provided_capabilities() {
-        if !descriptor.stream_operations().is_empty() || !descriptor.event_operations().is_empty() {
+        if !descriptor.event_operations().is_empty() {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
-                    "Execution class `{}` supports Request endpoints only",
+                    "Execution class `{}` does not support Event endpoints",
                     instance.execution_class()
                 ),
             });
@@ -191,7 +237,16 @@ pub fn expected_json_module_descriptor(
         capabilities.push(JsonCapabilityDescriptor {
             capability_id: descriptor.capability_id().to_owned(),
             descriptor_version: descriptor.descriptor_version().to_owned(),
-            request_operations: descriptor.operations().to_vec(),
+            request_operations: descriptor
+                .request_operations()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            stream_operations: descriptor
+                .stream_operations()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
         });
     }
     capabilities.sort();
@@ -207,7 +262,15 @@ pub fn expected_json_module_descriptor(
         });
     }
     Ok(JsonModuleDescriptor {
-        abi: JSON_REQUEST_ABI_V1.to_owned(),
+        abi: if capabilities
+            .iter()
+            .any(|capability| !capability.stream_operations.is_empty())
+        {
+            JSON_INTERACTIONS_ABI_V1
+        } else {
+            JSON_REQUEST_ABI_V1
+        }
+        .to_owned(),
         capabilities,
     })
 }
@@ -246,6 +309,78 @@ pub trait JsonRequestTransport: std::fmt::Debug + 'static {
     ) -> futures::future::LocalBoxFuture<'static, Result<JsonInvocationOutcome, RuntimeFailure>>;
 }
 
+/// One exact transport frame received from a byte-oriented guest stream.
+#[derive(Debug)]
+pub enum JsonStreamItem {
+    Message(Value),
+    PeerHalfClosed,
+    Terminal(Result<(), Value>),
+}
+
+/// Canonical portable JSON frame returned by `stream-receive` guest exports.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
+pub enum JsonStreamFrame {
+    Message(Value),
+    PeerHalfClosed,
+    TerminalSuccess,
+    TerminalError(Value),
+}
+
+impl JsonStreamFrame {
+    /// Parses one bounded guest result into the Adapter-neutral transport item.
+    pub fn decode(
+        encoded: &str,
+        capability: &'static str,
+    ) -> Result<JsonStreamItem, RuntimeFailure> {
+        match serde_json::from_str(encoded)
+            .map_err(|_| RuntimeFailure::ProtocolViolation { capability })?
+        {
+            Self::Message(value) => Ok(JsonStreamItem::Message(value)),
+            Self::PeerHalfClosed => Ok(JsonStreamItem::PeerHalfClosed),
+            Self::TerminalSuccess => Ok(JsonStreamItem::Terminal(Ok(()))),
+            Self::TerminalError(value) => Ok(JsonStreamItem::Terminal(Err(value))),
+        }
+    }
+}
+
+/// Adapter-owned transport session for the portable JSON Stream ABI.
+pub trait JsonStreamSessionTransport: std::fmt::Debug + 'static {
+    fn send(
+        self: Rc<Self>,
+        message_json: String,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>>;
+    fn receive(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonStreamItem, RuntimeFailure>>;
+    fn close_send(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>>;
+    fn cancel(&self);
+}
+
+/// Adapter-owned result of opening one portable JSON stream transport session.
+pub type JsonStreamOpenFuture = futures::future::LocalBoxFuture<
+    'static,
+    Result<Result<Rc<dyn JsonStreamSessionTransport>, Value>, RuntimeFailure>,
+>;
+
+/// Guest transport seam shared by Stream-capable byte-oriented Adapters.
+pub trait JsonStreamTransport: std::fmt::Debug + 'static {
+    fn open(
+        self: Rc<Self>,
+        capability: String,
+        operation: String,
+        request_json: String,
+        context: InvocationContext,
+    ) -> JsonStreamOpenFuture;
+}
+
 /// Builds typed Kernel endpoints over one exact guest transport generation.
 pub fn json_request_endpoints<T: JsonRequestTransport>(
     transport: Rc<T>,
@@ -261,6 +396,135 @@ pub fn json_request_endpoints<T: JsonRequestTransport>(
             }) as Rc<dyn NativeRequestEndpoint>
         })
         .collect()
+}
+
+/// Builds typed Kernel Stream endpoints over one exact guest transport generation.
+pub fn json_stream_endpoints<T: JsonStreamTransport>(
+    transport: Rc<T>,
+    codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
+) -> Vec<Rc<dyn NativeStreamEndpoint>> {
+    let transport: Rc<dyn JsonStreamTransport> = transport;
+    codecs
+        .into_iter()
+        .filter(|codec| !codec.stream_operations().is_empty())
+        .map(|codec| {
+            Rc::new(JsonStreamEndpoint {
+                transport: transport.clone(),
+                codec,
+            }) as Rc<dyn NativeStreamEndpoint>
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct JsonStreamEndpoint {
+    transport: Rc<dyn JsonStreamTransport>,
+    codec: Rc<dyn JsonCapabilityCodec>,
+}
+
+impl NativeStreamEndpoint for JsonStreamEndpoint {
+    fn capability_id(&self) -> &'static str {
+        self.codec.capability_id()
+    }
+    fn descriptor_version(&self) -> &'static str {
+        self.codec.descriptor_version()
+    }
+    fn operations(&self) -> &'static [&'static str] {
+        self.codec.stream_operations()
+    }
+
+    fn open(
+        &self,
+        operation: &str,
+        request: Box<dyn Any>,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<
+        'static,
+        Result<Result<Box<dyn NativeStreamSession>, Box<dyn Any>>, RuntimeFailure>,
+    > {
+        let transport = self.transport.clone();
+        let codec = self.codec.clone();
+        let operation = operation.to_owned();
+        Box::pin(async move {
+            if !codec.stream_operations().contains(&operation.as_str()) {
+                return Err(unknown_operation(codec.capability_id(), &operation));
+            }
+            let request = codec.encode_stream_open(&operation, request.as_ref())?;
+            let request_json =
+                serde_json::to_string(&request).map_err(|_| RuntimeFailure::ProtocolViolation {
+                    capability: codec.capability_id(),
+                })?;
+            match transport
+                .open(
+                    codec.capability_id().to_owned(),
+                    operation.clone(),
+                    request_json,
+                    context,
+                )
+                .await?
+            {
+                Ok(session) => Ok(Ok(Box::new(JsonStreamSession {
+                    session,
+                    codec,
+                    operation,
+                }) as Box<dyn NativeStreamSession>)),
+                Err(error) => codec.decode_stream_domain_error(&operation, error).map(Err),
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct JsonStreamSession {
+    session: Rc<dyn JsonStreamSessionTransport>,
+    codec: Rc<dyn JsonCapabilityCodec>,
+    operation: String,
+}
+
+impl NativeStreamSession for JsonStreamSession {
+    fn send(
+        &self,
+        message: Box<dyn Any>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        let encoded = self
+            .codec
+            .encode_stream_message(&self.operation, message.as_ref())
+            .and_then(|value| {
+                serde_json::to_string(&value).map_err(|_| RuntimeFailure::ProtocolViolation {
+                    capability: self.codec.capability_id(),
+                })
+            });
+        let session = self.session.clone();
+        Box::pin(async move { session.send(encoded?).await })
+    }
+
+    fn receive(
+        &self,
+    ) -> futures::future::LocalBoxFuture<'static, Result<NativeStreamItem, RuntimeFailure>> {
+        let session = self.session.clone();
+        let codec = self.codec.clone();
+        let operation = self.operation.clone();
+        Box::pin(async move {
+            match session.receive().await? {
+                JsonStreamItem::Message(value) => codec
+                    .decode_stream_message(&operation, value)
+                    .map(NativeStreamItem::Message),
+                JsonStreamItem::PeerHalfClosed => Ok(NativeStreamItem::PeerHalfClosed),
+                JsonStreamItem::Terminal(Ok(())) => Ok(NativeStreamItem::Terminal(Ok(()))),
+                JsonStreamItem::Terminal(Err(value)) => codec
+                    .decode_stream_domain_error(&operation, value)
+                    .map(|error| NativeStreamItem::Terminal(Err(error))),
+            }
+        })
+    }
+
+    fn close_send(&self) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        self.session.clone().close_send()
+    }
+
+    fn cancel(&self) {
+        self.session.cancel();
+    }
 }
 
 #[derive(Debug)]
@@ -333,10 +597,10 @@ pub fn codecs_for_instance(
 ) -> Result<Vec<Rc<dyn JsonCapabilityCodec>>, RuntimeFailure> {
     let mut selected = Vec::with_capacity(instance.provided_capabilities().len());
     for descriptor in instance.provided_capabilities() {
-        if !descriptor.stream_operations().is_empty() || !descriptor.event_operations().is_empty() {
+        if !descriptor.event_operations().is_empty() {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
-                    "Execution class `{}` supports Request endpoints only",
+                    "Execution class `{}` does not support Event endpoints",
                     instance.execution_class()
                 ),
             });
@@ -349,13 +613,29 @@ pub fn codecs_for_instance(
                 ),
             }
         })?;
-        let operations: Vec<_> = codec
+        let request_operations: Vec<_> = codec
             .request_operations()
             .iter()
             .map(|operation| (*operation).to_owned())
             .collect();
+        let stream_operations: Vec<_> = codec
+            .stream_operations()
+            .iter()
+            .map(|operation| (*operation).to_owned())
+            .collect();
+        let expected_request: Vec<_> = descriptor
+            .request_operations()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let expected_stream: Vec<_> = descriptor
+            .stream_operations()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         if codec.descriptor_version() != descriptor.descriptor_version()
-            || operations != descriptor.operations()
+            || request_operations != expected_request
+            || stream_operations != expected_stream
         {
             return Err(RuntimeFailure::ProtocolViolation {
                 capability: codec.capability_id(),
@@ -379,12 +659,24 @@ pub fn prepare_request_app(
         .map(|instance| instance.instance_key().to_owned())
         .collect::<std::collections::BTreeSet<_>>();
     let mut endpoints = BTreeMap::new();
+    let mut stream_endpoints = BTreeMap::new();
     for (instance_key, generation) in &generations {
         for endpoint in generation.endpoints() {
             let identity = (instance_key.clone(), endpoint.capability_id().to_owned());
             if endpoints.insert(identity, endpoint.clone()).is_some() {
                 return Err(RuntimeFailure::InvalidResolvedPlan {
                     detail: format!("duplicate request endpoint on Instance `{instance_key}`"),
+                });
+            }
+        }
+        for endpoint in generation.stream_endpoints() {
+            let identity = (instance_key.clone(), endpoint.capability_id().to_owned());
+            if stream_endpoints
+                .insert(identity, endpoint.clone())
+                .is_some()
+            {
+                return Err(RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!("duplicate stream endpoint on Instance `{instance_key}`"),
                 });
             }
         }
@@ -401,18 +693,32 @@ pub fn prepare_request_app(
         }
     }
     let mut bindings = Vec::new();
+    let mut stream_bindings = Vec::new();
     for binding in plan.capability_bindings() {
         let key = (
             binding.provider_instance().to_owned(),
             binding.capability_id().to_owned(),
         );
-        if let Some(endpoint) = endpoints.get(&key) {
+        let request_endpoint = endpoints.get(&key);
+        let stream_endpoint = stream_endpoints.get(&key);
+        if let Some(endpoint) = request_endpoint {
             bindings.push(PreparedBinding::new(
                 binding.consumer_instance(),
                 binding.provider_instance(),
                 endpoint.clone(),
             ));
-        } else if selected_instances.contains(binding.provider_instance()) {
+        }
+        if let Some(endpoint) = stream_endpoint {
+            stream_bindings.push(PreparedStreamBinding::new(
+                binding.consumer_instance(),
+                binding.provider_instance(),
+                endpoint.clone(),
+            ));
+        }
+        if request_endpoint.is_none()
+            && stream_endpoint.is_none()
+            && selected_instances.contains(binding.provider_instance())
+        {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
                     "Adapter omitted Capability `{}` endpoint for Instance `{}`",
@@ -422,7 +728,7 @@ pub fn prepare_request_app(
             });
         }
     }
-    Ok(PreparedNativeApp::new(bindings, generations))
+    Ok(PreparedNativeApp::new(bindings, generations).with_stream_bindings(stream_bindings))
 }
 
 /// Looks up the exact codec and validates the Operation before dispatch.
@@ -445,6 +751,13 @@ pub fn require_operation(
         });
     }
     Ok(codec)
+}
+
+fn unknown_operation(capability: &'static str, operation: &str) -> RuntimeFailure {
+    RuntimeFailure::UnknownOperation {
+        capability,
+        operation: operation.to_owned(),
+    }
 }
 
 fn validate_digest(digest: &str) -> Result<(), RuntimeFailure> {

@@ -4,7 +4,9 @@ use futures::FutureExt;
 use lenso_app_plan::{
     CapabilityEndpointPlan, ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
 };
-use lenso_kernel::{CancellationToken, ExecutionAdapter, InvocationContext, RuntimeFailure};
+use lenso_kernel::{
+    CancellationToken, ExecutionAdapter, InvocationContext, NativeStreamItem, RuntimeFailure,
+};
 use lenso_runtime_codec::{ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec};
 use lenso_wasm_component_adapter::{EXECUTION_CLASS, WasmComponentAdapter, WasmComponentLimits};
 use serde_json::Value;
@@ -88,6 +90,160 @@ impl JsonCapabilityCodec for NarrowCodec {
     ) -> Result<Box<dyn Any>, RuntimeFailure> {
         EchoCodec.decode_domain_error(operation, value)
     }
+}
+
+#[derive(Debug)]
+struct ChatCodec;
+
+impl JsonCapabilityCodec for ChatCodec {
+    fn capability_id(&self) -> &'static str {
+        "test.chat@1"
+    }
+    fn descriptor_version(&self) -> &'static str {
+        "1.0.0"
+    }
+    fn request_operations(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn stream_operations(&self) -> &'static [&'static str] {
+        &["chat"]
+    }
+    fn encode_request(&self, operation: &str, _: &dyn Any) -> Result<Value, RuntimeFailure> {
+        Err(RuntimeFailure::UnknownOperation {
+            capability: self.capability_id(),
+            operation: operation.to_owned(),
+        })
+    }
+    fn decode_response(&self, operation: &str, _: Value) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(RuntimeFailure::UnknownOperation {
+            capability: self.capability_id(),
+            operation: operation.to_owned(),
+        })
+    }
+    fn decode_domain_error(
+        &self,
+        operation: &str,
+        _: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(RuntimeFailure::UnknownOperation {
+            capability: self.capability_id(),
+            operation: operation.to_owned(),
+        })
+    }
+    fn encode_stream_open(&self, _: &str, request: &dyn Any) -> Result<Value, RuntimeFailure> {
+        request
+            .downcast_ref::<u64>()
+            .copied()
+            .map(Value::from)
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: self.capability_id(),
+            })
+    }
+    fn encode_stream_message(&self, _: &str, message: &dyn Any) -> Result<Value, RuntimeFailure> {
+        message
+            .downcast_ref::<String>()
+            .cloned()
+            .map(Value::from)
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: self.capability_id(),
+            })
+    }
+    fn decode_stream_message(&self, _: &str, value: Value) -> Result<Box<dyn Any>, RuntimeFailure> {
+        value
+            .as_str()
+            .map(|value| Box::new(value.to_owned()) as Box<dyn Any>)
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: self.capability_id(),
+            })
+    }
+    fn decode_stream_domain_error(
+        &self,
+        _: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        value
+            .as_str()
+            .map(|value| Box::new(value.to_owned()) as Box<dyn Any>)
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: self.capability_id(),
+            })
+    }
+}
+
+#[test]
+fn real_component_stream_preserves_messages_half_close_terminal_and_open_error() {
+    let fixture_target = tempfile::tempdir().unwrap();
+    let status = Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--manifest-path",
+            "tests/fixtures/rust-stream-guest/Cargo.toml",
+            "--target-dir",
+        ])
+        .arg(fixture_target.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let core = std::fs::read(
+        fixture_target
+            .path()
+            .join("wasm32-unknown-unknown/release/lenso_wasm_stream_test_guest.wasm"),
+    )
+    .unwrap();
+    let component = wit_component::ComponentEncoder::default()
+        .module(&core)
+        .unwrap()
+        .validate(true)
+        .encode()
+        .unwrap();
+    let artifact_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(artifact_file.path(), &component).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&component)));
+    let artifact =
+        ArtifactHandle::open(artifact_file.path(), &digest, component.len() as u64).unwrap();
+    let adapter = WasmComponentAdapter::new(
+        ArtifactCatalog::new()
+            .with_artifact("plugin", artifact)
+            .unwrap(),
+    )
+    .with_codec(ChatCodec);
+    let plan = stream_plan();
+    let generation = adapter.recreate(&plan, "plugin").unwrap();
+    let endpoint = generation.stream_endpoints()[0].clone();
+    let context = InvocationContext::new(10, None, CancellationToken::new());
+    let Ok(Ok(session)) =
+        futures::executor::block_on(endpoint.open("chat", Box::new(7_u64), context))
+    else {
+        panic!("stream did not open")
+    };
+    futures::executor::block_on(session.send(Box::new("hello".to_owned()))).unwrap();
+    let NativeStreamItem::Message(message) =
+        futures::executor::block_on(session.receive()).unwrap()
+    else {
+        panic!("message missing")
+    };
+    assert_eq!(*message.downcast::<String>().unwrap(), "hello");
+    futures::executor::block_on(session.close_send()).unwrap();
+    assert!(matches!(
+        futures::executor::block_on(session.receive()).unwrap(),
+        NativeStreamItem::PeerHalfClosed
+    ));
+    assert!(matches!(
+        futures::executor::block_on(session.receive()).unwrap(),
+        NativeStreamItem::Terminal(Ok(()))
+    ));
+
+    let context = InvocationContext::new(11, None, CancellationToken::new());
+    let Ok(Err(error)) =
+        futures::executor::block_on(endpoint.open("chat", Box::new(0_u64), context))
+    else {
+        panic!("open error missing")
+    };
+    assert_eq!(*error.downcast::<String>().unwrap(), "rejected");
 }
 
 #[test]
@@ -210,6 +366,21 @@ fn plan() -> ResolvedAppPlan {
                     "1.0.0",
                     ["echo", "fail", "trap", "loop"],
                 )),
+        ],
+        Vec::new(),
+    )
+}
+
+fn stream_plan() -> ResolvedAppPlan {
+    ResolvedAppPlan::new(
+        vec![
+            ModuleInstancePlan::new("plugin", "test.component")
+                .with_entrypoint("plugin")
+                .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
+                .with_capability(
+                    CapabilityEndpointPlan::new("test.chat@1", "1.0.0", ["chat"])
+                        .with_stream_operation("chat"),
+                ),
         ],
         Vec::new(),
     )
