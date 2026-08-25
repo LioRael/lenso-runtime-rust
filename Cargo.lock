@@ -776,6 +776,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-test"
+version = "0.1.0"
+dependencies = [
+ "lenso-app-plan",
+ "lenso-kernel",
+ "lenso-module-authoring",
+ "lenso-native-adapter",
+]
+
+[[package]]
 name = "lenso-wasip2-driver"
 version = "0.1.0"
 dependencies = [

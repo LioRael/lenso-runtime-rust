@@ -11,6 +11,7 @@ members = [
     "crates/lenso-quickjs-adapter",
     "crates/lenso-runner",
     "crates/lenso-runtime-codec",
+    "crates/lenso-test",
     "crates/lenso-wasm-component-adapter",
     "crates/lenso-wasip2-driver",
 ]
