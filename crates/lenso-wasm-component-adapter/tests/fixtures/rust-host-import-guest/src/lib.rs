@@ -5,11 +5,28 @@ wit_bindgen::generate!({
 
 lenso_guest_sdk::wasm_host!(struct WasmHost);
 
+mod echo {
+    pub const CAPABILITY_ID: &str = "test.echo@1";
+    pub const DESCRIPTOR_VERSION: &str = "1.0.0";
+    pub const ECHO: &str = "echo";
+}
+
+mod probe {
+    pub const CAPABILITY_ID: &str = "lenso.runtime.conformance.probe@1";
+    pub const DESCRIPTOR_VERSION: &str = "1.0.0";
+}
+
 struct GuestComponent;
 
 impl Guest for GuestComponent {
     fn describe() -> String {
-        r#"{"abi":"lenso.json-host-imports@1","capabilities":[{"capability_id":"test.echo@1","descriptor_version":"1.0.0","request_operations":["echo"]}],"required_capabilities":[{"capability_id":"lenso.runtime.conformance.probe@1","descriptor_version":"1.0.0","cardinality":"one"}]}"#.to_owned()
+        lenso_guest_sdk::guest_descriptor! {
+            provides: [echo {
+                requests: [echo::ECHO],
+                streams: [],
+            }],
+            requires: [probe],
+        }
     }
 
     fn invoke(

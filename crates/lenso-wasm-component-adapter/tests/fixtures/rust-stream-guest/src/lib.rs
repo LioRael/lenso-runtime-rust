@@ -7,6 +7,12 @@ wit_bindgen::generate!({
     world: "plugin",
 });
 
+mod chat {
+    pub const CAPABILITY_ID: &str = "test.chat@1";
+    pub const DESCRIPTOR_VERSION: &str = "1.0.0";
+    pub const CHAT: &str = "chat";
+}
+
 #[derive(Default)]
 struct Session {
     messages: VecDeque<String>,
@@ -21,7 +27,13 @@ struct GuestComponent;
 
 impl Guest for GuestComponent {
     fn describe() -> String {
-        r#"{"abi":"lenso.json-interactions@1","capabilities":[{"capability_id":"test.chat@1","descriptor_version":"1.0.0","request_operations":[],"stream_operations":["chat"]}]}"#.to_owned()
+        lenso_guest_sdk::guest_descriptor! {
+            provides: [chat {
+                requests: [],
+                streams: [chat::CHAT],
+            }],
+            requires: [],
+        }
     }
 
     fn invoke(_: String, _: String, _: String) -> Result<String, String> {

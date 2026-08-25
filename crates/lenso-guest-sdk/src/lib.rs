@@ -98,6 +98,128 @@ pub enum GuestSessionError {
     UnknownSession(u64),
 }
 
+/// One Capability implemented by a guest Module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuestProvidedCapability<'a> {
+    pub capability_id: &'a str,
+    pub descriptor_version: &'a str,
+    pub request_operations: &'a [&'a str],
+    pub stream_operations: &'a [&'a str],
+}
+
+/// One Host Capability required by a guest Module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuestRequiredCapability<'a> {
+    pub capability_id: &'a str,
+    pub descriptor_version: &'a str,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct EncodedProvidedCapability<'a> {
+    capability_id: &'a str,
+    descriptor_version: &'a str,
+    request_operations: Vec<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stream_operations: Vec<&'a str>,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct EncodedRequiredCapability<'a> {
+    capability_id: &'a str,
+    descriptor_version: &'a str,
+    cardinality: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct GuestModuleDescriptor<'a> {
+    abi: &'static str,
+    capabilities: Vec<EncodedProvidedCapability<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    required_capabilities: Vec<EncodedRequiredCapability<'a>>,
+}
+
+/// Encodes the canonical guest Module descriptor consumed by Execution Adapters.
+#[must_use]
+pub fn encode_guest_descriptor(
+    capabilities: &[GuestProvidedCapability<'_>],
+    required_capabilities: &[GuestRequiredCapability<'_>],
+) -> String {
+    let mut capabilities = capabilities
+        .iter()
+        .map(|capability| EncodedProvidedCapability {
+            capability_id: capability.capability_id,
+            descriptor_version: capability.descriptor_version,
+            request_operations: capability.request_operations.to_vec(),
+            stream_operations: capability.stream_operations.to_vec(),
+        })
+        .collect::<Vec<_>>();
+    capabilities.sort_unstable();
+    let mut required_capabilities = required_capabilities
+        .iter()
+        .map(|requirement| EncodedRequiredCapability {
+            capability_id: requirement.capability_id,
+            descriptor_version: requirement.descriptor_version,
+            cardinality: "one",
+        })
+        .collect::<Vec<_>>();
+    required_capabilities.sort_unstable();
+    let abi = if !required_capabilities.is_empty() {
+        "lenso.json-host-imports@1"
+    } else if capabilities
+        .iter()
+        .any(|capability| !capability.stream_operations.is_empty())
+    {
+        "lenso.json-interactions@1"
+    } else {
+        "lenso.json-request@1"
+    };
+    serde_json::to_string(&GuestModuleDescriptor {
+        abi,
+        capabilities,
+        required_capabilities,
+    })
+    .expect("guest descriptor contains only infallible borrowed JSON values")
+}
+
+/// Derives a guest Module descriptor from generated Capability package constants.
+///
+/// Capability aliases name the same source-derived packages used by generated
+/// guest clients, so IDs and descriptor versions cannot drift into copied JSON.
+#[macro_export]
+macro_rules! guest_descriptor {
+    (
+        provides: [
+            $(
+                $provided:ident {
+                    requests: [$($request:expr),* $(,)?],
+                    streams: [$($stream:expr),* $(,)?] $(,)?
+                }
+            ),* $(,)?
+        ],
+        requires: [$($required:ident),* $(,)?] $(,)?
+    ) => {{
+        let capabilities = [
+            $(
+                $crate::GuestProvidedCapability {
+                    capability_id: $provided::CAPABILITY_ID,
+                    descriptor_version: $provided::DESCRIPTOR_VERSION,
+                    request_operations: &[$($request),*],
+                    stream_operations: &[$($stream),*],
+                }
+            ),*
+        ];
+        let required_capabilities = [
+            $(
+                $crate::GuestRequiredCapability {
+                    capability_id: $required::CAPABILITY_ID,
+                    descriptor_version: $required::DESCRIPTOR_VERSION,
+                }
+            ),*
+        ];
+        $crate::encode_guest_descriptor(&capabilities, &required_capabilities)
+    }};
+}
+
 /// Defines a zero-sized [`HostImports`] implementation over `wit-bindgen` world imports.
 #[macro_export]
 macro_rules! wasm_host {
@@ -532,6 +654,66 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    mod provided_capability {
+        pub const CAPABILITY_ID: &str = "example.agent@1";
+        pub const DESCRIPTOR_VERSION: &str = "1.2.0";
+        pub const RUN_OPERATION: &str = "run";
+    }
+
+    mod required_capability {
+        pub const CAPABILITY_ID: &str = "example.model@1";
+        pub const DESCRIPTOR_VERSION: &str = "2.0.0";
+    }
+
+    #[test]
+    fn guest_descriptor_derives_host_imports_from_capability_packages() {
+        let descriptor = guest_descriptor! {
+            provides: [
+                provided_capability {
+                    requests: [],
+                    streams: [provided_capability::RUN_OPERATION],
+                },
+            ],
+            requires: [required_capability],
+        };
+
+        assert_eq!(
+            descriptor,
+            r#"{"abi":"lenso.json-host-imports@1","capabilities":[{"capability_id":"example.agent@1","descriptor_version":"1.2.0","request_operations":[],"stream_operations":["run"]}],"required_capabilities":[{"capability_id":"example.model@1","descriptor_version":"2.0.0","cardinality":"one"}]}"#
+        );
+    }
+
+    #[test]
+    fn guest_descriptor_selects_request_and_interaction_abis() {
+        let request = encode_guest_descriptor(
+            &[GuestProvidedCapability {
+                capability_id: "example.request@1",
+                descriptor_version: "1.0.0",
+                request_operations: &["inspect"],
+                stream_operations: &[],
+            }],
+            &[],
+        );
+        assert_eq!(
+            request,
+            r#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":"example.request@1","descriptor_version":"1.0.0","request_operations":["inspect"]}]}"#
+        );
+
+        let interactions = encode_guest_descriptor(
+            &[GuestProvidedCapability {
+                capability_id: "example.stream@1",
+                descriptor_version: "1.0.0",
+                request_operations: &[],
+                stream_operations: &["watch"],
+            }],
+            &[],
+        );
+        assert_eq!(
+            interactions,
+            r#"{"abi":"lenso.json-interactions@1","capabilities":[{"capability_id":"example.stream@1","descriptor_version":"1.0.0","request_operations":[],"stream_operations":["watch"]}]}"#
+        );
+    }
 
     #[derive(Clone, Debug)]
     struct MockHost {

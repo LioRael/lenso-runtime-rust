@@ -8,6 +8,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+lenso-guest-sdk = { path = "../../../../lenso-guest-sdk" }
 wit-bindgen = "0.60"
 
 [workspace]
