@@ -7,6 +7,7 @@ members = [
     "crates/lenso-guest-sdk",
     "crates/lenso-native-adapter",
     "crates/lenso-native-adapter-macros",
+    "crates/lenso-plugin-bundle",
     "crates/lenso-plugin-control-plane",
     "crates/lenso-quickjs-adapter",
     "crates/lenso-runner",

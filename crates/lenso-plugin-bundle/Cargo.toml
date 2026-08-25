@@ -1,0 +1,21 @@
+[package]
+name = "lenso-plugin-bundle"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+description = "Immutable Lenso Plugin Release manifests, bundle materialization, and verification."
+
+[dependencies]
+hex.workspace = true
+lenso-app-plan.workspace = true
+semver = { version = "1", features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = "3"
+wit-component = "0.252"
+
+[lints]
+workspace = true
