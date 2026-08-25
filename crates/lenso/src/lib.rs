@@ -9,14 +9,16 @@ mod typed_extension;
 pub use lenso_module_authoring::{
     BoundCapabilityClient, CapabilityClient, CapabilityClientMany, ManyPort, ModuleError, Port,
 };
-pub use lenso_native_adapter::{Lifecycle, ModuleConfig, module, provides};
+pub use lenso_native_adapter::{
+    Lifecycle, ManagedTasks, ManagedTasksError, ModuleConfig, module, provides,
+};
 
 pub use provider_stream::{ProviderStream, ProviderStreamChannel, StreamInput};
 pub use typed_extension::{CtxExt, TypedExtension, TypedExtensionError};
 
 pub use lenso_kernel::{
-    ActivateContext, DeactivateContext, InvocationContext as Ctx, ManagedTaskScope, ModuleFuture,
-    PrepareContext, RuntimeFailure,
+    ActivateContext, CancellationToken, DeactivateContext, InvocationContext as Ctx,
+    ManagedTaskScope, ModuleFuture, PrepareContext, RuntimeFailure,
 };
 
 /// A Module operation result that can explicitly preserve Domain and Runtime failures.
@@ -31,11 +33,11 @@ pub type ModuleEventResult = Result<(), RuntimeFailure>;
 /// Common imports for native Rust Module authors.
 pub mod prelude {
     pub use crate::{
-        ActivateContext, BoundCapabilityClient, CapabilityClient, CapabilityClientMany, Ctx,
-        CtxExt, DeactivateContext, Lifecycle, ManagedTaskScope, ManyPort, ModuleConfig,
-        ModuleError, ModuleEventResult, ModuleFuture, ModuleResult, Port, PrepareContext,
-        ProviderStream, ProviderStreamChannel, RuntimeFailure, StreamInput, TypedExtension,
-        TypedExtensionError, module, provides,
+        ActivateContext, BoundCapabilityClient, CancellationToken, CapabilityClient,
+        CapabilityClientMany, Ctx, CtxExt, DeactivateContext, Lifecycle, ManagedTaskScope,
+        ManagedTasks, ManagedTasksError, ManyPort, ModuleConfig, ModuleError, ModuleEventResult,
+        ModuleFuture, ModuleResult, Port, PrepareContext, ProviderStream, ProviderStreamChannel,
+        RuntimeFailure, StreamInput, TypedExtension, TypedExtensionError, module, provides,
     };
 }
 

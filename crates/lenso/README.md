@@ -159,3 +159,28 @@ impl Lifecycle for Worker {
 
 The existing function-path lifecycle attributes remain available for
 compatibility.
+
+Modules that only need generation-owned background work can declare a managed task field without
+storing an optional Kernel scope or writing an activation hook:
+
+```rust,ignore
+#[module]
+#[derive(Clone, Debug)]
+struct Worker {
+    #[tasks]
+    tasks: ManagedTasks,
+}
+
+impl Worker {
+    fn start(&self) -> Result<(), ManagedTasksError> {
+        self.tasks.spawn_local(async move {
+            // Work is cancelled and joined with this Module generation.
+        })?;
+        Ok(())
+    }
+}
+```
+
+The field becomes active immediately before an optional `Lifecycle::activate` hook runs. Spawning
+before activation or during deactivation fails explicitly with `ManagedTasksError::Inactive`.
+Long-running work can obtain `tasks.cancellation()` and stop cooperatively with its generation.
