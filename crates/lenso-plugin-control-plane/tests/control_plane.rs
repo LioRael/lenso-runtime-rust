@@ -1,7 +1,8 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use lenso_app_plan::{
-    CapabilityOperationKind, ModuleCriticality, ModuleInstancePlan, ResolvedAppPlan, RestartPolicy,
+    AppComposition, CapabilityOperationKind, ExecutionLaneId, ExecutionLanePlan, ModuleCriticality,
+    ModuleInstancePlan, ResolvedAppPlan, RestartPolicy,
 };
 use lenso_kernel::{
     ActivateContext, ExecutionAdapterCatalog, ModuleFuture, ModuleLifecycle,
@@ -787,6 +788,72 @@ impl CatalogFactory for EmptyCatalog {
 }
 
 #[derive(Debug)]
+struct ReplicatedEmptyCatalog;
+
+impl ReplicatedCatalogFactory for ReplicatedEmptyCatalog {
+    fn catalog(
+        &self,
+        _generation: &ResolvedGeneration,
+        _lane: &ExecutionLaneId,
+    ) -> Result<ExecutionAdapterCatalog, ControlPlaneError> {
+        Ok(ExecutionAdapterCatalog::new())
+    }
+}
+
+#[derive(Debug)]
+struct SlowReplicatedCatalog;
+
+impl ReplicatedCatalogFactory for SlowReplicatedCatalog {
+    fn catalog(
+        &self,
+        _generation: &ResolvedGeneration,
+        _lane: &ExecutionLaneId,
+    ) -> Result<ExecutionAdapterCatalog, ControlPlaneError> {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        Ok(ExecutionAdapterCatalog::new())
+    }
+}
+
+#[derive(Debug)]
+struct ReplicatedFailingCatalog;
+
+impl ReplicatedCatalogFactory for ReplicatedFailingCatalog {
+    fn catalog(
+        &self,
+        _generation: &ResolvedGeneration,
+        _lane: &ExecutionLaneId,
+    ) -> Result<ExecutionAdapterCatalog, ControlPlaneError> {
+        Ok(ExecutionAdapterCatalog::single(
+            NativeModuleRegistry::new().with_factory(FailingFactory),
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct ConditionalReplicatedCatalog;
+
+impl ReplicatedCatalogFactory for ConditionalReplicatedCatalog {
+    fn catalog(
+        &self,
+        generation: &ResolvedGeneration,
+        _lane: &ExecutionLaneId,
+    ) -> Result<ExecutionAdapterCatalog, ControlPlaneError> {
+        if generation
+            .plan
+            .module_instances()
+            .iter()
+            .any(|instance| instance.package_id() == "example.failing")
+        {
+            Ok(ExecutionAdapterCatalog::single(
+                NativeModuleRegistry::new().with_factory(FailingFactory),
+            ))
+        } else {
+            Ok(ExecutionAdapterCatalog::new())
+        }
+    }
+}
+
+#[derive(Debug)]
 struct FailingLifecycle;
 
 impl ModuleLifecycle for FailingLifecycle {
@@ -884,6 +951,166 @@ fn kernel_generation_runtime_reports_a_real_terminal_failure_after_ready() {
         assert!(matches!(failure, ControlPlaneError::HostFailure { .. }));
         host.shutdown(handle, 1_000_000_000).await.unwrap();
     });
+}
+
+#[test]
+fn replicated_generation_runtime_stages_routes_and_stops_the_complete_lane_set() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let plan = replicated_empty_plan();
+        let generation = generation_with_plan("replicated", plan);
+        let mut host = ReplicatedGenerationRuntime::new(ReplicatedEmptyCatalog);
+        let handle = host.stage(&generation, 1_000_000_000).await.unwrap();
+        let route = host.route(&handle);
+        assert_eq!(route.lane_count(), 2);
+        assert!(host.terminal_failure(&handle).is_none());
+        host.shutdown(handle, 1_000_000_000).await.unwrap();
+        assert!(!route.is_failed());
+    });
+}
+
+#[test]
+fn replicated_generation_runtime_bounds_the_complete_ready_gate() {
+    let plan = replicated_empty_plan();
+    let generation = generation_with_plan("replicated-timeout", plan);
+    let mut host = ReplicatedGenerationRuntime::new(SlowReplicatedCatalog);
+    let error = futures::executor::block_on(host.stage(&generation, 1_000_000)).unwrap_err();
+    assert!(matches!(error, ControlPlaneError::HostFailure { .. }));
+}
+
+#[test]
+fn replicated_generation_runtime_surfaces_one_lane_terminal_failure() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let plan = AppComposition::new(
+            vec![
+                ModuleInstancePlan::new("failing", "example.failing")
+                    .with_package_revision("1.0.0")
+                    .with_execution_lane(ExecutionLaneId::new("frontend"))
+                    .with_restart_policy(RestartPolicy::never())
+                    .with_criticality(ModuleCriticality::Critical),
+            ],
+            Vec::new(),
+        )
+        .with_execution_lanes(vec![
+            ExecutionLanePlan::new("frontend"),
+            ExecutionLanePlan::new("workers"),
+        ])
+        .resolve()
+        .unwrap();
+        let generation = generation_with_plan("replicated-failure", plan);
+        let mut host = ReplicatedGenerationRuntime::new(ReplicatedFailingCatalog);
+        let handle = host.stage(&generation, 1_000_000_000).await.unwrap();
+        let failure = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(failure) = host.terminal_failure(&handle) {
+                    break failure;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(failure, ControlPlaneError::HostFailure { .. }));
+        host.shutdown(handle, 1_000_000_000).await.unwrap();
+    });
+}
+
+#[test]
+fn controller_automatically_rolls_back_a_terminal_replicated_generation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        let first = generation_with_plan("replicated-controller-first", replicated_empty_plan());
+        let failing_plan = AppComposition::new(
+            vec![
+                ModuleInstancePlan::new("failing", "example.failing")
+                    .with_package_revision("1.0.0")
+                    .with_execution_lane(ExecutionLaneId::new("frontend"))
+                    .with_restart_policy(RestartPolicy::never())
+                    .with_criticality(ModuleCriticality::Critical),
+            ],
+            Vec::new(),
+        )
+        .with_execution_lanes(vec![
+            ExecutionLanePlan::new("frontend"),
+            ExecutionLanePlan::new("workers"),
+        ])
+        .resolve()
+        .unwrap();
+        let second = generation_with_plan("replicated-controller-second", failing_plan);
+        let supervisor = DurableGenerationSupervisor::open(
+            "app",
+            ReplicatedGenerationRuntime::new(ConditionalReplicatedCatalog),
+            MemoryControlStateStore::default(),
+        )
+        .unwrap();
+        let (controller, client) =
+            GenerationController::new(supervisor, std::time::Duration::from_millis(2)).unwrap();
+        let task = tokio::task::spawn_local(controller.run());
+        let mut events = client.subscribe();
+        client
+            .transition(
+                transition(None, &first, ReplacementMode::Initial, "0"),
+                first.clone(),
+                BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+        let old_route = client.route().await.unwrap();
+        assert_eq!(old_route.target().lane_count(), 2);
+        client
+            .transition(
+                transition_with_receipts(
+                    Some(first.spec.digest()),
+                    &second,
+                    ReplacementMode::Overlap,
+                    "10000000000",
+                    true,
+                    Vec::new(),
+                ),
+                second,
+                BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+
+        let rollback = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let GenerationControllerEvent::Maintained(
+                    GenerationMaintenanceOutcome::Failed(failure),
+                ) = events.recv().await.unwrap()
+                {
+                    break failure.automatic_rollback.unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(rollback.active_generation_spec_digest, first.spec.digest());
+        drop(old_route);
+        client.shutdown().await.unwrap();
+        assert!(task.await.unwrap().is_ok());
+    });
+}
+
+fn replicated_empty_plan() -> ResolvedAppPlan {
+    AppComposition::new(Vec::new(), Vec::new())
+        .with_execution_lanes(vec![
+            ExecutionLanePlan::new("frontend"),
+            ExecutionLanePlan::new("workers"),
+        ])
+        .resolve()
+        .unwrap()
 }
 
 fn empty_generation(marker: &str) -> ResolvedGeneration {

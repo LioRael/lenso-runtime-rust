@@ -22,7 +22,8 @@ mod replicated;
 
 pub use replicated::{
     CrossLaneRequestCatalog, CrossLaneTransferCatalog, LaneCancellationToken,
-    LaneDiagnosticsSnapshot, LaneInvocationOptions, ReplicatedNativeApp, ReplicatedRunnerError,
+    LaneDiagnosticsSnapshot, LaneInvocationOptions, ReplicatedAppRoute, ReplicatedNativeApp,
+    ReplicatedRunnerError,
 };
 
 /// Tokio-backed Runtime Driver used by the native App Runner.
