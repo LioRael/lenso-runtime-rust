@@ -37,6 +37,45 @@ impl Greeting {
 }
 ```
 
+A cohesive Module may provide several Capabilities from the same state and
+lifecycle. List them once and keep their generated domain methods in one
+inherent implementation:
+
+```rust,ignore
+#[provides(agent::Model, agent::ModelMetadata, health::Health)]
+impl OpenAiModel {
+    async fn complete(
+        &self,
+        ctx: Ctx,
+        request: agent::CompleteRequest,
+    ) -> Result<agent::CompleteResponse, agent::CompleteError> {
+        todo!()
+    }
+
+    async fn describe(
+        &self,
+        ctx: Ctx,
+        request: agent::DescribeRequest,
+    ) -> Result<agent::DescribeResponse, agent::DescribeError> {
+        todo!()
+    }
+
+    async fn check(
+        &self,
+        ctx: Ctx,
+        request: health::CheckRequest,
+    ) -> Result<health::CheckResponse, health::CheckError> {
+        todo!()
+    }
+}
+```
+
+The annotation order is preserved in the generated Descriptor. All Request,
+Stream, and Event endpoints are aggregated into one factory and one Module
+lifecycle. Repeating a Capability is rejected. Explicit generated Provider
+trait implementations remain a single-Capability compatibility escape hatch;
+multi-Capability Modules use the inherent implementation above.
+
 Generated lowering owns the Provider trait implementation, future boxing,
 endpoint construction, and native registration. A method that only has
 Capability-defined rejection returns an ordinary domain `Result`. A method
