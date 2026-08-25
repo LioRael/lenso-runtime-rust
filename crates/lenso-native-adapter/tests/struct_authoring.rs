@@ -13,9 +13,10 @@ mod echo {
 
     #[macro_export]
     macro_rules! __test_lenso_native_provide_echo {
-        ($provider:expr, $lifecycle:expr) => {{
+        ($provider:expr, $lifecycle:expr, $support:path) => {{
+            use $support as __LensoNativeSupport;
             let _ = $provider;
-            ::lenso_native_adapter::NativeModuleInstance::with_all_endpoints(
+            __LensoNativeSupport::NativeModuleInstance::with_all_endpoints(
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
