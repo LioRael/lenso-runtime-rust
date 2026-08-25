@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+use lenso_module_authoring::{
+    BoundCapabilityClient, CapabilityClient, CapabilityClientMany, ManyPort,
+};
 use lenso_native_adapter::{Lifecycle, NativeModuleRegistry, module, provides};
 
 mod echo {
@@ -10,6 +13,14 @@ mod echo {
         };
     }
     pub use crate::__test_lenso_provided_echo as __lenso_provided_echo;
+
+    #[macro_export]
+    macro_rules! __test_lenso_required_many_echo_client {
+        () => {
+            r#"{"capability_id":"example.echo@1","descriptor_version":"1.0.0","cardinality":"many"}"#
+        };
+    }
+    pub use crate::__test_lenso_required_many_echo_client as __lenso_required_many_echo_client;
 
     #[macro_export]
     macro_rules! __test_lenso_native_endpoints_echo {
@@ -28,6 +39,35 @@ mod echo {
     pub struct Echo;
 
     pub trait EchoProvider {}
+
+    #[derive(Debug)]
+    pub struct EchoClient;
+
+    impl super::CapabilityClient for EchoClient {
+        type Dependencies = lenso_kernel::ModuleDependencies;
+        type Error = lenso_kernel::RuntimeFailure;
+
+        const CAPABILITY_ID: &'static str = "example.echo@1";
+        const DESCRIPTOR_VERSION: &'static str = "1.0.0";
+
+        fn from_dependencies(_dependencies: &Self::Dependencies) -> Result<Self, Self::Error> {
+            Ok(Self)
+        }
+
+        fn already_connected() -> Self::Error {
+            lenso_kernel::RuntimeFailure::ModuleFailure {
+                detail: "Echo Port was connected more than once".to_owned(),
+            }
+        }
+    }
+
+    impl super::CapabilityClientMany for EchoClient {
+        fn many_from_dependencies(
+            _dependencies: &Self::Dependencies,
+        ) -> Result<Vec<super::BoundCapabilityClient<Self>>, Self::Error> {
+            Ok(Vec::new())
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize, lenso_native_adapter::ModuleConfig)]
@@ -51,6 +91,7 @@ fn validate(configuration: &ExampleConfig) -> Result<(), lenso_native_adapter::R
 struct ExampleModule {
     #[config]
     config: ExampleConfig,
+    echoes: ManyPort<echo::EchoClient>,
 }
 
 impl Lifecycle for ExampleModule {
@@ -75,7 +116,14 @@ fn struct_module_derives_descriptor_factory_and_configuration() {
         descriptor["provided_capabilities"][0]["capability_id"],
         "example.echo@1"
     );
-    assert_eq!(descriptor["required_capabilities"], serde_json::json!([]));
+    assert_eq!(
+        descriptor["required_capabilities"],
+        serde_json::json!([{
+            "capability_id": "example.echo@1",
+            "descriptor_version": "1.0.0",
+            "cardinality": "many"
+        }])
+    );
     assert_eq!(descriptor["configuration_schema"]["type"], "object");
     assert_eq!(
         descriptor["configuration_schema"]["required"],

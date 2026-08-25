@@ -662,7 +662,7 @@ dependencies = [
 [[package]]
 name = "lenso-module-authoring"
 version = "0.1.0"
-source = "git+https://github.com/LioRael/lenso-protocols?rev=16c4aff52c539e16f3024f6414de56e6c181b030#16c4aff52c539e16f3024f6414de56e6c181b030"
+source = "git+https://github.com/LioRael/lenso-protocols?rev=7de5bbb1c6999dc8ba69da477efb1dbfc9a403ba#7de5bbb1c6999dc8ba69da477efb1dbfc9a403ba"
 
 [[package]]
 name = "lenso-native-adapter"
@@ -672,6 +672,7 @@ dependencies = [
  "inventory",
  "lenso-app-plan",
  "lenso-kernel",
+ "lenso-module-authoring",
  "lenso-native-adapter-macros",
  "serde",
  "serde_json",

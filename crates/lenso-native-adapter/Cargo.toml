@@ -19,6 +19,7 @@ lenso-native-adapter-macros = { version = "0.1.0", path = "../lenso-native-adapt
 serde_json.workspace = true
 
 [dev-dependencies]
+lenso-module-authoring.workspace = true
 serde.workspace = true
 
 [lints]
