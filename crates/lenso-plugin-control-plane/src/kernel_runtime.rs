@@ -53,6 +53,12 @@ impl<F: CatalogFactory> GenerationRuntime for KernelGenerationRuntime<F> {
         ready_timeout_nanos: u64,
     ) -> futures::future::LocalBoxFuture<'a, Result<Self::Handle, ControlPlaneError>> {
         Box::pin(async move {
+            if generation.plan.execution_lanes().len() != 1 {
+                return Err(ControlPlaneError::HostFailure {
+                    detail: "lane-local KernelGenerationRuntime requires exactly one execution lane; use ReplicatedGenerationRuntime for a complete Lane Set"
+                        .to_owned(),
+                });
+            }
             let catalog = self.factory.catalog(generation)?;
             let driver = TokioDriver::new();
             let app = tokio::time::timeout(
