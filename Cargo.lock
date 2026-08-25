@@ -660,7 +660,7 @@ dependencies = [
 [[package]]
 name = "lenso-module-authoring"
 version = "0.1.0"
-source = "git+https://github.com/LioRael/lenso-protocols?rev=46c26a041e9e07cbee26781de6e79879abbecd59#46c26a041e9e07cbee26781de6e79879abbecd59"
+source = "git+https://github.com/LioRael/lenso-protocols?rev=b5a5a16999c562a9a50c163312604f888d954a55#b5a5a16999c562a9a50c163312604f888d954a55"
 
 [[package]]
 name = "lenso-native-adapter"
