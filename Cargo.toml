@@ -28,9 +28,9 @@ rust-version = "1.94"
 futures = "0.3"
 hex = "0.4"
 inventory = "0.3"
-lenso-app-plan = "0.1.5"
-lenso-kernel = "0.1.11"
-lenso-runtime-conformance = "0.1.11"
+lenso-app-plan = "0.2.0"
+lenso-kernel = "0.1.12"
+lenso-runtime-conformance = "0.1.12"
 lenso-module-authoring = { version = "0.1.1", git = "https://github.com/LioRael/lenso-protocols", rev = "1424ffe25f05c0d3aaf746fb7fd66b26b9f803e0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
