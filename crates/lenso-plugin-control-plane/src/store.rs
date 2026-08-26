@@ -76,6 +76,31 @@ pub struct AdmittedArtifact {
     pub path: PathBuf,
 }
 
+/// Read-only source for exact Plugin Artifact bytes during Generation resolution.
+pub trait ArtifactSource: std::fmt::Debug {
+    /// Resolves and verifies one Artifact declared by the selected Plugin Release.
+    fn artifact(
+        &self,
+        declaration: &ArtifactDeclaration,
+    ) -> Result<AdmittedArtifact, ControlPlaneError>;
+}
+
+/// Fail-closed source for Host-built Plugin selections that declare no Artifacts.
+#[derive(Debug, Default)]
+pub struct NoArtifactSource;
+
+impl ArtifactSource for NoArtifactSource {
+    fn artifact(
+        &self,
+        declaration: &ArtifactDeclaration,
+    ) -> Result<AdmittedArtifact, ControlPlaneError> {
+        rejected(format!(
+            "no Artifact source is configured for selected Artifact `{}`",
+            declaration.id
+        ))
+    }
+}
+
 /// Content-addressed Plugin Store with no mutable "latest" authority.
 #[derive(Debug)]
 pub struct PluginStore {
@@ -252,6 +277,15 @@ impl PluginStore {
     }
 }
 
+impl ArtifactSource for PluginStore {
+    fn artifact(
+        &self,
+        declaration: &ArtifactDeclaration,
+    ) -> Result<AdmittedArtifact, ControlPlaneError> {
+        Self::artifact(self, declaration)
+    }
+}
+
 fn digest_component(digest: &str) -> Result<&str, ControlPlaneError> {
     let Some(value) = digest.strip_prefix("sha256:") else {
         return rejected("digest does not use sha256 prefix");
@@ -367,9 +401,30 @@ mod tests {
 
     use super::*;
     use crate::{
-        CapabilityDeclaration, ImplementationVariant, ModuleContribution, SupportChannel,
-        TrustLevel,
+        ArtifactKind, CapabilityDeclaration, ImplementationVariant, ModuleContribution,
+        SupportChannel, TrustLevel,
     };
+
+    #[test]
+    fn absent_artifact_source_fails_closed() {
+        let declaration = ArtifactDeclaration {
+            id: "unavailable".to_owned(),
+            kind: ArtifactKind::QuickJsModule,
+            digest: sha256_digest(b"artifact"),
+            size: 8,
+            media_type: "text/javascript".to_owned(),
+            path: "plugin.mjs".to_owned(),
+            targets: vec!["test-target".to_owned()],
+        };
+
+        let error = NoArtifactSource.artifact(&declaration).unwrap_err();
+
+        assert!(matches!(
+            &error,
+            ControlPlaneError::AdmissionRejected { .. }
+        ));
+        assert!(error.to_string().contains("no Artifact source"));
+    }
 
     #[test]
     fn interaction_kind_must_name_a_declared_operation() {

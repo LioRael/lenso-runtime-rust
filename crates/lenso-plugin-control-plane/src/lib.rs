@@ -35,7 +35,10 @@ pub use replicated_runtime::{
     ReplicatedCatalogFactory, ReplicatedGenerationHandle, ReplicatedGenerationRuntime,
 };
 pub use resolver::{ResolutionInput, ResolvedGeneration, resolve_generation};
-pub use store::{AdmissionPolicy, AdmissionReceipt, AdmittedArtifact, PluginBundle, PluginStore};
+pub use store::{
+    AdmissionPolicy, AdmissionReceipt, AdmittedArtifact, ArtifactSource, NoArtifactSource,
+    PluginBundle, PluginStore,
+};
 pub use supervisor::{
     GenerationLease, GenerationRuntime, GenerationStatus, GenerationSupervisor, TransitionOutcome,
 };

@@ -7,13 +7,13 @@ use lenso_app_plan::{
 use lenso_runtime_codec::{ArtifactCatalog, ArtifactHandle};
 
 use crate::{
-    AdapterProfile, AppGenerationSpec, ArtifactKind, CanonicalDocument, ClassPolicy,
-    ControlPlaneError, EffectiveGrant, EffectiveHostGrantSet, HostBuildManifest,
-    HostExecutionPolicy, ImplementationVariant, LockedInstance, PluginManifest, PluginSetLock,
-    RequirementCardinality, ResolvedArtifact, ResolvedArtifactSet, ResolvedDataMount,
-    ResolvedInstance, ResolvedRelease, StatefulRuntimeIdentity,
+    AdapterProfile, AdmissionReceipt, AppGenerationSpec, ArtifactKind, ArtifactSource,
+    CanonicalDocument, ClassPolicy, ControlPlaneError, EffectiveGrant, EffectiveHostGrantSet,
+    HostBuildManifest, HostExecutionPolicy, ImplementationVariant, LockedInstance, PluginManifest,
+    PluginSetLock, RequirementCardinality, ResolvedArtifact, ResolvedArtifactSet,
+    ResolvedDataMount, ResolvedInstance, ResolvedRelease, StatefulRuntimeIdentity,
 };
-use crate::{PluginStore, sha256_digest, strict_json};
+use crate::{sha256_digest, strict_json};
 
 #[derive(Debug)]
 struct SelectedReleaseContent {
@@ -30,10 +30,10 @@ struct SelectedReleaseContent {
 pub struct ResolutionInput<'a> {
     pub lock: &'a CanonicalDocument<PluginSetLock>,
     pub manifests: &'a BTreeMap<String, CanonicalDocument<PluginManifest>>,
-    pub admission_receipts: &'a BTreeMap<String, String>,
+    pub admission_receipts: &'a BTreeMap<String, CanonicalDocument<AdmissionReceipt>>,
     pub host_build: &'a CanonicalDocument<HostBuildManifest>,
     pub policy: &'a CanonicalDocument<HostExecutionPolicy>,
-    pub store: &'a PluginStore,
+    pub artifact_source: &'a dyn ArtifactSource,
     pub base_instances: Vec<ModuleInstancePlan>,
     pub bindings: Vec<CapabilityBinding>,
 }
@@ -125,7 +125,7 @@ pub fn resolve_generation(
                     variant.execution_class
                 )));
             }
-            let admitted = input.store.artifact(declaration)?;
+            let admitted = input.artifact_source.artifact(declaration)?;
             let handle = ArtifactHandle::open(&admitted.path, &admitted.digest, admitted.size)
                 .map_err(|error| failed(format!("{error:?}")))?;
             artifact_catalog = artifact_catalog
@@ -256,7 +256,7 @@ pub fn resolve_generation(
         .plugins
         .iter()
         .map(|locked| {
-            let receipt_digest = input
+            let receipt = input
                 .admission_receipts
                 .get(&locked.manifest_digest)
                 .ok_or_else(|| {
@@ -265,7 +265,6 @@ pub fn resolve_generation(
                         locked.plugin_id
                     ))
                 })?;
-            let receipt = input.store.admission_receipt(receipt_digest)?;
             let manifest = manifest_for(input, &locked.plugin_id)?;
             let artifact_digests = manifest
                 .artifacts
@@ -305,7 +304,7 @@ pub fn resolve_generation(
                 plugin_id: locked.plugin_id.clone(),
                 release_version: locked.release_version.clone(),
                 manifest_digest: locked.manifest_digest.clone(),
-                admission_receipt_digest: receipt_digest.clone(),
+                admission_receipt_digest: receipt.digest().to_owned(),
             })
         })
         .collect::<Result<Vec<_>, ControlPlaneError>>()?;
@@ -853,7 +852,7 @@ fn resolve_data_mounts(
             if !selected.artifacts.contains(&declaration.id) {
                 return Err(failed("Data Artifact is not selected by Features"));
             }
-            let _ = input.store.artifact(declaration)?;
+            let _ = input.artifact_source.artifact(declaration)?;
             artifacts
                 .entry((mount.plugin_id.clone(), declaration.id.clone()))
                 .or_insert_with(|| ResolvedArtifact {
@@ -896,7 +895,7 @@ fn resolve_selected_artifacts(
                     input.policy.value().target
                 )));
             }
-            let _ = input.store.artifact(declaration)?;
+            let _ = input.artifact_source.artifact(declaration)?;
             artifacts
                 .entry((plugin.plugin_id.clone(), artifact_id))
                 .or_insert_with(|| ResolvedArtifact {
