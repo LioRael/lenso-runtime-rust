@@ -210,17 +210,14 @@ fn store_policy_resolution_and_generation_authority_close() {
     let mut manifests = BTreeMap::new();
     manifests.insert("example.echo".to_owned(), manifest);
     let mut receipts = BTreeMap::new();
-    receipts.insert(
-        lock.value().plugins[0].manifest_digest.clone(),
-        receipt.digest().to_owned(),
-    );
+    receipts.insert(lock.value().plugins[0].manifest_digest.clone(), receipt);
     let resolved = resolve_generation(&ResolutionInput {
         lock: &lock,
         manifests: &manifests,
         admission_receipts: &receipts,
         host_build: &host_build,
         policy: &policy,
-        store: &store,
+        artifact_source: &store,
         base_instances: Vec::new(),
         bindings: Vec::new(),
     })
@@ -279,15 +276,22 @@ fn built_in_plugin_factory_identity_closes_into_native_preparation() {
         product_metadata: Vec::new(),
     };
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
-    let store_directory = tempfile::tempdir().unwrap();
-    let store = PluginStore::open(store_directory.path()).unwrap();
-    let receipt = store
-        .admit(
-            &PluginBundle::new(manifest_bytes.clone(), BTreeMap::new(), "local-review"),
-            &AllowExact,
-        )
-        .unwrap();
     let manifest = CanonicalDocument::<PluginManifest>::parse("manifest", &manifest_bytes).unwrap();
+    let receipt = CanonicalDocument::from_value(
+        "bundled admission receipt",
+        AdmissionReceipt {
+            schema_version: 1,
+            policy_identity: "host-build.bundled@1".to_owned(),
+            plugin_id: manifest.value().plugin_id.clone(),
+            release_version: manifest.value().release_version.clone(),
+            manifest_digest: manifest.digest().to_owned(),
+            artifact_digests: Vec::new(),
+            product_metadata_digests: Vec::new(),
+            provenance: "host-build".to_owned(),
+            decision_evidence: factory_identity.clone(),
+        },
+    )
+    .unwrap();
     let lock = CanonicalDocument::from_value(
         "lock",
         PluginSetLock {
@@ -355,10 +359,8 @@ fn built_in_plugin_factory_identity_closes_into_native_preparation() {
     let mut manifests = BTreeMap::new();
     manifests.insert("example.builtin-plugin".to_owned(), manifest);
     let mut receipts = BTreeMap::new();
-    receipts.insert(
-        lock.value().plugins[0].manifest_digest.clone(),
-        receipt.digest().to_owned(),
-    );
+    receipts.insert(lock.value().plugins[0].manifest_digest.clone(), receipt);
+    let artifact_source = NoArtifactSource;
 
     let resolved = resolve_generation(&ResolutionInput {
         lock: &lock,
@@ -366,7 +368,7 @@ fn built_in_plugin_factory_identity_closes_into_native_preparation() {
         admission_receipts: &receipts,
         host_build: &host_build,
         policy: &policy,
-        store: &store,
+        artifact_source: &artifact_source,
         base_instances: Vec::new(),
         bindings: Vec::new(),
     })
