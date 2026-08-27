@@ -10,7 +10,7 @@ The source was extracted from `LioRael/lenso` at monorepo commit
 retain their relevant Git history.
 
 `lenso-test` provides a deterministic `TestApp` that boots an immutable Plan
-through the real Kernel and native Adapter for Module integration tests.
+through the real Kernel and native Adapter for Plugin integration tests.
 
 ## Validation
 
@@ -68,7 +68,7 @@ Streams when their typed guest handles are dropped. Adapter-specific
 `wit-bindgen` imports are connected through the `wasm_host!` macro; application
 code does not parse envelopes or manage opaque stream identities.
 Descriptor drift, duplicate host codecs, unsupported Event Operations, missing
-entrypoints, and unadmitted Artifacts fail before Module activation.
+entrypoints, and unadmitted Artifacts fail before Plugin activation.
 
 Event support remains fail-closed. The Adapters do not emulate Stream or Event
 semantics through unbounded arrays, callbacks, or hidden runtime negotiation.

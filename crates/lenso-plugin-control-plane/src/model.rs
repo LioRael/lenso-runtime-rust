@@ -1,73 +1,11 @@
-use std::collections::BTreeMap;
-
-use lenso_plugin_bundle::{
-    CapabilityDeclaration, CapabilityRequirement, SupportChannel, TrustLevel,
-};
 use serde::{Deserialize, Serialize};
-
-/// App-local exact Plugin and Module Instance selection.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PluginSetLock {
-    pub schema_version: u32,
-    pub app_id: String,
-    pub plugins: Vec<LockedPlugin>,
-    pub instances: Vec<LockedInstance>,
-    #[serde(default)]
-    pub data_mounts: Vec<LockedDataMount>,
-    #[serde(default)]
-    pub approved_grants: Vec<ApprovedGrant>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct LockedPlugin {
-    pub plugin_id: String,
-    pub release_version: String,
-    pub manifest_digest: String,
-    #[serde(default)]
-    pub selected_features: Vec<String>,
-    #[serde(default)]
-    pub product_metadata_digests: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct LockedInstance {
-    pub plugin_id: String,
-    pub contribution_id: String,
-    pub instance_key: String,
-    pub implementation_variant: Option<String>,
-    pub configuration: String,
-    pub execution_lane: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct LockedDataMount {
-    pub plugin_id: String,
-    pub contribution_id: String,
-    pub interpreter_instance_key: String,
-    pub input_slot: String,
-    pub interpretation_schema_digest: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ApprovedGrant {
-    pub instance_key: String,
-    pub permission_request_id: String,
-    pub scope: serde_json::Value,
-    pub enforcement_kind: EnforcementKind,
-    pub enforcer_identity: String,
-}
 
 /// Truthful location at which one effective grant is enforced.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnforcementKind {
     Capability,
-    Module,
+    Plugin,
     Adapter,
     Host,
     TrustReviewOnly,
@@ -81,13 +19,13 @@ pub struct HostBuildManifest {
     pub app_id: String,
     pub host_executable_digest: String,
     pub target: String,
-    pub built_in_modules: Vec<BuiltInModule>,
+    pub embedded_plugins: Vec<EmbeddedPlugin>,
     pub adapter_profiles: Vec<AdapterProfile>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct BuiltInModule {
+pub struct EmbeddedPlugin {
     pub package_id: String,
     pub factory_identity: String,
     pub execution_class: String,
@@ -110,26 +48,6 @@ pub struct HostExecutionPolicy {
     pub app_id: String,
     pub host_build_manifest_digest: String,
     pub target: String,
-    pub classes: Vec<ClassPolicy>,
-    pub preference: Vec<String>,
-    #[serde(default)]
-    pub instance_overrides: Vec<InstanceExecutionOverride>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClassPolicy {
-    pub execution_class: String,
-    pub support_channels: Vec<SupportChannel>,
-    pub trust_levels: Vec<TrustLevel>,
-    pub profiles: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct InstanceExecutionOverride {
-    pub instance_key: String,
-    pub allowed_classes: Vec<String>,
     pub preference: Vec<String>,
 }
 
@@ -138,22 +56,9 @@ pub struct InstanceExecutionOverride {
 #[serde(deny_unknown_fields)]
 pub struct ResolvedArtifactSet {
     pub schema_version: u32,
-    pub plugin_set_lock_digest: String,
+    pub resolution_authority_digest: String,
     pub host_execution_policy_digest: String,
-    pub releases: Vec<ResolvedRelease>,
     pub artifacts: Vec<ResolvedArtifact>,
-    pub instances: Vec<ResolvedInstance>,
-    #[serde(default)]
-    pub data_mounts: Vec<ResolvedDataMount>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResolvedRelease {
-    pub plugin_id: String,
-    pub release_version: String,
-    pub manifest_digest: String,
-    pub admission_receipt_digest: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -167,44 +72,12 @@ pub struct ResolvedArtifact {
     pub target: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResolvedInstance {
-    pub instance_key: String,
-    pub plugin_id: String,
-    pub contribution_id: String,
-    pub implementation_variant: String,
-    pub artifact_id: Option<String>,
-    pub built_in_factory: Option<String>,
-    pub entrypoint: String,
-    pub execution_class: String,
-    pub target: String,
-    pub support_channel: SupportChannel,
-    pub selection_reason: String,
-    pub profiles: Vec<String>,
-    pub limits: BTreeMap<String, String>,
-    pub provided_capabilities: Vec<CapabilityDeclaration>,
-    pub required_capabilities: Vec<CapabilityRequirement>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResolvedDataMount {
-    pub plugin_id: String,
-    pub contribution_id: String,
-    pub artifact_id: String,
-    pub interpreter_instance_key: String,
-    pub input_slot: String,
-    pub content_schema_digest: String,
-    pub interpretation_schema_digest: String,
-}
-
 /// Effective, named enforcement authority for selected Instances.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectiveHostGrantSet {
     pub schema_version: u32,
-    pub plugin_set_lock_digest: String,
+    pub resolution_authority_digest: String,
     pub grants: Vec<EffectiveGrant>,
 }
 
@@ -228,7 +101,7 @@ pub struct AppGenerationSpec {
     pub host_build_manifest_digest: String,
     pub host_execution_policy_digest: String,
     pub resolved_plan_digest: String,
-    pub plugin_set_lock_digest: String,
+    pub resolution_authority_digest: String,
     pub resolved_artifact_set_digest: String,
     pub effective_host_grant_set_digest: String,
 }
@@ -262,7 +135,7 @@ pub struct StatefulRuntimeIdentity {
 pub struct StateCompatibilityReceipt {
     pub schema_version: u32,
     pub app_id: String,
-    pub module_instance_key: String,
+    pub plugin_instance_key: String,
     pub old_runtime_identity: String,
     pub new_runtime_identity: String,
     pub state_schema_id: String,

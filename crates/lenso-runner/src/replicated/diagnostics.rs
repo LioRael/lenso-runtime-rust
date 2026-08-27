@@ -27,7 +27,7 @@ impl LaneDiagnosticsState {
             .map(|lane| (lane.id().to_string(), AtomicU64::new(0)))
             .collect();
         let instance_queue_depths = plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .map(|instance| (instance.instance_key().to_owned(), AtomicU64::new(0)))
             .collect();
@@ -48,8 +48,8 @@ impl LaneDiagnosticsState {
     ) {
         let Some(caller_lane) = self
             .plan
-            .module_instance(caller)
-            .map(lenso_app_plan::ModuleInstancePlan::execution_lane)
+            .plugin_instance(caller)
+            .map(lenso_app_plan::PluginInstancePlan::execution_lane)
         else {
             return;
         };
@@ -58,8 +58,8 @@ impl LaneDiagnosticsState {
         }
         let Some(provider_lane) = self
             .plan
-            .module_instance(provider)
-            .map(lenso_app_plan::ModuleInstancePlan::execution_lane)
+            .plugin_instance(provider)
+            .map(lenso_app_plan::PluginInstancePlan::execution_lane)
         else {
             return;
         };
@@ -146,7 +146,7 @@ impl LaneDiagnosticsSnapshot {
         &self.lane_cpu_time
     }
 
-    /// Returns the latest bounded request queue depth for one Module Instance.
+    /// Returns the latest bounded request queue depth for one Plugin Instance.
     pub fn instance_queue_depth(&self, instance: &str) -> Option<usize> {
         self.instance_queue_depths.get(instance).copied()
     }

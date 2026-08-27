@@ -3,15 +3,15 @@
 use lenso::prelude::*;
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, ModuleInstancePlan,
+    ExecutionClassId, PluginInstancePlan,
 };
 use lenso_kernel::NativeExecutionAdapter;
-use lenso_native_adapter::NativeModuleRegistry;
+use lenso_native_adapter::NativePluginRegistry;
 
 #[doc(hidden)]
 pub mod __lenso_native_support {
     pub use lenso::__private::{
-        NativeEventEndpoint, NativeModuleInstance, NativeRequestEndpoint, NativeStreamEndpoint,
+        NativeEventEndpoint, NativePluginInstance, NativeRequestEndpoint, NativeStreamEndpoint,
     };
 }
 
@@ -120,7 +120,7 @@ mod conversation {
             Result<Result<Box<dyn NativeStreamSession>, Box<dyn Any>>, RuntimeFailure>,
         > {
             Box::pin(async {
-                Err(RuntimeFailure::ModuleFailure {
+                Err(RuntimeFailure::PluginFailure {
                     detail: "fixture stream is never opened".to_owned(),
                 })
             })
@@ -232,14 +232,14 @@ mod audit {
     pub trait AuditProvider {}
 }
 
-#[derive(Clone, Debug, serde::Deserialize, ModuleConfig)]
+#[derive(Clone, Debug, serde::Deserialize, PluginConfig)]
 struct ExampleConfig {
     message: String,
 }
 
-#[module]
+#[plugin]
 #[derive(Clone, Debug)]
-struct ExampleModule {
+struct ExamplePlugin {
     #[config]
     config: ExampleConfig,
     #[tasks]
@@ -247,17 +247,18 @@ struct ExampleModule {
 }
 
 #[provides(echo::Echo, conversation::Conversation, audit::Audit)]
-impl ExampleModule {}
+impl ExamplePlugin {}
 
 #[test]
-fn facade_owns_the_module_authoring_surface() {
+fn facade_owns_the_plugin_authoring_surface() {
     assert!(!ManagedTasks::default().is_active());
 
     let descriptor: lenso::__private::serde_json::Value =
-        lenso::__private::serde_json::from_str(MODULE_DESCRIPTOR_JSON)
+        lenso::__private::serde_json::from_str(PLUGIN_DESCRIPTOR_JSON)
             .expect("generated Descriptor should be valid JSON");
 
-    assert_eq!(descriptor["package_id"], "lenso");
+    assert_eq!(descriptor["plugin_id"], "lenso");
+    assert_eq!(descriptor["root_slot"], "test");
     assert_eq!(
         descriptor["provided_capabilities"][0]["capability_id"],
         "example.echo@1"
@@ -278,7 +279,7 @@ fn facade_owns_the_module_authoring_surface() {
         3
     );
 
-    let linked_factories = NativeModuleRegistry::new()
+    let linked_factories = NativePluginRegistry::new()
         .with_linked_factories()
         .factories()
         .filter(|factory| factory.package_id() == "lenso")
@@ -288,7 +289,7 @@ fn facade_owns_the_module_authoring_surface() {
 
 #[test]
 fn one_factory_aggregates_request_stream_and_event_endpoints() {
-    let provider = ModuleInstancePlan::new("example", "lenso")
+    let provider = PluginInstancePlan::new("example", "lenso")
         .with_configuration(r#"{"message":"hello"}"#)
         .with_capability(CapabilityEndpointPlan::new(
             "example.echo@1",
@@ -304,7 +305,7 @@ fn one_factory_aggregates_request_stream_and_event_endpoints() {
                 .with_event_operation("record")
                 .with_event_capacity(8),
         );
-    let consumer = ModuleInstancePlan::new("consumer", "fixture.consumer")
+    let consumer = PluginInstancePlan::new("consumer", "fixture.consumer")
         .with_execution_class(ExecutionClassId::new("fixture.external@1"))
         .with_requirement(CapabilityRequirementPlan::one("example.echo@1", "1.0.0"))
         .with_requirement(CapabilityRequirementPlan::one(
@@ -323,6 +324,6 @@ fn one_factory_aggregates_request_stream_and_event_endpoints() {
     .resolve()
     .expect("mixed Capability plan should resolve");
 
-    NativeExecutionAdapter::prepare(&NativeModuleRegistry::new().with_linked_factories(), &plan)
+    NativeExecutionAdapter::prepare(&NativePluginRegistry::new().with_linked_factories(), &plan)
         .expect("the one generated factory should expose all three endpoint kinds");
 }

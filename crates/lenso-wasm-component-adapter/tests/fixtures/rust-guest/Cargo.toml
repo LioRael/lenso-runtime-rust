@@ -6,6 +6,7 @@ publish = false
 
 [package.metadata.lenso]
 plugin-id = "test.echo"
+root-slot = "test"
 
 [lib]
 crate-type = ["cdylib"]

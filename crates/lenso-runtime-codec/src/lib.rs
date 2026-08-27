@@ -9,13 +9,13 @@ use std::{
 };
 
 use lenso_app_plan::{
-    CapabilityCardinality, ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
+    CapabilityCardinality, ExecutionClassId, PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_kernel::{
-    InvocationContext, ModuleDependencies, ModuleDependencyHandle, ModuleStreamDependencyHandle,
-    NativeRequestEndpoint, NativeStream, NativeStreamEndpoint, NativeStreamItem,
-    NativeStreamSession, PreparedBinding, PreparedNativeApp, PreparedNativeModule,
-    PreparedStreamBinding, RuntimeFailure, StreamCapability, StreamEvent,
+    InvocationContext, NativeRequestEndpoint, NativeStream, NativeStreamEndpoint, NativeStreamItem,
+    NativeStreamSession, PluginDependencies, PluginDependencyHandle, PluginStreamDependencyHandle,
+    PreparedBinding, PreparedNativeApp, PreparedNativePlugin, PreparedStreamBinding,
+    RuntimeFailure, StreamCapability, StreamEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -190,7 +190,7 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
     /// Invokes one exact Plan-bound host Request dependency from portable JSON.
     fn invoke_host_request(
         &self,
-        dependency: ModuleDependencyHandle,
+        dependency: PluginDependencyHandle,
         operation: String,
         request: Value,
         context: InvocationContext,
@@ -204,7 +204,7 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
     /// Opens one exact Plan-bound host Stream dependency from portable JSON.
     fn open_host_stream(
         &self,
-        dependency: ModuleStreamDependencyHandle,
+        dependency: PluginStreamDependencyHandle,
         operation: String,
         request: Value,
         context: InvocationContext,
@@ -217,7 +217,7 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
     }
 }
 
-/// Exact host outcome returned by a byte-oriented Module invocation.
+/// Exact host outcome returned by a byte-oriented Plugin invocation.
 #[derive(Debug)]
 pub enum JsonInvocationOutcome {
     /// Successful generated response value.
@@ -270,12 +270,12 @@ pub fn json_runtime_failure(error: &RuntimeFailure) -> Value {
             "kind": "cancelled",
             "request_id": request_id.to_string(),
         }),
-        RuntimeFailure::MissingModuleFactory { .. }
+        RuntimeFailure::MissingPluginFactory { .. }
         | RuntimeFailure::UnavailableExecutionClass { .. }
         | RuntimeFailure::InvalidResolvedPlan { .. }
         | RuntimeFailure::Internal { .. }
-        | RuntimeFailure::ModuleFailure { .. }
-        | RuntimeFailure::ModuleRestartExhausted { .. } => {
+        | RuntimeFailure::PluginFailure { .. }
+        | RuntimeFailure::PluginRestartExhausted { .. } => {
             serde_json::json!({ "kind": "internal" })
         }
     }
@@ -394,7 +394,7 @@ impl<C: StreamCapability> JsonHostStreamSession for TypedJsonHostStream<C> {
     }
 }
 
-/// Stable request-only guest ABI implemented by byte-oriented Module runtimes.
+/// Stable request-only guest ABI implemented by byte-oriented Plugin runtimes.
 pub const JSON_REQUEST_ABI_V1: &str = "lenso.json-request@1";
 
 /// Stable Request and bidirectional Stream guest ABI.
@@ -406,14 +406,14 @@ pub const JSON_HOST_IMPORTS_ABI_V1: &str = "lenso.json-host-imports@1";
 /// Exact guest declaration returned before an Adapter opens readiness.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct JsonModuleDescriptor {
+pub struct JsonPluginDescriptor {
     pub abi: String,
     pub capabilities: Vec<JsonCapabilityDescriptor>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_capabilities: Vec<JsonRequiredCapabilityDescriptor>,
 }
 
-/// One exact request Capability exposed by a guest Module.
+/// One exact request Capability exposed by a guest Plugin.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JsonCapabilityDescriptor {
@@ -424,7 +424,7 @@ pub struct JsonCapabilityDescriptor {
     pub stream_operations: Vec<String>,
 }
 
-/// One exact Capability requirement declared by a guest Module.
+/// One exact Capability requirement declared by a guest Plugin.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JsonRequiredCapabilityDescriptor {
@@ -434,9 +434,9 @@ pub struct JsonRequiredCapabilityDescriptor {
 }
 
 /// Derives the only guest declaration accepted for one resolved Instance.
-pub fn expected_json_module_descriptor(
-    instance: &ModuleInstancePlan,
-) -> Result<JsonModuleDescriptor, RuntimeFailure> {
+pub fn expected_json_plugin_descriptor(
+    instance: &PluginInstancePlan,
+) -> Result<JsonPluginDescriptor, RuntimeFailure> {
     let mut capabilities = Vec::with_capacity(instance.provided_capabilities().len());
     for descriptor in instance.provided_capabilities() {
         if !descriptor.event_operations().is_empty() {
@@ -484,7 +484,7 @@ pub fn expected_json_module_descriptor(
         })
         .collect::<Vec<_>>();
     sort_required_capabilities(&mut required_capabilities);
-    Ok(JsonModuleDescriptor {
+    Ok(JsonPluginDescriptor {
         abi: if !required_capabilities.is_empty() {
             JSON_HOST_IMPORTS_ABI_V1
         } else if capabilities
@@ -502,18 +502,18 @@ pub fn expected_json_module_descriptor(
 }
 
 /// Parses and compares a guest Ready declaration with exact Plan authority.
-pub fn validate_json_module_descriptor(
-    instance: &ModuleInstancePlan,
+pub fn validate_json_plugin_descriptor(
+    instance: &PluginInstancePlan,
     encoded: &str,
 ) -> Result<(), RuntimeFailure> {
-    let mut actual = serde_json::from_str::<JsonModuleDescriptor>(encoded).map_err(|_| {
+    let mut actual = serde_json::from_str::<JsonPluginDescriptor>(encoded).map_err(|_| {
         RuntimeFailure::ProtocolViolation {
             capability: "lenso.json-request@1",
         }
     })?;
     actual.capabilities.sort();
     sort_required_capabilities(&mut actual.required_capabilities);
-    let expected = expected_json_module_descriptor(instance)?;
+    let expected = expected_json_plugin_descriptor(instance)?;
     if actual != expected {
         return Err(RuntimeFailure::InvalidResolvedPlan {
             detail: format!(
@@ -582,7 +582,7 @@ pub enum JsonStreamFrame {
     TerminalError(Value),
 }
 
-/// One exact Plan binding exposed to a guest Module after lifecycle activation.
+/// One exact Plan binding exposed to a guest Plugin after lifecycle activation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct JsonHostBindingDescriptor {
     pub binding_id: u32,
@@ -597,8 +597,8 @@ pub struct JsonHostBindingDescriptor {
 struct JsonHostBinding {
     descriptor: JsonHostBindingDescriptor,
     codec: Rc<dyn JsonCapabilityCodec>,
-    request: Option<ModuleDependencyHandle>,
-    stream: Option<ModuleStreamDependencyHandle>,
+    request: Option<PluginDependencyHandle>,
+    stream: Option<PluginStreamDependencyHandle>,
 }
 
 impl std::fmt::Debug for JsonHostBinding {
@@ -645,7 +645,7 @@ impl JsonHostImports {
     }
 
     /// Installs only the dependencies materialized from the immutable Plan.
-    pub fn activate(&self, dependencies: &ModuleDependencies) -> Result<(), RuntimeFailure> {
+    pub fn activate(&self, dependencies: &PluginDependencies) -> Result<(), RuntimeFailure> {
         if self.bindings.borrow().is_some() {
             return Err(RuntimeFailure::Internal {
                 detail: "guest Capability imports were activated twice".to_owned(),
@@ -863,8 +863,8 @@ impl JsonHostImports {
 
 fn validate_host_binding(
     codec: &Rc<dyn JsonCapabilityCodec>,
-    request: Option<&ModuleDependencyHandle>,
-    stream: Option<&ModuleStreamDependencyHandle>,
+    request: Option<&PluginDependencyHandle>,
+    stream: Option<&PluginStreamDependencyHandle>,
 ) -> Result<(), RuntimeFailure> {
     for (capability, version) in request
         .map(|handle| (handle.capability_id(), handle.descriptor_version()))
@@ -1147,7 +1147,7 @@ impl NativeRequestEndpoint for JsonRequestEndpoint {
 
 /// Validates Plan descriptors against registered generated codecs.
 pub fn codecs_for_instance(
-    instance: &ModuleInstancePlan,
+    instance: &PluginInstancePlan,
     codecs: &BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
 ) -> Result<Vec<Rc<dyn JsonCapabilityCodec>>, RuntimeFailure> {
     let mut selected = Vec::with_capacity(instance.provided_capabilities().len());
@@ -1203,7 +1203,7 @@ pub fn codecs_for_instance(
 
 /// Validates every declared guest requirement against one registered generated codec.
 pub fn codecs_for_requirements(
-    instance: &ModuleInstancePlan,
+    instance: &PluginInstancePlan,
     codecs: &BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
 ) -> Result<Vec<Rc<dyn JsonCapabilityCodec>>, RuntimeFailure> {
     let mut selected = Vec::with_capacity(instance.required_capabilities().len());
@@ -1226,14 +1226,14 @@ pub fn codecs_for_requirements(
     Ok(selected)
 }
 
-/// Builds exact request bindings from Adapter-prepared Module generations.
+/// Builds exact request bindings from Adapter-prepared Plugin generations.
 pub fn prepare_request_app(
     plan: &ResolvedAppPlan,
     execution_class: &ExecutionClassId,
-    generations: BTreeMap<String, PreparedNativeModule>,
+    generations: BTreeMap<String, PreparedNativePlugin>,
 ) -> Result<PreparedNativeApp, RuntimeFailure> {
     let selected_instances = plan
-        .module_instances()
+        .plugin_instances()
         .iter()
         .filter(|instance| instance.execution_class() == execution_class)
         .map(|instance| instance.instance_key().to_owned())
@@ -1262,7 +1262,7 @@ pub fn prepare_request_app(
         }
     }
     for instance in plan
-        .module_instances()
+        .plugin_instances()
         .iter()
         .filter(|instance| selected_instances.contains(instance.instance_key()))
     {

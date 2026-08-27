@@ -605,8 +605,8 @@ dependencies = [
  "futures",
  "lenso-app-plan",
  "lenso-kernel",
- "lenso-module-authoring",
  "lenso-native-adapter",
+ "lenso-plugin-authoring",
  "lenso-test",
  "serde",
  "serde_json",
@@ -615,8 +615,7 @@ dependencies = [
 [[package]]
 name = "lenso-app-plan"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "867966536d627ef77b4811fe1736c4d97fcda4d95f3b15c07252a731e1568f0e"
+source = "git+https://github.com/LioRael/lenso?rev=d95e2240e83e9f4b90139a48ca97e067376f4fa9#d95e2240e83e9f4b90139a48ca97e067376f4fa9"
 dependencies = [
  "serde",
  "serde_json",
@@ -662,17 +661,11 @@ dependencies = [
 [[package]]
 name = "lenso-kernel"
 version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47feff489ef55f5b9f3b3b58518b69a6f1d4dd073fc8b641f2d5d7e3db451402"
+source = "git+https://github.com/LioRael/lenso?rev=d95e2240e83e9f4b90139a48ca97e067376f4fa9#d95e2240e83e9f4b90139a48ca97e067376f4fa9"
 dependencies = [
  "futures",
  "lenso-app-plan",
 ]
-
-[[package]]
-name = "lenso-module-authoring"
-version = "0.1.1"
-source = "git+https://github.com/LioRael/lenso-protocols?rev=1424ffe25f05c0d3aaf746fb7fd66b26b9f803e0#1424ffe25f05c0d3aaf746fb7fd66b26b9f803e0"
 
 [[package]]
 name = "lenso-native-adapter"
@@ -682,8 +675,8 @@ dependencies = [
  "inventory",
  "lenso-app-plan",
  "lenso-kernel",
- "lenso-module-authoring",
  "lenso-native-adapter-macros",
+ "lenso-plugin-authoring",
  "serde",
  "serde_json",
 ]
@@ -699,6 +692,11 @@ dependencies = [
  "syn 2.0.119",
  "toml",
 ]
+
+[[package]]
+name = "lenso-plugin-authoring"
+version = "0.1.1"
+source = "git+https://github.com/LioRael/lenso-protocols?rev=239381609da51158d0aae5991bc0d074f742ef42#239381609da51158d0aae5991bc0d074f742ef42"
 
 [[package]]
 name = "lenso-plugin-bundle"
@@ -787,8 +785,7 @@ dependencies = [
 [[package]]
 name = "lenso-runtime-conformance"
 version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ae4391bbc98d42ec95d7408cb44926a9e50d2838d6ba9d663c1cc193fff6672"
+source = "git+https://github.com/LioRael/lenso?rev=d95e2240e83e9f4b90139a48ca97e067376f4fa9#d95e2240e83e9f4b90139a48ca97e067376f4fa9"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -801,8 +798,8 @@ version = "0.1.0"
 dependencies = [
  "lenso-app-plan",
  "lenso-kernel",
- "lenso-module-authoring",
  "lenso-native-adapter",
+ "lenso-plugin-authoring",
 ]
 
 [[package]]

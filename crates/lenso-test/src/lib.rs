@@ -1,22 +1,22 @@
-//! A small deterministic App harness for testing real native Module composition.
+//! A small deterministic App harness for testing real native Plugin composition.
 //!
 //! `TestApp` keeps the same immutable Plan and native Adapter path as production,
-//! while removing Tokio setup and manual Driver plumbing from Module tests.
+//! while removing Tokio setup and manual Driver plumbing from Plugin tests.
 
 use std::{future::Future, time::Duration};
 
 use lenso_app_plan::ResolvedAppPlan;
 use lenso_kernel::{
-    DeterministicDriver, Kernel, ModuleDependencies, NativeApp, RuntimeFailure, ShutdownOutcome,
+    DeterministicDriver, Kernel, NativeApp, PluginDependencies, RuntimeFailure, ShutdownOutcome,
 };
-use lenso_module_authoring::CapabilityClient;
-use lenso_native_adapter::{NativeModuleFactory, NativeModuleRegistry};
+use lenso_native_adapter::{NativePluginFactory, NativePluginRegistry};
+use lenso_plugin_authoring::CapabilityClient;
 
 /// Builder for one deterministic native Test App.
 #[derive(Debug)]
 pub struct TestAppBuilder {
     plan: ResolvedAppPlan,
-    registry: NativeModuleRegistry,
+    registry: NativePluginRegistry,
 }
 
 impl TestAppBuilder {
@@ -24,13 +24,13 @@ impl TestAppBuilder {
     pub fn new(plan: ResolvedAppPlan) -> Self {
         Self {
             plan,
-            registry: NativeModuleRegistry::new(),
+            registry: NativePluginRegistry::new(),
         }
     }
 
     /// Adds a native factory available to this test Host.
     #[must_use]
-    pub fn with_factory(mut self, factory: impl NativeModuleFactory) -> Self {
+    pub fn with_factory(mut self, factory: impl NativePluginFactory) -> Self {
         self.registry = self.registry.with_factory(factory);
         self
     }
@@ -75,7 +75,7 @@ impl TestApp {
     /// Connects one generated Client from a consumer Instance's Plan-owned bindings.
     pub fn client<C>(&self, consumer_instance: &str) -> Result<C, RuntimeFailure>
     where
-        C: CapabilityClient<Dependencies = ModuleDependencies, Error = RuntimeFailure>,
+        C: CapabilityClient<Dependencies = PluginDependencies, Error = RuntimeFailure>,
     {
         let dependencies = self.app.dependencies(consumer_instance)?;
         C::from_dependencies(&dependencies)
@@ -99,7 +99,7 @@ impl TestApp {
 
 #[cfg(test)]
 mod tests {
-    use lenso_app_plan::ModuleInstancePlan;
+    use lenso_app_plan::PluginInstancePlan;
 
     use super::*;
 
@@ -112,15 +112,15 @@ mod tests {
     }
 
     #[test]
-    fn plan_selected_module_without_a_factory_fails_closed() {
+    fn plan_selected_plugin_without_a_factory_fails_closed() {
         let plan = ResolvedAppPlan::new(
-            vec![ModuleInstancePlan::new("missing", "test.missing")],
+            vec![PluginInstancePlan::new("missing", "test.missing")],
             vec![],
         );
 
         let error = TestApp::builder(plan).start().unwrap_err();
         assert!(
-            matches!(error, RuntimeFailure::MissingModuleFactory { instance, .. } if instance == "missing")
+            matches!(error, RuntimeFailure::MissingPluginFactory { instance, .. } if instance == "missing")
         );
     }
 }

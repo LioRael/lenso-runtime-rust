@@ -9,14 +9,14 @@ use cpu_time::ThreadTime;
 use futures::future::{LocalBoxFuture, join_all};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionLaneId, ExecutionLanePlan, ModuleInstancePlan,
+    ExecutionLaneId, ExecutionLanePlan, PluginInstancePlan,
 };
 use lenso_kernel::{
-    ActivateContext, ExecutionAdapterCatalog, InvocationContext, ModuleLifecycle, RuntimeFailure,
+    ActivateContext, ExecutionAdapterCatalog, InvocationContext, PluginLifecycle, RuntimeFailure,
 };
 use lenso_runner::{CrossLaneRequestCatalog, ReplicatedNativeApp};
 use lenso_runtime_conformance::{
-    ConformanceExecutionAdapter, ConformanceModule, ConformanceModuleFactory, PROBE_CAPABILITY_ID,
+    ConformanceExecutionAdapter, ConformancePlugin, ConformancePluginFactory, PROBE_CAPABILITY_ID,
     PROBE_DESCRIPTOR_VERSION, PROBE_OPERATION, Probe, ProbeEndpoint, ProbeInvocationError,
     ProbeProvider, ProbeProviderFactory, ProbeRequest, ProbeResponse,
 };
@@ -31,32 +31,32 @@ const CROSS_LANE_SAMPLE_ORDER: [bool; 10] = [
 #[derive(Debug)]
 struct EmptyConsumerFactory;
 
-impl ConformanceModuleFactory for EmptyConsumerFactory {
+impl ConformancePluginFactory for EmptyConsumerFactory {
     fn package_id(&self) -> &'static str {
         EMPTY_CONSUMER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _instance: &ModuleInstancePlan,
-    ) -> Result<ConformanceModule, RuntimeFailure> {
-        Ok(ConformanceModule::default())
+        _instance: &PluginInstancePlan,
+    ) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::default())
     }
 }
 
 #[derive(Debug)]
 struct CpuProbeFactory;
 
-impl ConformanceModuleFactory for CpuProbeFactory {
+impl ConformancePluginFactory for CpuProbeFactory {
     fn package_id(&self) -> &'static str {
         CPU_PROBE_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _instance: &ModuleInstancePlan,
-    ) -> Result<ConformanceModule, RuntimeFailure> {
-        Ok(ConformanceModule::new(vec![Rc::new(ProbeEndpoint::new(
+        _instance: &PluginInstancePlan,
+    ) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::new(vec![Rc::new(ProbeEndpoint::new(
             CpuProbe,
         ))]))
     }
@@ -92,16 +92,16 @@ struct BenchmarkConsumerFactory {
     reported: mpsc::Sender<f64>,
 }
 
-impl ConformanceModuleFactory for BenchmarkConsumerFactory {
+impl ConformancePluginFactory for BenchmarkConsumerFactory {
     fn package_id(&self) -> &'static str {
         BENCHMARK_CONSUMER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _instance: &ModuleInstancePlan,
-    ) -> Result<ConformanceModule, RuntimeFailure> {
-        Ok(ConformanceModule::with_lifecycle(
+        _instance: &PluginInstancePlan,
+    ) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::with_lifecycle(
             Vec::new(),
             BenchmarkConsumerLifecycle {
                 requests: self.requests,
@@ -119,8 +119,8 @@ struct BenchmarkConsumerLifecycle {
     reported: mpsc::Sender<f64>,
 }
 
-impl ModuleLifecycle for BenchmarkConsumerLifecycle {
-    fn activate(&self, context: ActivateContext) -> lenso_kernel::ModuleFuture {
+impl PluginLifecycle for BenchmarkConsumerLifecycle {
+    fn activate(&self, context: ActivateContext) -> lenso_kernel::PluginFuture {
         let client =
             lenso_runtime_conformance::ProbeClient::from_dependencies(context.dependencies());
         let requests = self.requests;
@@ -162,7 +162,7 @@ impl ModuleLifecycle for BenchmarkConsumerLifecycle {
 }
 
 fn benchmark_client_failure(error: &ProbeInvocationError) -> RuntimeFailure {
-    RuntimeFailure::ModuleFailure {
+    RuntimeFailure::PluginFailure {
         detail: format!("typed benchmark client failed: {error:?}"),
     }
 }
@@ -177,7 +177,7 @@ fn shared_nothing_plan(lane_count: usize) -> lenso_app_plan::ResolvedAppPlan {
         let provider = format!("provider-{index}");
         lanes.push(ExecutionLanePlan::new(&lane));
         instances.push(
-            ModuleInstancePlan::new(&consumer, EMPTY_CONSUMER_PACKAGE_ID)
+            PluginInstancePlan::new(&consumer, EMPTY_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new(&lane))
                 .with_requirement(CapabilityRequirementPlan::one(
                     PROBE_CAPABILITY_ID,
@@ -185,7 +185,7 @@ fn shared_nothing_plan(lane_count: usize) -> lenso_app_plan::ResolvedAppPlan {
                 )),
         );
         instances.push(
-            ModuleInstancePlan::new(&provider, CPU_PROBE_PACKAGE_ID)
+            PluginInstancePlan::new(&provider, CPU_PROBE_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new(&lane))
                 .with_capability(CapabilityEndpointPlan::new(
                     PROBE_CAPABILITY_ID,
@@ -250,13 +250,13 @@ fn request_transfer_plan(cross_lane: bool) -> lenso_app_plan::ResolvedAppPlan {
     let provider_lane = if cross_lane { "workers" } else { "frontend" };
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("consumer", EMPTY_CONSUMER_PACKAGE_ID)
+            PluginInstancePlan::new("consumer", EMPTY_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new(
+            PluginInstancePlan::new(
                 "provider",
                 lenso_runtime_conformance::PROBE_PROVIDER_PACKAGE_ID,
             )
@@ -296,20 +296,20 @@ fn request_adapters(lane: &ExecutionLaneId) -> ExecutionAdapterCatalog {
     ExecutionAdapterCatalog::single(registry)
 }
 
-fn module_request_transfer_plan(
+fn plugin_request_transfer_plan(
     cross_lane: bool,
     concurrency: usize,
 ) -> lenso_app_plan::ResolvedAppPlan {
     let provider_lane = if cross_lane { "workers" } else { "frontend" };
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("consumer", BENCHMARK_CONSUMER_PACKAGE_ID)
+            PluginInstancePlan::new("consumer", BENCHMARK_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new(
+            PluginInstancePlan::new(
                 "provider",
                 lenso_runtime_conformance::PROBE_PROVIDER_PACKAGE_ID,
             )
@@ -339,14 +339,14 @@ fn module_request_transfer_plan(
     .expect("module request transfer benchmark Plan should resolve")
 }
 
-async fn measure_module_request_throughput(
+async fn measure_plugin_request_throughput(
     cross_lane: bool,
     requests: usize,
     concurrency: usize,
 ) -> f64 {
     let (reported, report) = mpsc::channel();
     let app = ReplicatedNativeApp::start_with_transfers(
-        module_request_transfer_plan(cross_lane, concurrency),
+        plugin_request_transfer_plan(cross_lane, concurrency),
         move |lane| {
             let registry = match lane.as_str() {
                 "frontend" => ConformanceExecutionAdapter::new()
@@ -401,7 +401,7 @@ async fn measure_request_throughput(cross_lane: bool, requests: usize) -> f64 {
         / elapsed.as_secs_f64()
 }
 
-async fn measure_interleaved_module_samples(
+async fn measure_interleaved_plugin_samples(
     requests: usize,
     concurrency: usize,
 ) -> (Vec<f64>, Vec<f64>) {
@@ -409,7 +409,7 @@ async fn measure_interleaved_module_samples(
     let mut cross_lane = Vec::with_capacity(5);
     for cross_lane_sample in CROSS_LANE_SAMPLE_ORDER {
         let throughput =
-            measure_module_request_throughput(cross_lane_sample, requests, concurrency).await;
+            measure_plugin_request_throughput(cross_lane_sample, requests, concurrency).await;
         if cross_lane_sample {
             cross_lane.push(throughput);
         } else {
@@ -480,7 +480,7 @@ async fn lane_scaling_benchmark() {
 async fn request_transfer_benchmark() {
     let requests = 100_000;
     let (same_lane_samples, cross_lane_samples) =
-        measure_interleaved_module_samples(requests, 1).await;
+        measure_interleaved_plugin_samples(requests, 1).await;
     print_interleaved_report(requests, Some(1), &same_lane_samples, &cross_lane_samples);
 }
 
@@ -492,7 +492,7 @@ async fn concurrent_request_transfer_benchmark() {
     let requests = 100_000;
     let concurrency = 64;
     let (same_lane_samples, cross_lane_samples) =
-        measure_interleaved_module_samples(requests, concurrency).await;
+        measure_interleaved_plugin_samples(requests, concurrency).await;
     print_interleaved_report(
         requests,
         Some(concurrency),

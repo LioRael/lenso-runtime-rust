@@ -8,7 +8,8 @@ repository.workspace = true
 description = "Native Rust Execution Adapter for Lenso vNext."
 
 [package.metadata.lenso]
-package-id = "lenso.native-adapter"
+plugin-id = "lenso.native-adapter"
+root-slot = "test"
 
 [dependencies]
 futures.workspace = true
@@ -19,7 +20,7 @@ lenso-native-adapter-macros = { version = "0.1.3", path = "../lenso-native-adapt
 serde_json.workspace = true
 
 [dev-dependencies]
-lenso-module-authoring.workspace = true
+lenso-plugin-authoring.workspace = true
 serde.workspace = true
 
 [lints]

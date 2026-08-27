@@ -52,13 +52,13 @@ impl std::fmt::Debug for LensoHostV1 {
     }
 }
 
-/// Versioned root function table returned by the single `lenso_module_v1` symbol.
+/// Versioned root function table returned by the single `lenso_plugin_v1` symbol.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct LensoModuleV1 {
+pub struct LensoPluginV1 {
     pub abi_version: u32,
     pub struct_size: usize,
-    pub module_context: *mut c_void,
+    pub plugin_context: *mut c_void,
     pub descriptor_json: *const u8,
     pub descriptor_json_len: usize,
     pub invoke: Option<
@@ -77,10 +77,10 @@ pub struct LensoModuleV1 {
     pub reserved: [usize; 8],
 }
 
-impl std::fmt::Debug for LensoModuleV1 {
+impl std::fmt::Debug for LensoPluginV1 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("LensoModuleV1")
+            .debug_struct("LensoPluginV1")
             .field("abi_version", &self.abi_version)
             .field("struct_size", &self.struct_size)
             .field("descriptor_json_len", &self.descriptor_json_len)
@@ -88,7 +88,7 @@ impl std::fmt::Debug for LensoModuleV1 {
     }
 }
 
-type EntryPoint = unsafe extern "C" fn(*const LensoHostV1, *mut LensoModuleV1) -> u32;
+type EntryPoint = unsafe extern "C" fn(*const LensoHostV1, *mut LensoPluginV1) -> u32;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CapabilityAbiDescriptor {
@@ -103,7 +103,7 @@ struct AllocatorState {
 }
 
 pub(crate) struct LoadedDylib {
-    root: LensoModuleV1,
+    root: LensoPluginV1,
     allocator: Box<AllocatorState>,
     limits: DylibLimits,
     failed: std::cell::Cell<bool>,
@@ -144,11 +144,11 @@ impl LoadedDylib {
         let library = unsafe { libloading::Library::new(artifact.path()) }.map_err(abi_failure)?;
         // SAFETY: the only accepted public symbol has the documented V1 C function type.
         let entry =
-            unsafe { library.get::<EntryPoint>(b"lenso_module_v1\0") }.map_err(abi_failure)?;
-        let mut root = LensoModuleV1 {
+            unsafe { library.get::<EntryPoint>(b"lenso_plugin_v1\0") }.map_err(abi_failure)?;
+        let mut root = LensoPluginV1 {
             abi_version: 0,
             struct_size: 0,
-            module_context: ptr::null_mut(),
+            plugin_context: ptr::null_mut(),
             descriptor_json: ptr::null(),
             descriptor_json_len: 0,
             invoke: None,
@@ -160,11 +160,11 @@ impl LoadedDylib {
         let status = catch_unwind(AssertUnwindSafe(|| unsafe {
             entry(&raw const host, &raw mut root)
         }))
-        .map_err(|_| RuntimeFailure::ModuleFailure {
+        .map_err(|_| RuntimeFailure::PluginFailure {
             detail: "native dylib panicked while constructing its root table".to_owned(),
         })?;
         if status != STATUS_OK {
-            return module_failure("native dylib rejected V1 host table");
+            return plugin_failure("native dylib rejected V1 host table");
         }
         validate_root(&root, &limits)?;
         let descriptor_bytes = if root.descriptor_json_len == 0 {
@@ -194,10 +194,10 @@ impl LoadedDylib {
         request: &[u8],
     ) -> Result<JsonInvocationOutcome, RuntimeFailure> {
         if self.failed.get() || self.shutdown.get() {
-            return module_failure("native dylib generation is retired");
+            return plugin_failure("native dylib generation is retired");
         }
         if request.len() > self.limits.max_request_bytes {
-            return module_failure("native dylib request exceeds max_request_bytes");
+            return plugin_failure("native dylib request exceeds max_request_bytes");
         }
         let invoke = self.root.invoke.expect("root validation requires invoke");
         let mut output = LensoBufferV1 {
@@ -209,7 +209,7 @@ impl LoadedDylib {
         // The library is explicitly trusted and foreign unwinding is forbidden by contract.
         let status = catch_unwind(AssertUnwindSafe(|| unsafe {
             invoke(
-                self.root.module_context,
+                self.root.plugin_context,
                 capability.as_ptr(),
                 capability.len(),
                 operation.as_ptr(),
@@ -219,12 +219,12 @@ impl LoadedDylib {
                 &raw mut output,
             )
         }))
-        .map_err(|_| RuntimeFailure::ModuleFailure {
+        .map_err(|_| RuntimeFailure::PluginFailure {
             detail: "native dylib panicked across its invoke callback".to_owned(),
         })?;
         let bytes = self.take_output(output)?;
         let value =
-            serde_json::from_slice(&bytes).map_err(|error| RuntimeFailure::ModuleFailure {
+            serde_json::from_slice(&bytes).map_err(|error| RuntimeFailure::PluginFailure {
                 detail: bounded(format!("native dylib returned invalid JSON: {error}")),
             })?;
         match status {
@@ -232,7 +232,7 @@ impl LoadedDylib {
             STATUS_DOMAIN_ERROR => Ok(JsonInvocationOutcome::DomainError(value)),
             _ => {
                 self.failed.set(true);
-                module_failure("native dylib returned a fatal status")
+                plugin_failure("native dylib returned a fatal status")
             }
         }
     }
@@ -247,13 +247,13 @@ impl LoadedDylib {
         // SAFETY: the validated V1 root owns this callback and context. The callback is invoked
         // at most once before allocator state is dropped.
         let status = catch_unwind(AssertUnwindSafe(|| unsafe {
-            shutdown(self.root.module_context)
+            shutdown(self.root.plugin_context)
         }))
-        .map_err(|_| RuntimeFailure::ModuleFailure {
+        .map_err(|_| RuntimeFailure::PluginFailure {
             detail: "native dylib panicked across its shutdown callback".to_owned(),
         })?;
         if status != STATUS_OK {
-            return module_failure("native dylib shutdown returned a fatal status");
+            return plugin_failure("native dylib shutdown returned a fatal status");
         }
         if !self
             .allocator
@@ -262,7 +262,7 @@ impl LoadedDylib {
             .expect("allocator lock")
             .is_empty()
         {
-            return module_failure("native dylib leaked host-owned output buffers");
+            return plugin_failure("native dylib leaked host-owned output buffers");
         }
         Ok(())
     }
@@ -270,17 +270,17 @@ impl LoadedDylib {
     fn take_output(&self, output: LensoBufferV1) -> Result<Vec<u8>, RuntimeFailure> {
         if output.length > self.limits.max_result_bytes || output.length > output.capacity {
             self.failed.set(true);
-            return module_failure("native dylib returned an invalid output buffer length");
+            return plugin_failure("native dylib returned an invalid output buffer length");
         }
         let mut allocations = self.allocator.allocations.lock().expect("allocator lock");
         let mut allocation = allocations
             .remove(&(output.pointer as usize))
-            .ok_or_else(|| RuntimeFailure::ModuleFailure {
+            .ok_or_else(|| RuntimeFailure::PluginFailure {
                 detail: "native dylib returned a buffer not owned by the host allocator".to_owned(),
             })?;
         if allocation.capacity() != output.capacity {
             self.failed.set(true);
-            return module_failure("native dylib changed output buffer ownership metadata");
+            return plugin_failure("native dylib changed output buffer ownership metadata");
         }
         allocation.truncate(output.length);
         Ok(allocation)
@@ -293,15 +293,15 @@ impl Drop for LoadedDylib {
     }
 }
 
-fn validate_root(root: &LensoModuleV1, limits: &DylibLimits) -> Result<(), RuntimeFailure> {
+fn validate_root(root: &LensoPluginV1, limits: &DylibLimits) -> Result<(), RuntimeFailure> {
     if root.abi_version != ABI_VERSION
-        || root.struct_size != size_of::<LensoModuleV1>()
+        || root.struct_size != size_of::<LensoPluginV1>()
         || root.invoke.is_none()
         || root.reserved != [0; 8]
         || root.descriptor_json_len > limits.max_descriptor_bytes
         || (root.descriptor_json_len != 0 && root.descriptor_json.is_null())
     {
-        return module_failure("native dylib returned an invalid V1 root table");
+        return plugin_failure("native dylib returned an invalid V1 root table");
     }
     Ok(())
 }
@@ -329,7 +329,7 @@ fn validate_descriptor(
             detail: bounded(format!("native dylib descriptor is invalid: {error}")),
         })?;
     if descriptor.capabilities.len() != capabilities.len() {
-        return module_failure("native dylib Capability table does not match the Plan");
+        return plugin_failure("native dylib Capability table does not match the Plan");
     }
     for (declared, capability) in descriptor.capabilities.iter().zip(capabilities) {
         if declared.capability_id != capability.capability_id
@@ -433,13 +433,13 @@ const fn empty_buffer() -> LensoBufferV1 {
 }
 
 fn abi_failure(error: impl std::fmt::Display) -> RuntimeFailure {
-    RuntimeFailure::ModuleFailure {
+    RuntimeFailure::PluginFailure {
         detail: bounded(format!("native dylib ABI failure: {error}")),
     }
 }
 
-fn module_failure<T>(detail: impl Into<String>) -> Result<T, RuntimeFailure> {
-    Err(RuntimeFailure::ModuleFailure {
+fn plugin_failure<T>(detail: impl Into<String>) -> Result<T, RuntimeFailure> {
+    Err(RuntimeFailure::PluginFailure {
         detail: bounded(detail.into()),
     })
 }

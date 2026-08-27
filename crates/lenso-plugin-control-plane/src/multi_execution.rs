@@ -97,7 +97,7 @@ impl<B: CatalogFactory> CatalogFactory for MultiExecutionCatalogFactory<B> {
     ) -> Result<ExecutionAdapterCatalog, ControlPlaneError> {
         let selected: BTreeSet<_> = generation
             .plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .map(|instance| instance.execution_class().as_str())
             .collect();

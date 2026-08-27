@@ -1,7 +1,7 @@
 use std::{cell::Cell, cell::RefCell, time::Duration};
 
 use lenso::prelude::*;
-use lenso_app_plan::{ModuleInstancePlan, ResolvedAppPlan};
+use lenso_app_plan::{PluginInstancePlan, ResolvedAppPlan};
 use lenso_kernel::ShutdownOutcome;
 use lenso_test::TestApp;
 
@@ -12,7 +12,7 @@ thread_local! {
     static DEACTIVATE_OBSERVED_INACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
-#[module(consumer, lifecycle)]
+#[plugin(consumer, lifecycle)]
 #[derive(Clone, Debug)]
 struct Worker {
     #[tasks]
@@ -25,7 +25,7 @@ impl Lifecycle for Worker {
         assert!(self.tasks.is_active());
         TASKS.with(|tasks| tasks.replace(Some(self.tasks.clone())));
         if ACTIVATION_FAILS.get() {
-            return Err(RuntimeFailure::ModuleFailure {
+            return Err(RuntimeFailure::PluginFailure {
                 detail: "configured activation failure".to_owned(),
             });
         }
@@ -54,7 +54,7 @@ impl Lifecycle for Worker {
 }
 
 fn plan() -> ResolvedAppPlan {
-    ResolvedAppPlan::new(vec![ModuleInstancePlan::new("worker", "lenso")], Vec::new())
+    ResolvedAppPlan::new(vec![PluginInstancePlan::new("worker", "lenso")], Vec::new())
 }
 
 fn reset() {
@@ -72,7 +72,7 @@ fn task_field_tracks_activation_failure_cancellation_and_deactivation() {
         .with_linked_factories()
         .start()
         .unwrap_err();
-    assert!(matches!(error, RuntimeFailure::ModuleFailure { .. }));
+    assert!(matches!(error, RuntimeFailure::PluginFailure { .. }));
     TASKS.with(|tasks| {
         assert!(!tasks.borrow().as_ref().unwrap().is_active());
     });

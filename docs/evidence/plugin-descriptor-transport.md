@@ -57,5 +57,5 @@ This slice supports one request-style entry in one Rust-authored Wasm Plugin.
 It does not cover multiple entries, stream/event declarations, QuickJS,
 processes, native dynamic libraries, data-only Plugins, permissions, state
 migration, publisher Features, or binding templates. Runtime lowering into
-existing Module records remains private to the control plane; Kernel and
+existing Plugin records remains private to the control plane; Kernel and
 Resolved App Plan bytes are unchanged.

@@ -1,4 +1,4 @@
-//! Derivation macros for statically linked Lenso Plugins and built-in Modules.
+//! Derivation macros for statically linked Lenso Plugins and built-in Plugins.
 
 use std::{collections::BTreeSet, env, fs, path::PathBuf};
 
@@ -12,7 +12,7 @@ use syn::{
     punctuated::Punctuated,
 };
 
-struct ModuleAttributes {
+struct PluginAttributes {
     descriptor: Option<LitStr>,
     configuration_schema: Option<LitStr>,
     configuration_defaults: Option<LitStr>,
@@ -24,7 +24,7 @@ struct ModuleAttributes {
     consumer: bool,
 }
 
-impl syn::parse::Parse for ModuleAttributes {
+impl syn::parse::Parse for PluginAttributes {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
             return Ok(Self {
@@ -52,7 +52,7 @@ impl syn::parse::Parse for ModuleAttributes {
             let name: syn::Ident = input.parse()?;
             if name == "lifecycle" {
                 if lifecycle {
-                    return Err(syn::Error::new(name.span(), "duplicate Module attribute"));
+                    return Err(syn::Error::new(name.span(), "duplicate Plugin attribute"));
                 }
                 lifecycle = true;
                 if input.is_empty() {
@@ -63,7 +63,7 @@ impl syn::parse::Parse for ModuleAttributes {
             }
             if name == "consumer" {
                 if consumer {
-                    return Err(syn::Error::new(name.span(), "duplicate Module attribute"));
+                    return Err(syn::Error::new(name.span(), "duplicate Plugin attribute"));
                 }
                 consumer = true;
                 if input.is_empty() {
@@ -92,7 +92,7 @@ impl syn::parse::Parse for ModuleAttributes {
                 | "prepare"
                 | "activate"
                 | "deactivate" => {
-                    return Err(syn::Error::new(name.span(), "duplicate Module attribute"));
+                    return Err(syn::Error::new(name.span(), "duplicate Plugin attribute"));
                 }
                 _ => {
                     return Err(syn::Error::new(
@@ -120,16 +120,7 @@ impl syn::parse::Parse for ModuleAttributes {
     }
 }
 
-/// Derives native Module source and, for `consumer`, its factory registration.
-///
-/// The package identity comes from `[package.metadata.lenso].package-id` in the
-/// consuming crate's `Cargo.toml`; the package version remains Cargo-owned.
-#[proc_macro_attribute]
-pub fn module(attributes: TokenStream, item: TokenStream) -> TokenStream {
-    expand_authoring_item(attributes, item, "Module")
-}
-
-/// Derives native Plugin source through the same runtime lowering as [`module`].
+/// Derives native Plugin source and, for `consumer`, its factory registration.
 ///
 /// ```compile_fail
 /// use lenso_native_adapter_macros::plugin;
@@ -139,82 +130,62 @@ pub fn module(attributes: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn plugin(attributes: TokenStream, item: TokenStream) -> TokenStream {
-    expand_authoring_item(attributes, item, "Plugin")
+    expand_authoring_item(attributes, item)
 }
 
-fn expand_authoring_item(
-    attributes: TokenStream,
-    item: TokenStream,
-    authoring_unit: &str,
-) -> TokenStream {
-    let attributes = match syn::parse::<ModuleAttributes>(attributes) {
+fn expand_authoring_item(attributes: TokenStream, item: TokenStream) -> TokenStream {
+    let attributes = match syn::parse::<PluginAttributes>(attributes) {
         Ok(attributes) => attributes,
-        Err(error) => return authoring_error(&error, authoring_unit),
+        Err(error) => return authoring_error(&error),
     };
     let item = match syn::parse::<Item>(item) {
         Ok(item) => item,
-        Err(error) => return authoring_error(&error, authoring_unit),
+        Err(error) => return authoring_error(&error),
     };
     let expanded = match item {
-        Item::Fn(function) => expand_module_function(&attributes, &function),
-        Item::Struct(module) => expand_module_struct(&attributes, module),
+        Item::Fn(function) => expand_plugin_function(&attributes, &function),
+        Item::Struct(plugin) => expand_plugin_struct(&attributes, plugin),
         other => Err(syn::Error::new_spanned(
             other,
-            format!(
-                "a native {authoring_unit} must be declared by a factory function or a named-field struct"
-            ),
+            "a native Plugin must be declared by a factory function or a named-field struct",
         )),
     };
     match expanded {
         Ok(tokens) => tokens.into(),
-        Err(error) => authoring_error(&error, authoring_unit),
+        Err(error) => authoring_error(&error),
     }
 }
 
-fn authoring_error(error: &syn::Error, authoring_unit: &str) -> TokenStream {
-    let message = if authoring_unit == "Plugin" {
-        error.to_string().replace("Module", "Plugin")
-    } else {
-        error.to_string()
-    };
-    syn::Error::new(error.span(), message)
+fn authoring_error(error: &syn::Error) -> TokenStream {
+    syn::Error::new(error.span(), error.to_string())
         .into_compile_error()
         .into()
 }
 
-/// Derives the locked JSON Schema fragment consumed by a struct-level Module.
-#[proc_macro_derive(ModuleConfig, attributes(lenso, serde))]
-pub fn module_config(item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as DeriveInput);
-    expand_module_config(&input)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-/// Derives Plugin configuration through the retained Module runtime schema.
+/// Derives the locked JSON Schema fragment consumed by a struct-level Plugin.
 #[proc_macro_derive(PluginConfig, attributes(lenso, serde))]
 pub fn plugin_config(item: TokenStream) -> TokenStream {
     let input = match syn::parse::<DeriveInput>(item) {
         Ok(input) => input,
-        Err(error) => return authoring_error(&error, "Plugin"),
+        Err(error) => return authoring_error(&error),
     };
-    match expand_module_config(&input) {
+    match expand_plugin_config(&input) {
         Ok(tokens) => tokens.into(),
-        Err(error) => authoring_error(&error, "Plugin"),
+        Err(error) => authoring_error(&error),
     }
 }
 
-fn expand_module_config(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+fn expand_plugin_config(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
             input,
-            "Module configuration must be a named-field struct",
+            "Plugin configuration must be a named-field struct",
         ));
     };
     let Fields::Named(fields) = &data.fields else {
         return Err(syn::Error::new_spanned(
             &data.fields,
-            "Module configuration must use named fields",
+            "Plugin configuration must use named fields",
         ));
     };
     let mut properties = Map::new();
@@ -228,7 +199,7 @@ fn expand_module_config(input: &DeriveInput) -> syn::Result<proc_macro2::TokenSt
             if !configuration_value_matches_schema(&default, &schema) {
                 return Err(syn::Error::new_spanned(
                     field,
-                    "Module configuration default does not match the field type",
+                    "Plugin configuration default does not match the field type",
                 ));
             }
             defaults.insert(name.clone(), default);
@@ -276,13 +247,13 @@ fn configuration_field_default(attributes: &[Attribute]) -> syn::Result<Option<V
                 return Err(meta.error("expected `default = <JSON literal>`"));
             }
             if default.is_some() {
-                return Err(meta.error("duplicate Module configuration default"));
+                return Err(meta.error("duplicate Plugin configuration default"));
             }
             let expression = meta.value()?.parse::<Expr>()?;
             let encoded = quote!(#expression).to_string();
             default = Some(serde_json::from_str(&encoded).map_err(|error| {
                 meta.error(format!(
-                    "Module configuration default must be a JSON literal: {error}"
+                    "Plugin configuration default must be a JSON literal: {error}"
                 ))
             })?);
             Ok(())
@@ -330,7 +301,7 @@ fn configuration_type_schema(ty: &Type) -> syn::Result<(Value, bool)> {
     let Type::Path(path) = ty else {
         return Err(syn::Error::new_spanned(
             ty,
-            "Module configuration fields must use portable named types",
+            "Plugin configuration fields must use portable named types",
         ));
     };
     let segment = path.path.segments.last().expect("type paths are non-empty");
@@ -353,7 +324,7 @@ fn configuration_type_schema(ty: &Type) -> syn::Result<(Value, bool)> {
         _ => {
             return Err(syn::Error::new_spanned(
                 ty,
-                "unsupported Module configuration field type; use String, bool, a number, Option<T>, or Vec<T>",
+                "unsupported Plugin configuration field type; use String, bool, a number, Option<T>, or Vec<T>",
             ));
         }
     };
@@ -377,8 +348,8 @@ fn configuration_inner_schema(segment: &syn::PathSegment, ty: &Type) -> syn::Res
     configuration_type_schema(inner).map(|(schema, _)| schema)
 }
 
-fn expand_module_function(
-    attributes: &ModuleAttributes,
+fn expand_plugin_function(
+    attributes: &PluginAttributes,
     function: &ItemFn,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let sdk = authoring_crate();
@@ -400,16 +371,17 @@ fn expand_module_function(
     {
         return Err(syn::Error::new_spanned(
             function,
-            "struct-level Module attributes are unavailable on factory functions",
+            "struct-level Plugin attributes are unavailable on factory functions",
         ));
     }
-    let package_id = package_id()?;
+    let (plugin_id, root_slot) = plugin_metadata()?;
     let descriptor_json = attributes
         .descriptor
         .as_ref()
         .map(|descriptor| {
-            module_descriptor(
-                &package_id,
+            plugin_descriptor(
+                &plugin_id,
+                &root_slot,
                 descriptor,
                 attributes.configuration_schema.as_ref(),
                 attributes.configuration_defaults.as_ref(),
@@ -417,10 +389,10 @@ fn expand_module_function(
         })
         .transpose()?;
     let function_name = &function.sig.ident;
-    let generated_module = format_ident!("__lenso_module_{function_name}");
+    let generated_plugin = format_ident!("__lenso_plugin_{function_name}");
     let descriptor_constant = descriptor_json.map(|descriptor| {
         let artifact =
-            format!("LENSO_MODULE_DESCRIPTOR_V1\0{descriptor}\0END_LENSO_MODULE_DESCRIPTOR_V1");
+            format!("LENSO_PLUGIN_DESCRIPTOR_V1\0{descriptor}\0END_LENSO_PLUGIN_DESCRIPTOR_V1");
         let artifact_length = artifact.len();
         let artifact = proc_macro2::Literal::byte_string(artifact.as_bytes());
         let package_file_tracking = package_file_tracking([
@@ -428,35 +400,35 @@ fn expand_module_function(
             attributes.configuration_defaults.as_ref(),
         ]);
         quote! {
-            /// Generated package-owned Module Descriptor bytes.
-            pub const MODULE_DESCRIPTOR_JSON: &str = #descriptor;
+            /// Generated package-owned Plugin Descriptor bytes.
+            pub const PLUGIN_DESCRIPTOR_JSON: &str = #descriptor;
             /// Linker-retained descriptor artifact consumed without executing package code.
             #[doc(hidden)]
             #[used]
-            pub static __LENSO_MODULE_DESCRIPTOR_ARTIFACT: [u8; #artifact_length] = *#artifact;
+            pub static __LENSO_PLUGIN_DESCRIPTOR_ARTIFACT: [u8; #artifact_length] = *#artifact;
             #(#package_file_tracking)*
         }
     });
 
     Ok(quote! {
         /// Runtime package identity derived from Cargo package metadata.
-        pub const PACKAGE_ID: &str = #package_id;
+        pub const PACKAGE_ID: &str = #plugin_id;
         /// Exact linked Cargo package version.
         pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
         /// Exact Host Build identity for this linked package.
-        pub const FACTORY_IDENTITY: &str = concat!(#package_id, "@", env!("CARGO_PKG_VERSION"));
+        pub const FACTORY_IDENTITY: &str = concat!(#plugin_id, "@", env!("CARGO_PKG_VERSION"));
         #descriptor_constant
 
         #function
 
         #[doc(hidden)]
-        mod #generated_module {
+        mod #generated_plugin {
             #[derive(Clone, Copy, Debug, Default)]
             struct Factory;
 
-            impl #sdk::__private::NativeModuleFactory for Factory {
+            impl #sdk::__private::NativePluginFactory for Factory {
                 fn package_id(&self) -> &'static str {
-                    #package_id
+                    #plugin_id
                 }
 
                 fn package_version(&self) -> &'static str {
@@ -465,21 +437,24 @@ fn expand_module_function(
 
                 fn instantiate(
                     &self,
-                    context: #sdk::__private::NativeModuleFactoryContext<'_>,
+                    context: #sdk::__private::NativePluginFactoryContext<'_>,
                 ) -> Result<
-                    #sdk::__private::NativeModuleInstance,
+                    #sdk::__private::NativePluginInstance,
                     #sdk::__private::RuntimeFailure,
                 > {
                     super::#function_name(context)
                 }
             }
 
-            fn factory() -> std::rc::Rc<dyn #sdk::__private::NativeModuleFactory> {
+            fn factory() -> std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
                 std::rc::Rc::new(Factory)
             }
 
             #sdk::__private::__inventory::submit! {
-                #sdk::__private::LinkedNativeModuleFactory::new(factory)
+                #sdk::__private::LinkedNativePluginFactory::new(
+                    factory,
+                    super::PLUGIN_DESCRIPTOR_JSON,
+                )
             }
 
             // Make Cargo track the manifest that supplied the generated identity.
@@ -491,10 +466,10 @@ fn expand_module_function(
 /// Derives one or more provided Capability endpoints, one native factory, and static registration.
 ///
 /// Apply this to one inherent implementation containing the Capabilities' domain methods
-/// for a struct already annotated with [`module`]. Generated bindings lower the
+/// for a struct already annotated with [`plugin`]. Generated bindings lower the
 /// methods into the Adapter-facing Provider trait. Existing explicit Provider
 /// trait implementations remain supported as a single-Capability compatibility
-/// escape hatch. Multi-Capability Modules must use one inherent implementation.
+/// escape hatch. Multi-Capability Plugins must use one inherent implementation.
 #[proc_macro_attribute]
 pub fn provides(attributes: TokenStream, item: TokenStream) -> TokenStream {
     let capabilities =
@@ -524,7 +499,7 @@ fn capability_contributions(capabilities: &[Path]) -> syn::Result<Vec<Capability
             if !seen.insert(path) {
                 return Err(syn::Error::new_spanned(
                     capability,
-                    "a Module cannot provide the same Capability more than once",
+                    "a Plugin cannot provide the same Capability more than once",
                 ));
             }
             let mut namespace = capability.clone();
@@ -568,22 +543,22 @@ fn provided_module(
             "multiple Capabilities require one inherent impl containing their domain methods",
         ));
     }
-    let Type::Path(module_type) = implementation.self_ty.as_ref() else {
+    let Type::Path(plugin_type) = implementation.self_ty.as_ref() else {
         return Err(syn::Error::new_spanned(
             &implementation.self_ty,
-            "the Module provider type must be a path",
+            "the Plugin provider type must be a path",
         ));
     };
-    let module_ident = module_type
+    let plugin_ident = plugin_type
         .path
         .segments
         .last()
         .ok_or_else(|| {
-            syn::Error::new_spanned(&module_type.path, "the Module provider type is empty")
+            syn::Error::new_spanned(&plugin_type.path, "the Plugin provider type is empty")
         })?
         .ident
         .clone();
-    Ok((module_ident, implementation.trait_.is_none()))
+    Ok((plugin_ident, implementation.trait_.is_none()))
 }
 
 fn expand_provides(
@@ -591,7 +566,7 @@ fn expand_provides(
     implementation: &ItemImpl,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let sdk = authoring_crate();
-    let (module_ident, lowers_domain_methods) = provided_module(capabilities, implementation)?;
+    let (plugin_ident, lowers_domain_methods) = provided_module(capabilities, implementation)?;
     let contributions = capability_contributions(capabilities)?;
     let provided_descriptors = contributions
         .iter()
@@ -601,20 +576,20 @@ fn expand_provides(
             quote!(#namespace::#descriptor!())
         })
         .collect::<Vec<_>>();
-    let module_descriptor = format_ident!(
-        "__lenso_module_descriptor_{}",
-        snake(&module_ident.to_string())
+    let plugin_descriptor = format_ident!(
+        "__lenso_plugin_descriptor_{}",
+        snake(&plugin_ident.to_string())
     );
-    let generated_module = format_ident!("__lenso_provider_{}", snake(&module_ident.to_string()));
-    let lifecycle = format_ident!("__LensoLifecycle{module_ident}");
-    let artifact = format_ident!("__LENSO_MODULE_DESCRIPTOR_ARTIFACT_{module_ident}");
+    let generated_plugin = format_ident!("__lenso_provider_{}", snake(&plugin_ident.to_string()));
+    let lifecycle = format_ident!("__LensoLifecycle{plugin_ident}");
+    let artifact = format_ident!("__LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_{plugin_ident}");
     let provider_implementations = if lowers_domain_methods {
         contributions
             .iter()
             .map(|contribution| {
                 let namespace = &contribution.namespace;
                 let lower = &contribution.lower;
-                quote! { #namespace::#lower!(#module_ident, #sdk::__private); }
+                quote! { #namespace::#lower!(#plugin_ident, #sdk::__private); }
             })
             .collect::<Vec<_>>()
     } else {
@@ -625,7 +600,7 @@ fn expand_provides(
         let endpoints = &contribution.endpoints;
         quote! {
             let (provided_requests, provided_streams, provided_events) =
-                super::#namespace::#endpoints!(module.clone(), #sdk::__private);
+                super::#namespace::#endpoints!(plugin.clone(), #sdk::__private);
             request_endpoints.extend(provided_requests);
             stream_endpoints.extend(provided_streams);
             event_endpoints.extend(provided_events);
@@ -641,44 +616,44 @@ fn expand_provides(
         #implementation
         #(#provider_implementations)*
 
-        /// Generated package-owned Module Descriptor bytes.
-        pub const MODULE_DESCRIPTOR_JSON: &str = #module_descriptor!(
+        /// Generated package-owned Plugin Descriptor bytes.
+        pub const PLUGIN_DESCRIPTOR_JSON: &str = #plugin_descriptor!(
             #(#provided_descriptors),*
         );
         #[doc(hidden)]
-        const __LENSO_MODULE_DESCRIPTOR_ARTIFACT_TEXT: &str = concat!(
-            "LENSO_MODULE_DESCRIPTOR_V1\0",
-            #module_descriptor!(#(#provided_descriptors),*),
-            "\0END_LENSO_MODULE_DESCRIPTOR_V1",
+        const __LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_TEXT: &str = concat!(
+            "LENSO_PLUGIN_DESCRIPTOR_V1\0",
+            #plugin_descriptor!(#(#provided_descriptors),*),
+            "\0END_LENSO_PLUGIN_DESCRIPTOR_V1",
         );
         /// Linker-retained descriptor artifact consumed without executing package code.
         #[doc(hidden)]
         #[used]
-        pub static #artifact: &[u8] = __LENSO_MODULE_DESCRIPTOR_ARTIFACT_TEXT.as_bytes();
+        pub static #artifact: &[u8] = __LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_TEXT.as_bytes();
 
         #[doc(hidden)]
-        mod #generated_module {
+        mod #generated_plugin {
             #[derive(Clone, Copy, Debug, Default)]
             struct Factory;
 
-            impl #sdk::__private::NativeModuleFactory for Factory {
+            impl #sdk::__private::NativePluginFactory for Factory {
                 fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                 fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
 
                 fn instantiate(
                     &self,
-                    context: #sdk::__private::NativeModuleFactoryContext<'_>,
+                    context: #sdk::__private::NativePluginFactoryContext<'_>,
                 ) -> Result<
-                    #sdk::__private::NativeModuleInstance,
+                    #sdk::__private::NativePluginInstance,
                     #sdk::__private::RuntimeFailure,
                 > {
-                    let module = super::#module_ident::__lenso_construct(context)?;
-                    let lifecycle = super::#lifecycle { module: module.clone() };
+                    let plugin = super::#plugin_ident::__lenso_construct(context)?;
+                    let lifecycle = super::#lifecycle { plugin: plugin.clone() };
                     let mut request_endpoints = Vec::new();
                     let mut stream_endpoints = Vec::new();
                     let mut event_endpoints = Vec::new();
                     #(#endpoint_contributions)*
-                    Ok(#sdk::__private::NativeModuleInstance::with_all_endpoints(
+                    Ok(#sdk::__private::NativePluginInstance::with_all_endpoints(
                         request_endpoints,
                         stream_endpoints,
                         event_endpoints,
@@ -687,34 +662,37 @@ fn expand_provides(
                 }
             }
 
-            fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativeModuleFactory> {
+            fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
                 ::std::rc::Rc::new(Factory)
             }
 
             #sdk::__private::__inventory::submit! {
-                #sdk::__private::LinkedNativeModuleFactory::new(factory)
+                #sdk::__private::LinkedNativePluginFactory::new(
+                    factory,
+                    super::PLUGIN_DESCRIPTOR_JSON,
+                )
             }
         }
     })
 }
 
 #[allow(clippy::too_many_lines)]
-fn expand_module_struct(
-    attributes: &ModuleAttributes,
-    mut module: ItemStruct,
+fn expand_plugin_struct(
+    attributes: &PluginAttributes,
+    mut plugin: ItemStruct,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let sdk = authoring_crate();
     if attributes.descriptor.is_some() {
         return Err(syn::Error::new_spanned(
-            &module.ident,
-            "struct-level Modules derive their Descriptor; remove `descriptor`",
+            &plugin.ident,
+            "struct-level Plugins derive their Descriptor; remove `descriptor`",
         ));
     }
-    let package_id = package_id()?;
+    let (plugin_id, root_slot) = plugin_metadata()?;
     let package_version = env::var("CARGO_PKG_VERSION").map_err(|_| {
         syn::Error::new_spanned(
-            &module.ident,
-            "CARGO_PKG_VERSION is unavailable while deriving Module Descriptor",
+            &plugin.ident,
+            "CARGO_PKG_VERSION is unavailable while deriving Plugin Descriptor",
         )
     })?;
     let StructFields {
@@ -722,7 +700,7 @@ fn expand_module_struct(
         ports,
         tasks,
         initializers,
-    } = analyze_struct_fields(&mut module)?;
+    } = analyze_struct_fields(&mut plugin)?;
     let schema = configuration_schema_tokens(
         attributes.configuration_schema.as_ref(),
         config_type.as_ref(),
@@ -732,20 +710,20 @@ fn expand_module_struct(
         attributes.configuration_defaults.as_ref(),
         config_type.as_ref(),
     )?;
-    let name = &module.ident;
+    let name = &plugin.ident;
     let lifecycle_name = format_ident!("__LensoLifecycle{name}");
-    let descriptor_macro = format_ident!("__lenso_module_descriptor_{}", snake(&name.to_string()));
+    let descriptor_macro = format_ident!("__lenso_plugin_descriptor_{}", snake(&name.to_string()));
     let requirement_macros = ports
         .iter()
         .map(|(_, client, cardinality)| requirement_macro(client, *cardinality))
         .collect::<syn::Result<Vec<_>>>()?;
     let connect_ports = ports.iter().map(|(field, _, _)| {
-        quote! { self.module.#field.connect(context.dependencies())?; }
+        quote! { self.plugin.#field.connect(context.dependencies())?; }
     });
     let connect_tasks = task_connectors(&tasks);
     let requirement_parts = intersperse_commas(requirement_macros);
     let (prefix, after_schema, suffix, defaults) =
-        descriptor_affixes(&package_id, &package_version);
+        descriptor_affixes(&plugin_id, &package_version, &root_slot);
     let construct_configuration = if let Some(config_type) = &config_type {
         let validate = attributes
             .validate
@@ -754,37 +732,37 @@ fn expand_module_struct(
         quote! {
             let configuration = #sdk::__private::serde_json::from_str::<#config_type>(context.configuration())
                 .map_err(|error| #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
-                    detail: format!("invalid {} configuration: {error}", #package_id),
+                    detail: format!("invalid {} configuration: {error}", #plugin_id),
                 })?;
             #validate
         }
     } else {
         if attributes.configuration_schema.is_some() {
             return Err(syn::Error::new_spanned(
-                &module.ident,
+                &plugin.ident,
                 "`configuration_schema` requires a `#[config]` field",
             ));
         }
         if attributes.validate.is_some() {
             return Err(syn::Error::new_spanned(
-                &module.ident,
+                &plugin.ident,
                 "`validate` requires a `#[config]` field",
             ));
         }
         if attributes.configuration_defaults.is_some() {
             return Err(syn::Error::new_spanned(
-                &module.ident,
+                &plugin.ident,
                 "`configuration_defaults` requires a `#[config]` field",
             ));
         }
         quote! {
             let configuration = #sdk::__private::serde_json::from_str::<#sdk::__private::serde_json::Value>(context.configuration())
                 .map_err(|error| #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
-                    detail: format!("invalid {} configuration: {error}", #package_id),
+                    detail: format!("invalid {} configuration: {error}", #plugin_id),
                 })?;
             if !configuration.as_object().is_some_and(|object| object.is_empty()) {
                 return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
-                    detail: format!("{} does not accept configuration", #package_id),
+                    detail: format!("{} does not accept configuration", #plugin_id),
                 });
             }
         }
@@ -795,30 +773,30 @@ fn expand_module_struct(
             || attributes.deactivate.is_some())
     {
         return Err(syn::Error::new_spanned(
-            &module.ident,
+            &plugin.ident,
             "`lifecycle` replaces the `prepare`, `activate`, and `deactivate` function attributes",
         ));
     }
     let prepare = if attributes.lifecycle {
         quote! {
-            let module = self.module.clone();
-            Box::pin(async move { #sdk::Lifecycle::prepare(&module, context).await })
+            let plugin = self.plugin.clone();
+            Box::pin(async move { #sdk::Lifecycle::prepare(&plugin, context).await })
         }
     } else {
         hook(attributes.prepare.as_ref(), &sdk)
     };
     let activate_hook = if attributes.lifecycle {
         quote! {
-            let module = self.module.clone();
-            Box::pin(async move { #sdk::Lifecycle::activate(&module, context).await })
+            let plugin = self.plugin.clone();
+            Box::pin(async move { #sdk::Lifecycle::activate(&plugin, context).await })
         }
     } else {
         hook(attributes.activate.as_ref(), &sdk)
     };
     let deactivate_hook = if attributes.lifecycle {
         quote! {
-            let module = self.module.clone();
-            Box::pin(async move { #sdk::Lifecycle::deactivate(&module, context).await })
+            let plugin = self.plugin.clone();
+            Box::pin(async move { #sdk::Lifecycle::deactivate(&plugin, context).await })
         }
     } else {
         hook(attributes.deactivate.as_ref(), &sdk)
@@ -828,7 +806,7 @@ fn expand_module_struct(
         activate_hook
     } else {
         quote! {
-            let module = self.module.clone();
+            let plugin = self.plugin.clone();
             let activation = { #activate_hook };
             Box::pin(async move {
                 let result = activation.await;
@@ -844,7 +822,7 @@ fn expand_module_struct(
         deactivate_hook
     } else {
         quote! {
-            let module = self.module.clone();
+            let plugin = self.plugin.clone();
             #(#disconnect_tasks)*
             let deactivation = { #deactivate_hook };
             deactivation
@@ -855,53 +833,56 @@ fn expand_module_struct(
         attributes.configuration_defaults.as_ref(),
     ]);
     let consumer_finalizer = if attributes.consumer {
-        let generated_module = format_ident!("__lenso_consumer_{}", snake(&name.to_string()));
-        let artifact = format_ident!("__LENSO_MODULE_DESCRIPTOR_ARTIFACT_{name}");
+        let generated_plugin = format_ident!("__lenso_consumer_{}", snake(&name.to_string()));
+        let artifact = format_ident!("__LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_{name}");
         Some(quote! {
-            /// Generated package-owned Module Descriptor bytes.
-            pub const MODULE_DESCRIPTOR_JSON: &str = #descriptor_macro!();
+            /// Generated package-owned Plugin Descriptor bytes.
+            pub const PLUGIN_DESCRIPTOR_JSON: &str = #descriptor_macro!();
             #[doc(hidden)]
-            const __LENSO_MODULE_DESCRIPTOR_ARTIFACT_TEXT: &str = concat!(
-                "LENSO_MODULE_DESCRIPTOR_V1\0",
+            const __LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_TEXT: &str = concat!(
+                "LENSO_PLUGIN_DESCRIPTOR_V1\0",
                 #descriptor_macro!(),
-                "\0END_LENSO_MODULE_DESCRIPTOR_V1",
+                "\0END_LENSO_PLUGIN_DESCRIPTOR_V1",
             );
             /// Linker-retained descriptor artifact consumed without executing package code.
             #[doc(hidden)]
             #[used]
-            pub static #artifact: &[u8] = __LENSO_MODULE_DESCRIPTOR_ARTIFACT_TEXT.as_bytes();
+            pub static #artifact: &[u8] = __LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_TEXT.as_bytes();
 
             #[doc(hidden)]
-            mod #generated_module {
+            mod #generated_plugin {
                 #[derive(Clone, Copy, Debug, Default)]
                 struct Factory;
 
-                impl #sdk::__private::NativeModuleFactory for Factory {
+                impl #sdk::__private::NativePluginFactory for Factory {
                     fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                     fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
 
                     fn instantiate(
                         &self,
-                        context: #sdk::__private::NativeModuleFactoryContext<'_>,
+                        context: #sdk::__private::NativePluginFactoryContext<'_>,
                     ) -> Result<
-                        #sdk::__private::NativeModuleInstance,
+                        #sdk::__private::NativePluginInstance,
                         #sdk::__private::RuntimeFailure,
                     > {
-                        let module = super::#name::__lenso_construct(context)?;
-                        let lifecycle = super::#lifecycle_name { module };
-                        Ok(#sdk::__private::NativeModuleInstance::with_lifecycle(
+                        let plugin = super::#name::__lenso_construct(context)?;
+                        let lifecycle = super::#lifecycle_name { plugin };
+                        Ok(#sdk::__private::NativePluginInstance::with_lifecycle(
                             Vec::new(),
                             lifecycle,
                         ))
                     }
                 }
 
-                fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativeModuleFactory> {
+                fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
                     ::std::rc::Rc::new(Factory)
                 }
 
                 #sdk::__private::__inventory::submit! {
-                    #sdk::__private::LinkedNativeModuleFactory::new(factory)
+                    #sdk::__private::LinkedNativePluginFactory::new(
+                        factory,
+                        super::PLUGIN_DESCRIPTOR_JSON,
+                    )
                 }
             }
         })
@@ -911,13 +892,13 @@ fn expand_module_struct(
 
     Ok(quote! {
         /// Runtime package identity derived from Cargo package metadata.
-        pub const PACKAGE_ID: &str = #package_id;
+        pub const PACKAGE_ID: &str = #plugin_id;
         /// Exact linked Cargo package version.
         pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
         /// Exact Host Build identity for this linked package.
-        pub const FACTORY_IDENTITY: &str = concat!(#package_id, "@", env!("CARGO_PKG_VERSION"));
+        pub const FACTORY_IDENTITY: &str = concat!(#plugin_id, "@", env!("CARGO_PKG_VERSION"));
 
-        #module
+        #plugin
 
         #[doc(hidden)]
         macro_rules! #descriptor_macro {
@@ -932,11 +913,11 @@ fn expand_module_struct(
         impl #name {
             #[doc(hidden)]
             fn __lenso_construct(
-                context: #sdk::__private::NativeModuleFactoryContext<'_>,
+                context: #sdk::__private::NativePluginFactoryContext<'_>,
             ) -> Result<Self, #sdk::__private::RuntimeFailure> {
                 if context.entrypoint() != "default" {
                     return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
-                        detail: format!("unsupported {} entrypoint {}", #package_id, context.entrypoint()),
+                        detail: format!("unsupported {} entrypoint {}", #plugin_id, context.entrypoint()),
                     });
                 }
                 #construct_configuration
@@ -947,15 +928,15 @@ fn expand_module_struct(
         #[doc(hidden)]
         #[derive(Clone, Debug)]
         struct #lifecycle_name {
-            module: #name,
+            plugin: #name,
         }
 
-        impl #sdk::__private::ModuleLifecycle for #lifecycle_name {
-            fn prepare(&self, context: #sdk::__private::PrepareContext) -> #sdk::__private::ModuleFuture {
+        impl #sdk::__private::PluginLifecycle for #lifecycle_name {
+            fn prepare(&self, context: #sdk::__private::PrepareContext) -> #sdk::__private::PluginFuture {
                 #prepare
             }
 
-            fn activate(&self, context: #sdk::__private::ActivateContext) -> #sdk::__private::ModuleFuture {
+            fn activate(&self, context: #sdk::__private::ActivateContext) -> #sdk::__private::PluginFuture {
                 let connected = (|| -> Result<(), #sdk::__private::RuntimeFailure> {
                     #(#connect_ports)*
                     #(#connect_tasks)*
@@ -967,7 +948,7 @@ fn expand_module_struct(
                 #activate
             }
 
-            fn deactivate(&self, context: #sdk::__private::DeactivateContext) -> #sdk::__private::ModuleFuture {
+            fn deactivate(&self, context: #sdk::__private::DeactivateContext) -> #sdk::__private::PluginFuture {
                 #deactivate
             }
         }
@@ -980,12 +961,16 @@ fn expand_module_struct(
 }
 
 fn descriptor_affixes(
-    package_id: &str,
+    plugin_id: &str,
     package_version: &str,
+    root_slot: &str,
 ) -> (String, &'static str, &'static str, &'static str) {
     let prefix = format!(
-        "{{\"package_id\":{},\"package_revision\":{},\"entrypoint\":\"default\",\"configuration_schema\":",
-        serde_json::to_string(package_id).expect("package ID serializes"),
+        "{{\"plugin_id\":{},\"release_version\":{},\"root_slot\":{},\"runtime_package_id\":{},\"runtime_package_revision\":{},\"entrypoint\":\"default\",\"configuration_schema\":",
+        serde_json::to_string(plugin_id).expect("Plugin ID serializes"),
+        serde_json::to_string(package_version).expect("package version serializes"),
+        serde_json::to_string(root_slot).expect("root Slot serializes"),
+        serde_json::to_string(plugin_id).expect("runtime package ID serializes"),
         serde_json::to_string(package_version).expect("package version serializes"),
     );
     let after_schema = ",\"provided_capabilities\":[";
@@ -1114,11 +1099,11 @@ enum PortCardinality {
     Many,
 }
 
-fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
-    let Fields::Named(fields) = &mut module.fields else {
+fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
+    let Fields::Named(fields) = &mut plugin.fields else {
         return Err(syn::Error::new_spanned(
-            &module.fields,
-            "a struct-level Module requires named fields",
+            &plugin.fields,
+            "a struct-level Plugin requires named fields",
         ));
     };
     let mut config = None;
@@ -1132,14 +1117,14 @@ fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
         if is_config && is_tasks {
             return Err(syn::Error::new_spanned(
                 field,
-                "a Module field cannot be both `#[config]` and `#[tasks]`",
+                "a Plugin field cannot be both `#[config]` and `#[tasks]`",
             ));
         }
         if is_config {
             if config.replace(field.ty.clone()).is_some() {
                 return Err(syn::Error::new_spanned(
                     field,
-                    "a Module has exactly one `#[config]` field",
+                    "a Plugin has exactly one `#[config]` field",
                 ));
             }
             initializers.push(quote!(#name: configuration));
@@ -1153,7 +1138,7 @@ fn analyze_struct_fields(module: &mut ItemStruct) -> syn::Result<StructFields> {
             if !tasks.is_empty() {
                 return Err(syn::Error::new_spanned(
                     field,
-                    "a Module has at most one `#[tasks]` field",
+                    "a Plugin has at most one `#[tasks]` field",
                 ));
             }
             tasks.push(name.clone());
@@ -1195,7 +1180,7 @@ fn task_connectors(tasks: &[syn::Ident]) -> Vec<proc_macro2::TokenStream> {
     tasks
         .iter()
         .map(|field| {
-            quote! { self.module.#field.__lenso_connect(context.tasks().clone())?; }
+            quote! { self.plugin.#field.__lenso_connect(context.tasks().clone())?; }
         })
         .collect()
 }
@@ -1203,7 +1188,7 @@ fn task_connectors(tasks: &[syn::Ident]) -> Vec<proc_macro2::TokenStream> {
 fn task_disconnectors(tasks: &[syn::Ident]) -> Vec<proc_macro2::TokenStream> {
     tasks
         .iter()
-        .map(|field| quote! { module.#field.__lenso_disconnect(); })
+        .map(|field| quote! { plugin.#field.__lenso_disconnect(); })
         .collect()
 }
 
@@ -1285,7 +1270,7 @@ fn intersperse_commas(values: Vec<proc_macro2::TokenStream>) -> Vec<proc_macro2:
 fn hook(path: Option<&Path>, sdk: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     path.map_or_else(
         || quote!(Box::pin(#sdk::__private::futures::future::ready(Ok(())))),
-        |path| quote!(#path(&self.module, &context)),
+        |path| quote!(#path(&self.plugin, &context)),
     )
 }
 
@@ -1321,8 +1306,9 @@ fn snake(value: &str) -> String {
     output
 }
 
-fn module_descriptor(
-    package_id: &str,
+fn plugin_descriptor(
+    plugin_id: &str,
+    root_slot: &str,
     descriptor: &LitStr,
     configuration_schema: Option<&LitStr>,
     configuration_defaults: Option<&LitStr>,
@@ -1330,25 +1316,25 @@ fn module_descriptor(
     let supplied: Value = serde_json::from_str(&descriptor.value()).map_err(|error| {
         syn::Error::new(
             descriptor.span(),
-            format!("Module Descriptor input is not valid JSON: {error}"),
+            format!("Plugin Descriptor input is not valid JSON: {error}"),
         )
     })?;
     let mut supplied = supplied.as_object().cloned().ok_or_else(|| {
         syn::Error::new(
             descriptor.span(),
-            "Module Descriptor input must be an object",
+            "Plugin Descriptor input must be an object",
         )
     })?;
     if supplied.contains_key("configuration_schema") {
         return Err(syn::Error::new(
             descriptor.span(),
-            "Module Descriptor input cannot contain `configuration_schema`; use the package-owned schema path attribute",
+            "Plugin Descriptor input cannot contain `configuration_schema`; use the package-owned schema path attribute",
         ));
     }
     if supplied.contains_key("configuration_defaults") {
         return Err(syn::Error::new(
             descriptor.span(),
-            "Module Descriptor input cannot contain `configuration_defaults`; use the package-owned defaults path attribute",
+            "Plugin Descriptor input cannot contain `configuration_defaults`; use the package-owned defaults path attribute",
         ));
     }
     if let Some(schema_path) = configuration_schema {
@@ -1377,8 +1363,11 @@ fn module_descriptor(
         supplied.insert("configuration_defaults".to_owned(), defaults);
     }
     for owned in [
-        "package_id",
-        "package_revision",
+        "plugin_id",
+        "release_version",
+        "root_slot",
+        "runtime_package_id",
+        "runtime_package_revision",
         "entrypoint",
         "execution_class",
         "restart_policy",
@@ -1387,19 +1376,20 @@ fn module_descriptor(
         if supplied.contains_key(owned) {
             return Err(syn::Error::new(
                 descriptor.span(),
-                format!("Module Descriptor input cannot override generated field `{owned}`"),
+                format!("Plugin Descriptor input cannot override generated field `{owned}`"),
             ));
         }
     }
     let package_version = env::var("CARGO_PKG_VERSION").map_err(|_| {
         syn::Error::new(
             descriptor.span(),
-            "CARGO_PKG_VERSION is unavailable while deriving Module Descriptor",
+            "CARGO_PKG_VERSION is unavailable while deriving Plugin Descriptor",
         )
     })?;
-    Ok(complete_module_descriptor(
-        package_id,
+    Ok(complete_plugin_descriptor(
+        plugin_id,
         &package_version,
+        root_slot,
         supplied,
     ))
 }
@@ -1435,7 +1425,7 @@ fn read_package_json(path: &LitStr, label: &str) -> syn::Result<Value> {
     {
         return Err(syn::Error::new(
             path.span(),
-            format!("{label} path must stay inside the Module package"),
+            format!("{label} path must stay inside the Plugin package"),
         ));
     }
     let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
@@ -1573,14 +1563,21 @@ fn validate_default_array(
     Ok(())
 }
 
-fn complete_module_descriptor(
-    package_id: &str,
+fn complete_plugin_descriptor(
+    plugin_id: &str,
     package_version: &str,
+    root_slot: &str,
     mut supplied: Map<String, Value>,
 ) -> String {
     let mut generated = Map::new();
-    generated.insert("package_id".to_owned(), json!(package_id));
-    generated.insert("package_revision".to_owned(), json!(package_version));
+    generated.insert("plugin_id".to_owned(), json!(plugin_id));
+    generated.insert("release_version".to_owned(), json!(package_version));
+    generated.insert("root_slot".to_owned(), json!(root_slot));
+    generated.insert("runtime_package_id".to_owned(), json!(plugin_id));
+    generated.insert(
+        "runtime_package_revision".to_owned(),
+        json!(package_version),
+    );
     generated.insert("entrypoint".to_owned(), json!("default"));
     for (key, value) in std::mem::take(&mut supplied) {
         generated.insert(key, value);
@@ -1599,10 +1596,10 @@ fn complete_module_descriptor(
     );
     generated.insert("criticality".to_owned(), json!("non_critical"));
     serde_json::to_string(&Value::Object(generated))
-        .expect("generated Module Descriptor values must serialize")
+        .expect("generated Plugin Descriptor values must serialize")
 }
 
-fn package_id() -> syn::Result<String> {
+fn plugin_metadata() -> syn::Result<(String, String)> {
     let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
@@ -1622,19 +1619,29 @@ fn package_id() -> syn::Result<String> {
             format!("failed to parse {}: {error}", manifest_path.display()),
         )
     })?;
-    manifest
+    let lenso = manifest
         .get("package")
         .and_then(|package| package.get("metadata"))
         .and_then(|metadata| metadata.get("lenso"))
-        .and_then(|lenso| lenso.get("package-id"))
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| metadata_error("missing `[package.metadata.lenso]` in Cargo.toml"))?;
+    let plugin_id = lenso
+        .get("plugin-id")
         .and_then(toml::Value::as_str)
-        .map(str::to_owned)
         .ok_or_else(|| {
-            syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "missing `[package.metadata.lenso] package-id = \"...\"` in Cargo.toml",
-            )
-        })
+            metadata_error("missing `plugin-id = \"...\"` in `[package.metadata.lenso]`")
+        })?;
+    let root_slot = lenso
+        .get("root-slot")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| {
+            metadata_error("missing `root-slot = \"...\"` in `[package.metadata.lenso]`")
+        })?;
+    Ok((plugin_id.to_owned(), root_slot.to_owned()))
+}
+
+fn metadata_error(detail: &str) -> syn::Error {
+    syn::Error::new(proc_macro2::Span::call_site(), detail)
 }
 
 #[cfg(test)]
@@ -1649,11 +1656,13 @@ mod tests {
             "required_capabilities": []
         }))
         .unwrap();
-        let descriptor = complete_module_descriptor("example.tool", "1.2.3", supplied);
+        let descriptor = complete_plugin_descriptor("example.tool", "1.2.3", "tools", supplied);
         let descriptor: Value = serde_json::from_str(&descriptor).unwrap();
 
-        assert_eq!(descriptor["package_id"], "example.tool");
-        assert_eq!(descriptor["package_revision"], "1.2.3");
+        assert_eq!(descriptor["plugin_id"], "example.tool");
+        assert_eq!(descriptor["release_version"], "1.2.3");
+        assert_eq!(descriptor["runtime_package_id"], "example.tool");
+        assert_eq!(descriptor["runtime_package_revision"], "1.2.3");
         assert_eq!(descriptor["entrypoint"], "default");
         assert_eq!(descriptor["execution_class"], "lenso.native-rust@1");
         assert_eq!(descriptor["restart_policy"]["mode"], "never");
@@ -1698,8 +1707,14 @@ mod tests {
             proc_macro2::Span::call_site(),
         );
 
-        let generated =
-            module_descriptor("example.tool", &descriptor, Some(&schema), Some(&defaults)).unwrap();
+        let generated = plugin_descriptor(
+            "example.tool",
+            "tools",
+            &descriptor,
+            Some(&schema),
+            Some(&defaults),
+        )
+        .unwrap();
         let generated: Value = serde_json::from_str(&generated).unwrap();
         assert_eq!(
             generated["configuration_defaults"],
@@ -1716,7 +1731,7 @@ mod tests {
             }
         };
 
-        let error = expand_module_config(&input).unwrap_err();
+        let error = expand_plugin_config(&input).unwrap_err();
         assert!(error.to_string().contains("does not match the field type"));
     }
 
@@ -1757,13 +1772,13 @@ mod tests {
 
     #[test]
     fn managed_tasks_fields_are_initialized_and_connected_on_activate() {
-        let mut module: ItemStruct = parse_quote! {
+        let mut plugin: ItemStruct = parse_quote! {
             struct Worker {
                 #[tasks]
                 tasks: ManagedTasks,
             }
         };
-        let fields = analyze_struct_fields(&mut module).unwrap();
+        let fields = analyze_struct_fields(&mut plugin).unwrap();
 
         let task_field: syn::Ident = parse_quote!(tasks);
         assert_eq!(fields.tasks, vec![task_field]);
@@ -1773,19 +1788,19 @@ mod tests {
         );
         assert_eq!(
             task_connectors(&fields.tasks)[0].to_string(),
-            "self . module . tasks . __lenso_connect (context . tasks () . clone ()) ? ;"
+            "self . plugin . tasks . __lenso_connect (context . tasks () . clone ()) ? ;"
         );
         assert_eq!(
             task_disconnectors(&fields.tasks)[0].to_string(),
-            "module . tasks . __lenso_disconnect () ;"
+            "plugin . tasks . __lenso_disconnect () ;"
         );
-        assert!(module.fields.iter().next().unwrap().attrs.is_empty());
+        assert!(plugin.fields.iter().next().unwrap().attrs.is_empty());
     }
 
     #[test]
     fn multiple_capabilities_reject_trait_impls() {
         let implementation: ItemImpl = parse_quote! {
-            impl fixture::Provider for ExampleModule {}
+            impl fixture::Provider for ExamplePlugin {}
         };
         let error = expand_provides(
             &[parse_quote!(fixture::One), parse_quote!(fixture::Two)],
@@ -1802,7 +1817,7 @@ mod tests {
 
     #[test]
     fn duplicate_capabilities_are_rejected() {
-        let implementation: ItemImpl = parse_quote! { impl ExampleModule {} };
+        let implementation: ItemImpl = parse_quote! { impl ExamplePlugin {} };
         let error = expand_provides(
             &[parse_quote!(fixture::One), parse_quote!(fixture::One)],
             &implementation,
@@ -1814,7 +1829,7 @@ mod tests {
 
     #[test]
     fn capability_paths_must_be_namespace_qualified() {
-        let implementation: ItemImpl = parse_quote! { impl ExampleModule {} };
+        let implementation: ItemImpl = parse_quote! { impl ExamplePlugin {} };
         let error = expand_provides(&[parse_quote!(One)], &implementation)
             .expect_err("generated Capability macros live in their namespace");
 

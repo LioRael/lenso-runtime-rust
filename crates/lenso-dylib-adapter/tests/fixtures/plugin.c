@@ -22,14 +22,14 @@ typedef struct {
 typedef struct {
   uint32_t abi_version;
   size_t struct_size;
-  void *module_context;
+  void *plugin_context;
   const uint8_t *descriptor_json;
   size_t descriptor_json_len;
   uint32_t (*invoke)(void *, const uint8_t *, size_t, const uint8_t *, size_t,
                      const uint8_t *, size_t, LensoBufferV1 *);
   uint32_t (*shutdown)(void *);
   size_t reserved[8];
-} LensoModuleV1;
+} LensoPluginV1;
 
 static LensoHostV1 HOST;
 static const char DESCRIPTOR[] =
@@ -60,7 +60,7 @@ static uint32_t invoke(void *context, const uint8_t *capability, size_t capabili
   return status;
 }
 
-static uint32_t shutdown_module(void *context) {
+static uint32_t shutdown_plugin(void *context) {
   (void)context;
   return 0;
 }
@@ -70,15 +70,15 @@ __declspec(dllexport)
 #else
 __attribute__((visibility("default")))
 #endif
-uint32_t lenso_module_v1(const LensoHostV1 *host, LensoModuleV1 *module) {
-  if (host == NULL || module == NULL || host->abi_version != 1 || host->allocate == NULL) return 2;
+uint32_t lenso_plugin_v1(const LensoHostV1 *host, LensoPluginV1 *plugin) {
+  if (host == NULL || plugin == NULL || host->abi_version != 1 || host->allocate == NULL) return 2;
   HOST = *host;
-  memset(module, 0, sizeof(*module));
-  module->abi_version = 1;
-  module->struct_size = sizeof(*module);
-  module->descriptor_json = (const uint8_t *)DESCRIPTOR;
-  module->descriptor_json_len = strlen(DESCRIPTOR);
-  module->invoke = invoke;
-  module->shutdown = shutdown_module;
+  memset(plugin, 0, sizeof(*plugin));
+  plugin->abi_version = 1;
+  plugin->struct_size = sizeof(*plugin);
+  plugin->descriptor_json = (const uint8_t *)DESCRIPTOR;
+  plugin->descriptor_json_len = strlen(DESCRIPTOR);
+  plugin->invoke = invoke;
+  plugin->shutdown = shutdown_plugin;
   return 0;
 }

@@ -1,4 +1,4 @@
-//! Native Rust Execution Adapter for statically linked Module packages.
+//! Native Rust Execution Adapter for statically linked Plugin packages.
 
 mod managed_tasks;
 
@@ -6,15 +6,18 @@ use std::{collections::BTreeMap, rc::Rc};
 
 #[doc(hidden)]
 pub use inventory as __inventory;
-use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
+use lenso_app_plan::{
+    ExecutionClassId, ResolvedAppPlan,
+    authoring::{HostCatalog, HostDefaultPlugin, HostPluginRelease, HostSlot, PluginDescriptor},
+};
 use lenso_kernel::{ActivateContext, DeactivateContext, PrepareContext};
 pub use lenso_kernel::{CancellationToken, RuntimeFailure};
-pub use lenso_native_adapter_macros::{ModuleConfig, PluginConfig, module, plugin, provides};
+pub use lenso_native_adapter_macros::{PluginConfig, plugin, provides};
 pub use managed_tasks::{ManagedTasks, ManagedTasksError};
 
-/// Optional convention-based lifecycle hooks for a struct-level Module.
+/// Optional convention-based lifecycle hooks for a struct-level Plugin.
 ///
-/// Add `#[module(lifecycle)]`, implement this trait, and override only the
+/// Add `#[plugin(lifecycle)]`, implement this trait, and override only the
 /// phases that own real work. The generated Adapter lifecycle still connects
 /// declared Capability ports before `activate`.
 #[allow(async_fn_in_trait)]
@@ -32,63 +35,70 @@ pub trait Lifecycle: Clone + 'static {
     }
 }
 
-/// Implementation details referenced by generated Module glue.
+/// Implementation details referenced by generated Plugin glue.
 #[doc(hidden)]
 pub mod __private {
     pub use crate::{
-        __inventory, Lifecycle, LinkedNativeModuleFactory, NativeModuleFactory,
-        NativeModuleFactoryContext, NativeModuleInstance, RuntimeFailure,
+        __inventory, Lifecycle, LinkedNativePluginFactory, NativePluginFactory,
+        NativePluginFactoryContext, NativePluginInstance, RuntimeFailure,
     };
     pub use futures;
     pub use futures::future::LocalBoxFuture;
     pub use lenso_kernel::{
-        ActivateContext, DeactivateContext, InvocationContext, ModuleFuture, ModuleLifecycle,
-        NativeEventEndpoint, NativeRequestEndpoint, NativeRequestFuture, NativeStreamEndpoint,
-        NativeStreamSession, PrepareContext,
+        ActivateContext, DeactivateContext, InvocationContext, NativeEventEndpoint,
+        NativeRequestEndpoint, NativeRequestFuture, NativeStreamEndpoint, NativeStreamSession,
+        PluginFuture, PluginLifecycle, PrepareContext,
     };
     pub use serde_json;
 }
 
 use lenso_kernel::{
-    ModuleLifecycle, NativeEndpointSet, NativeEventEndpoint, NativeExecutionAdapter,
-    NativeRequestEndpoint, NativeStreamEndpoint, NoopModuleLifecycle, PreparedBinding,
-    PreparedEventBinding, PreparedNativeApp, PreparedNativeModule, PreparedStreamBinding,
+    NativeEndpointSet, NativeEventEndpoint, NativeExecutionAdapter, NativeRequestEndpoint,
+    NativeStreamEndpoint, NoopPluginLifecycle, PluginLifecycle, PreparedBinding,
+    PreparedEventBinding, PreparedNativeApp, PreparedNativePlugin, PreparedStreamBinding,
 };
 
-/// One native Module factory contributed to the Host's link-time catalog.
+/// One native Plugin factory contributed to the Host's link-time catalog.
 #[derive(Clone, Copy, Debug)]
 #[doc(hidden)]
-pub struct LinkedNativeModuleFactory {
-    constructor: fn() -> Rc<dyn NativeModuleFactory>,
+pub struct LinkedNativePluginFactory {
+    constructor: fn() -> Rc<dyn NativePluginFactory>,
+    descriptor: &'static str,
 }
 
-impl LinkedNativeModuleFactory {
+impl LinkedNativePluginFactory {
     /// Creates a link-time catalog record. Intended for generated authoring glue.
     #[doc(hidden)]
-    pub const fn new(constructor: fn() -> Rc<dyn NativeModuleFactory>) -> Self {
-        Self { constructor }
+    pub const fn new(
+        constructor: fn() -> Rc<dyn NativePluginFactory>,
+        descriptor: &'static str,
+    ) -> Self {
+        Self {
+            constructor,
+            descriptor,
+        }
     }
 }
 
-inventory::collect!(LinkedNativeModuleFactory);
+inventory::collect!(LinkedNativePluginFactory);
 
-/// Endpoints created for one statically linked Module Instance generation.
+/// Endpoints created for one statically linked Plugin Instance generation.
 #[derive(Debug)]
-pub struct NativeModuleInstance {
+pub struct NativePluginInstance {
     endpoints: NativeEndpointSet,
-    lifecycle: Rc<dyn ModuleLifecycle>,
+    lifecycle: Rc<dyn PluginLifecycle>,
 }
 
-impl NativeModuleInstance {
+impl NativePluginInstance {
     /// Creates a generation from its exact declared endpoint set.
     pub fn new(endpoints: Vec<Rc<dyn NativeRequestEndpoint>>) -> Self {
-        Self::with_lifecycle(endpoints, NoopModuleLifecycle)
+        Self::with_lifecycle(endpoints, NoopPluginLifecycle)
     }
 
     /// Creates a generation with its exact endpoints and lifecycle Interface.
     pub fn with_lifecycle(
         endpoints: Vec<Rc<dyn NativeRequestEndpoint>>,
-        lifecycle: impl ModuleLifecycle,
+        lifecycle: impl PluginLifecycle,
     ) -> Self {
         Self {
             endpoints: NativeEndpointSet::new(endpoints, Vec::new(), Vec::new()),
@@ -100,7 +110,7 @@ impl NativeModuleInstance {
     pub fn with_endpoints(
         endpoints: Vec<Rc<dyn NativeRequestEndpoint>>,
         stream_endpoints: Vec<Rc<dyn NativeStreamEndpoint>>,
-        lifecycle: impl ModuleLifecycle,
+        lifecycle: impl PluginLifecycle,
     ) -> Self {
         Self {
             endpoints: NativeEndpointSet::new(endpoints, stream_endpoints, Vec::new()),
@@ -111,7 +121,7 @@ impl NativeModuleInstance {
     /// Creates a generation containing only bidirectional stream endpoints.
     pub fn with_stream_endpoints(
         stream_endpoints: Vec<Rc<dyn NativeStreamEndpoint>>,
-        lifecycle: impl ModuleLifecycle,
+        lifecycle: impl PluginLifecycle,
     ) -> Self {
         Self::with_endpoints(Vec::new(), stream_endpoints, lifecycle)
     }
@@ -119,7 +129,7 @@ impl NativeModuleInstance {
     /// Creates a generation containing only ephemeral Event endpoints.
     pub fn with_event_endpoints(
         event_endpoints: Vec<Rc<dyn NativeEventEndpoint>>,
-        lifecycle: impl ModuleLifecycle,
+        lifecycle: impl PluginLifecycle,
     ) -> Self {
         Self {
             endpoints: NativeEndpointSet::new(Vec::new(), Vec::new(), event_endpoints),
@@ -132,7 +142,7 @@ impl NativeModuleInstance {
         endpoints: Vec<Rc<dyn NativeRequestEndpoint>>,
         stream_endpoints: Vec<Rc<dyn NativeStreamEndpoint>>,
         event_endpoints: Vec<Rc<dyn NativeEventEndpoint>>,
-        lifecycle: impl ModuleLifecycle,
+        lifecycle: impl PluginLifecycle,
     ) -> Self {
         Self {
             endpoints: NativeEndpointSet::new(endpoints, stream_endpoints, event_endpoints),
@@ -141,7 +151,7 @@ impl NativeModuleInstance {
     }
 
     /// Returns the lifecycle Interface for this generation.
-    pub fn lifecycle(&self) -> Rc<dyn ModuleLifecycle> {
+    pub fn lifecycle(&self) -> Rc<dyn PluginLifecycle> {
         self.lifecycle.clone()
     }
 
@@ -161,14 +171,14 @@ impl NativeModuleInstance {
     }
 }
 
-impl Default for NativeModuleInstance {
+impl Default for NativePluginInstance {
     fn default() -> Self {
         Self::new(Vec::new())
     }
 }
 
-/// Adapter-specific factory for a statically linked native Rust Module.
-pub trait NativeModuleFactory: std::fmt::Debug + 'static {
+/// Adapter-specific factory for a statically linked native Rust Plugin.
+pub trait NativePluginFactory: std::fmt::Debug + 'static {
     /// Package identity selected by the Resolved App Plan.
     fn package_id(&self) -> &'static str;
     /// Exact statically linked Cargo package version.
@@ -189,23 +199,23 @@ pub trait NativeModuleFactory: std::fmt::Debug + 'static {
             format!("{}@{version}", self.package_id())
         }
     }
-    /// Creates a fresh Module Instance generation.
+    /// Creates a fresh Plugin Instance generation.
     fn instantiate(
         &self,
-        context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure>;
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure>;
 }
 
 /// Immutable Plan input supplied when a native factory creates one generation.
 #[derive(Clone, Copy, Debug)]
-pub struct NativeModuleFactoryContext<'a> {
+pub struct NativePluginFactoryContext<'a> {
     instance_key: &'a str,
     entrypoint: &'a str,
     configuration: &'a str,
 }
 
-impl<'a> NativeModuleFactoryContext<'a> {
-    fn from_plan(instance: &'a lenso_app_plan::ModuleInstancePlan) -> Self {
+impl<'a> NativePluginFactoryContext<'a> {
+    fn from_plan(instance: &'a lenso_app_plan::PluginInstancePlan) -> Self {
         Self {
             instance_key: instance.instance_key(),
             entrypoint: instance.entrypoint(),
@@ -213,7 +223,7 @@ impl<'a> NativeModuleFactoryContext<'a> {
         }
     }
 
-    /// Returns the App-local Module Instance key.
+    /// Returns the App-local Plugin Instance key.
     pub const fn instance_key(self) -> &'a str {
         self.instance_key
     }
@@ -223,20 +233,20 @@ impl<'a> NativeModuleFactoryContext<'a> {
         self.entrypoint
     }
 
-    /// Returns opaque Module-owned configuration selected before boot.
+    /// Returns opaque Plugin-owned configuration selected before boot.
     pub const fn configuration(self) -> &'a str {
         self.configuration
     }
 }
 
-/// Statically linked native Module factories available to an App binary.
+/// Statically linked native Plugin factories available to an App binary.
 #[derive(Debug, Default)]
-pub struct NativeModuleRegistry {
-    factories: Vec<Rc<dyn NativeModuleFactory>>,
+pub struct NativePluginRegistry {
+    factories: Vec<Rc<dyn NativePluginFactory>>,
 }
 
-type NativeInstances = BTreeMap<String, NativeModuleInstance>;
-type PreparedGenerations = BTreeMap<String, PreparedNativeModule>;
+type NativeInstances = BTreeMap<String, NativePluginInstance>;
+type PreparedGenerations = BTreeMap<String, PreparedNativePlugin>;
 type NativeBindings = (
     Vec<PreparedBinding>,
     Vec<PreparedStreamBinding>,
@@ -244,8 +254,8 @@ type NativeBindings = (
 );
 
 fn factory_matches(
-    factory: &dyn NativeModuleFactory,
-    expected: &lenso_app_plan::ModuleInstancePlan,
+    factory: &dyn NativePluginFactory,
+    expected: &lenso_app_plan::PluginInstancePlan,
 ) -> bool {
     factory.package_id() == expected.package_id()
         && (expected.package_revision().is_empty()
@@ -253,20 +263,20 @@ fn factory_matches(
             || factory.factory_identity() == expected.package_revision())
 }
 
-impl NativeModuleRegistry {
+impl NativePluginRegistry {
     /// Creates an empty linked-factory registry.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Adds every Module factory contributed to this Host at link time.
+    /// Adds every Plugin factory contributed to this Host at link time.
     ///
     /// This catalog describes code available in the binary. The Resolved App
-    /// Plan remains the sole authority that selects and binds Module Instances.
+    /// Plan remains the sole authority that selects and binds Plugin Instances.
     #[must_use]
     pub fn with_linked_factories(mut self) -> Self {
         self.factories.extend(
-            inventory::iter::<LinkedNativeModuleFactory>
+            inventory::iter::<LinkedNativePluginFactory>
                 .into_iter()
                 .map(|linked| (linked.constructor)()),
         );
@@ -276,12 +286,30 @@ impl NativeModuleRegistry {
     }
 
     /// Returns the exact native factories available to this registry.
-    pub fn factories(&self) -> impl Iterator<Item = &dyn NativeModuleFactory> {
+    pub fn factories(&self) -> impl Iterator<Item = &dyn NativePluginFactory> {
         self.factories.iter().map(std::convert::AsRef::as_ref)
+    }
+
+    /// Builds the immutable Host Catalog declared by this binary and Host policy.
+    pub fn host_catalog(
+        slots: impl IntoIterator<Item = HostSlot>,
+        defaults: impl IntoIterator<Item = HostDefaultPlugin>,
+    ) -> Result<HostCatalog, RuntimeFailure> {
+        let plugins = inventory::iter::<LinkedNativePluginFactory>
+            .into_iter()
+            .map(|linked| {
+                serde_json::from_str::<PluginDescriptor>(linked.descriptor)
+                    .map(HostPluginRelease::new)
+                    .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
+                        detail: format!("invalid linked Plugin Descriptor: {error}"),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(HostCatalog::new(slots, plugins, defaults))
     }
     /// Adds one statically linked factory.
     #[must_use]
-    pub fn with_factory(mut self, factory: impl NativeModuleFactory) -> Self {
+    pub fn with_factory(mut self, factory: impl NativePluginFactory) -> Self {
         self.factories.push(Rc::new(factory));
         self
     }
@@ -293,7 +321,7 @@ impl NativeModuleRegistry {
         let mut instances = BTreeMap::new();
         let mut generations = BTreeMap::new();
         for expected in plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .filter(|instance| instance.execution_class() == &ExecutionClassId::native_rust())
         {
@@ -304,7 +332,7 @@ impl NativeModuleRegistry {
                 .collect();
             let factory = match matching_factories.as_slice() {
                 [] => {
-                    return Err(RuntimeFailure::MissingModuleFactory {
+                    return Err(RuntimeFailure::MissingPluginFactory {
                         instance: expected.instance_key().to_owned(),
                         package_id: expected.package_id().to_owned(),
                     });
@@ -318,10 +346,10 @@ impl NativeModuleRegistry {
                 }
             };
             let generation =
-                factory.instantiate(NativeModuleFactoryContext::from_plan(expected))?;
+                factory.instantiate(NativePluginFactoryContext::from_plan(expected))?;
             generations.insert(
                 expected.instance_key().to_owned(),
-                PreparedNativeModule::with_endpoint_set_lifecycle(
+                PreparedNativePlugin::with_endpoint_set_lifecycle(
                     generation.endpoints.clone(),
                     generation.lifecycle(),
                 ),
@@ -331,7 +359,7 @@ impl NativeModuleRegistry {
                 .is_some()
             {
                 return invalid(format!(
-                    "duplicate Module Instance `{}`",
+                    "duplicate Plugin Instance `{}`",
                     expected.instance_key()
                 ));
             }
@@ -340,7 +368,7 @@ impl NativeModuleRegistry {
     }
 }
 
-impl NativeExecutionAdapter for NativeModuleRegistry {
+impl NativeExecutionAdapter for NativePluginRegistry {
     fn prepare(&self, plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
         plan.validate()
             .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
@@ -358,13 +386,13 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
         &self,
         plan: &ResolvedAppPlan,
         instance_key: &str,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
         let expected = plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .find(|instance| instance.instance_key() == instance_key)
             .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
-                detail: format!("unknown Module Instance `{instance_key}`"),
+                detail: format!("unknown Plugin Instance `{instance_key}`"),
             })?;
         let matching_factories: Vec<_> = self
             .factories
@@ -373,7 +401,7 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
             .collect();
         let factory = match matching_factories.as_slice() {
             [] => {
-                return Err(RuntimeFailure::MissingModuleFactory {
+                return Err(RuntimeFailure::MissingPluginFactory {
                     instance: expected.instance_key().to_owned(),
                     package_id: expected.package_id().to_owned(),
                 });
@@ -386,8 +414,8 @@ impl NativeExecutionAdapter for NativeModuleRegistry {
                 ));
             }
         };
-        let generation = factory.instantiate(NativeModuleFactoryContext::from_plan(expected))?;
-        Ok(PreparedNativeModule::with_endpoint_set_lifecycle(
+        let generation = factory.instantiate(NativePluginFactoryContext::from_plan(expected))?;
+        Ok(PreparedNativePlugin::with_endpoint_set_lifecycle(
             generation.endpoints.clone(),
             generation.lifecycle(),
         ))
@@ -406,7 +434,7 @@ fn prepare_bindings(
             continue;
         }
         let provider = plan
-            .module_instance(binding.provider_instance())
+            .plugin_instance(binding.provider_instance())
             .expect("validated binding provider should exist");
         let descriptor = provider
             .provided_capabilities()

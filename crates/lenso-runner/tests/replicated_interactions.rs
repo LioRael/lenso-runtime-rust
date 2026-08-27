@@ -3,16 +3,16 @@ use std::{any::Any, cell::RefCell, collections::VecDeque, rc::Rc, sync::mpsc, ti
 use futures::future::{LocalBoxFuture, ready};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionLaneId, ExecutionLanePlan, ModuleInstancePlan,
+    ExecutionLaneId, ExecutionLanePlan, PluginInstancePlan,
 };
 use lenso_kernel::{
     ActivateContext, CancellationToken, EventAdmission, EventCapability, ExecutionAdapterCatalog,
-    InvocationContext, ModuleLifecycle, NativeEventEndpoint, NativeStreamEndpoint,
-    NativeStreamItem, NativeStreamSession, NoopModuleLifecycle, RuntimeFailure, StreamCapability,
+    InvocationContext, NativeEventEndpoint, NativeStreamEndpoint, NativeStreamItem,
+    NativeStreamSession, NoopPluginLifecycle, PluginLifecycle, RuntimeFailure, StreamCapability,
     StreamEvent,
 };
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
 use lenso_runner::{CrossLaneTransferCatalog, ReplicatedNativeApp, ReplicatedRunnerError};
 
@@ -192,16 +192,16 @@ struct ConsumerFactory {
     reported: mpsc::Sender<ConsumerOutcome>,
 }
 
-impl NativeModuleFactory for ConsumerFactory {
+impl NativePluginFactory for ConsumerFactory {
     fn package_id(&self) -> &'static str {
         CONSUMER_PACKAGE
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::with_lifecycle(
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::with_lifecycle(
             Vec::new(),
             ConsumerLifecycle {
                 reported: self.reported.clone(),
@@ -224,8 +224,8 @@ struct ConsumerOutcome {
     admissions: Vec<EventAdmission>,
 }
 
-impl ModuleLifecycle for ConsumerLifecycle {
-    fn activate(&self, context: ActivateContext) -> lenso_kernel::ModuleFuture {
+impl PluginLifecycle for ConsumerLifecycle {
+    fn activate(&self, context: ActivateContext) -> lenso_kernel::PluginFuture {
         let stream = context.dependencies().one_stream::<TestStream>();
         let events = context.dependencies().many_event::<TestEvent>();
         let reported = self.reported.clone();
@@ -234,14 +234,14 @@ impl ModuleLifecycle for ConsumerLifecycle {
             let session = stream
                 .open(STREAM_OPERATION, "session".to_owned())
                 .await?
-                .map_err(|error| RuntimeFailure::ModuleFailure {
+                .map_err(|error| RuntimeFailure::PluginFailure {
                     detail: format!("unexpected stream Domain Error: {error}"),
                 })?;
             session.send("one".to_owned()).await?;
             let message = match session.receive().await? {
                 StreamEvent::Message(message) => message,
                 event => {
-                    return Err(RuntimeFailure::ModuleFailure {
+                    return Err(RuntimeFailure::PluginFailure {
                         detail: format!("unexpected first stream event: {event:?}"),
                     });
                 }
@@ -294,18 +294,18 @@ impl ModuleLifecycle for ConsumerLifecycle {
 #[derive(Debug)]
 struct StreamProviderFactory;
 
-impl NativeModuleFactory for StreamProviderFactory {
+impl NativePluginFactory for StreamProviderFactory {
     fn package_id(&self) -> &'static str {
         STREAM_PROVIDER_PACKAGE
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::with_stream_endpoints(
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::with_stream_endpoints(
             vec![Rc::new(EchoStreamEndpoint)],
-            NoopModuleLifecycle,
+            NoopPluginLifecycle,
         ))
     }
 }
@@ -315,21 +315,21 @@ struct EventProviderFactory {
     reported: mpsc::Sender<(String, String)>,
 }
 
-impl NativeModuleFactory for EventProviderFactory {
+impl NativePluginFactory for EventProviderFactory {
     fn package_id(&self) -> &'static str {
         EVENT_PROVIDER_PACKAGE
     }
 
     fn instantiate(
         &self,
-        context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::with_event_endpoints(
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::with_event_endpoints(
             vec![Rc::new(ReportingEventEndpoint {
                 reported: self.reported.clone(),
                 provider: context.instance_key().to_owned(),
             })],
-            NoopModuleLifecycle,
+            NoopPluginLifecycle,
         ))
     }
 }
@@ -337,11 +337,11 @@ impl NativeModuleFactory for EventProviderFactory {
 fn interaction_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("consumer", CONSUMER_PACKAGE)
+            PluginInstancePlan::new("consumer", CONSUMER_PACKAGE)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(STREAM_ID, VERSION))
                 .with_requirement(CapabilityRequirementPlan::many(EVENT_ID, VERSION)),
-            ModuleInstancePlan::new("stream-provider", STREAM_PROVIDER_PACKAGE)
+            PluginInstancePlan::new("stream-provider", STREAM_PROVIDER_PACKAGE)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
                     CapabilityEndpointPlan::new(STREAM_ID, VERSION, [STREAM_OPERATION])
@@ -349,7 +349,7 @@ fn interaction_plan() -> lenso_app_plan::ResolvedAppPlan {
                         .with_limits(0, 1)
                         .with_cross_lane_transfer(),
                 ),
-            ModuleInstancePlan::new("event-provider-a", EVENT_PROVIDER_PACKAGE)
+            PluginInstancePlan::new("event-provider-a", EVENT_PROVIDER_PACKAGE)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
                     CapabilityEndpointPlan::new(EVENT_ID, VERSION, [EVENT_OPERATION])
@@ -357,7 +357,7 @@ fn interaction_plan() -> lenso_app_plan::ResolvedAppPlan {
                         .with_event_capacity(2)
                         .with_cross_lane_transfer(),
                 ),
-            ModuleInstancePlan::new("event-provider-b", EVENT_PROVIDER_PACKAGE)
+            PluginInstancePlan::new("event-provider-b", EVENT_PROVIDER_PACKAGE)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
                     CapabilityEndpointPlan::new(EVENT_ID, VERSION, [EVENT_OPERATION])
@@ -414,17 +414,17 @@ fn cross_lane_stream_and_event_require_registered_send_transfers() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn module_lifecycle_preserves_cross_lane_stream_protocol_and_event_fanout() {
+async fn plugin_lifecycle_preserves_cross_lane_stream_protocol_and_event_fanout() {
     let (reported_outcome, outcome) = mpsc::channel();
     let (reported_event, events) = mpsc::channel();
     let app = ReplicatedNativeApp::start_with_transfer_catalog(
         interaction_plan(),
         move |lane| {
             let registry = match lane.as_str() {
-                "frontend" => NativeModuleRegistry::new().with_factory(ConsumerFactory {
+                "frontend" => NativePluginRegistry::new().with_factory(ConsumerFactory {
                     reported: reported_outcome.clone(),
                 }),
-                "workers" => NativeModuleRegistry::new()
+                "workers" => NativePluginRegistry::new()
                     .with_factory(StreamProviderFactory)
                     .with_factory(EventProviderFactory {
                         reported: reported_event.clone(),

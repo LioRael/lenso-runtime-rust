@@ -2,12 +2,12 @@ use std::{collections::BTreeMap, rc::Rc, sync::Arc, time::Instant};
 
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, ExecutionClassId, ExecutionLaneId, ExecutionLanePlan,
-    ModuleInstancePlan, ResolvedAppPlan,
+    PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_kernel::{
     ExecutionAdapter, NativeEventEndpoint, NativeRequestEndpoint, NativeStreamEndpoint,
-    NoopModuleLifecycle, PreparedBinding, PreparedEventBinding, PreparedNativeApp,
-    PreparedNativeModule, PreparedStreamBinding, RuntimeFailure,
+    NoopPluginLifecycle, PreparedBinding, PreparedEventBinding, PreparedNativeApp,
+    PreparedNativePlugin, PreparedStreamBinding, RuntimeFailure,
 };
 
 use super::{CrossLaneTransferCatalog, LANE_PROXY_EXECUTION_CLASS, LaneRoute};
@@ -23,7 +23,7 @@ pub(super) fn project_lane(
         .cloned()
         .collect::<Vec<_>>();
     let mut instances = plan
-        .module_instances()
+        .plugin_instances()
         .iter()
         .filter(|instance| instance.execution_lane() == lane)
         .map(|instance| clone_instance(instance, lane))
@@ -31,10 +31,10 @@ pub(super) fn project_lane(
 
     for binding in &bindings {
         let consumer = plan
-            .module_instance(binding.consumer_instance())
+            .plugin_instance(binding.consumer_instance())
             .expect("validated binding consumer should exist");
         let provider = plan
-            .module_instance(binding.provider_instance())
+            .plugin_instance(binding.provider_instance())
             .expect("validated binding provider should exist");
         if consumer.execution_lane() == lane && provider.execution_lane() != lane {
             add_provider_proxy(&mut instances, provider, binding, lane);
@@ -59,14 +59,14 @@ fn binding_touches_lane(
 ) -> bool {
     [binding.consumer_instance(), binding.provider_instance()]
         .into_iter()
-        .filter_map(|instance| plan.module_instance(instance))
+        .filter_map(|instance| plan.plugin_instance(instance))
         .any(|instance| instance.execution_lane() == lane)
 }
 
 fn clone_instance(
-    source: &ModuleInstancePlan,
+    source: &PluginInstancePlan,
     lane: &ExecutionLaneId,
-) -> (String, ModuleInstancePlan) {
+) -> (String, PluginInstancePlan) {
     let mut instance = clone_instance_identity(source, lane, source.execution_class().clone());
     for capability in source.provided_capabilities() {
         instance = instance.with_capability(capability.clone());
@@ -78,11 +78,11 @@ fn clone_instance(
 }
 
 fn clone_instance_identity(
-    source: &ModuleInstancePlan,
+    source: &PluginInstancePlan,
     lane: &ExecutionLaneId,
     execution_class: ExecutionClassId,
-) -> ModuleInstancePlan {
-    ModuleInstancePlan::new(source.instance_key(), source.package_id())
+) -> PluginInstancePlan {
+    PluginInstancePlan::new(source.instance_key(), source.package_id())
         .with_entrypoint(source.entrypoint())
         .with_configuration(source.configuration())
         .with_execution_class(execution_class)
@@ -93,8 +93,8 @@ fn clone_instance_identity(
 }
 
 fn add_provider_proxy(
-    instances: &mut BTreeMap<String, ModuleInstancePlan>,
-    source: &ModuleInstancePlan,
+    instances: &mut BTreeMap<String, PluginInstancePlan>,
+    source: &PluginInstancePlan,
     binding: &CapabilityBinding,
     lane: &ExecutionLaneId,
 ) {
@@ -123,8 +123,8 @@ fn add_provider_proxy(
 }
 
 fn add_consumer_proxy(
-    instances: &mut BTreeMap<String, ModuleInstancePlan>,
-    source: &ModuleInstancePlan,
+    instances: &mut BTreeMap<String, PluginInstancePlan>,
+    source: &PluginInstancePlan,
     binding: &CapabilityBinding,
     lane: &ExecutionLaneId,
 ) {
@@ -188,7 +188,7 @@ impl ExecutionAdapter for LaneProxyAdapter {
         let mut stream_endpoints: BTreeMap<_, Rc<dyn NativeStreamEndpoint>> = BTreeMap::new();
         let mut event_endpoints: BTreeMap<_, Rc<dyn NativeEventEndpoint>> = BTreeMap::new();
         for instance in plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .filter(|instance| instance.execution_class().as_str() == LANE_PROXY_EXECUTION_CLASS)
         {
@@ -198,7 +198,7 @@ impl ExecutionAdapter for LaneProxyAdapter {
             for descriptor in instance.provided_capabilities() {
                 let source = self
                     .full_plan
-                    .module_instance(instance.instance_key())
+                    .plugin_instance(instance.instance_key())
                     .expect("proxy provider exists in the full Plan");
                 let sender = self
                     .routes
@@ -269,11 +269,11 @@ impl ExecutionAdapter for LaneProxyAdapter {
             }
             generations.insert(
                 instance.instance_key().to_owned(),
-                PreparedNativeModule::with_all_endpoints(
+                PreparedNativePlugin::with_all_endpoints(
                     generation_request_endpoints,
                     generation_stream_endpoints,
                     generation_event_endpoints,
-                    NoopModuleLifecycle,
+                    NoopPluginLifecycle,
                 ),
             );
         }

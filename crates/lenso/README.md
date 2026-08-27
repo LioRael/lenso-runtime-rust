@@ -1,8 +1,8 @@
 # `lenso`
 
-The stable Rust authoring facade for Lenso vNext Modules.
+The stable Rust authoring facade for Lenso vNext Plugins.
 
-Module packages depend on `lenso` plus the generated Capability crates they
+Plugin packages depend on `lenso` plus the generated Capability crates they
 provide or require. The facade intentionally keeps Native Adapter factories,
 Kernel lifecycle implementations, endpoint construction, inventory
 registration, and generated-code dependencies out of the ordinary authoring
@@ -11,13 +11,13 @@ Interface.
 ```rust,ignore
 use lenso::prelude::*;
 
-#[derive(Clone, Debug, serde::Deserialize, ModuleConfig)]
+#[derive(Clone, Debug, serde::Deserialize, PluginConfig)]
 struct GreetingConfig {
     #[lenso(default = "Hello")]
     prefix: String,
 }
 
-#[module]
+#[plugin]
 #[derive(Clone, Debug)]
 struct Greeting {
     #[config]
@@ -38,24 +38,24 @@ impl Greeting {
 }
 ```
 
-`ModuleConfig` embeds `#[lenso(default = <JSON literal>)]` field values as
-locked `configuration_defaults` in the generated Module Descriptor. App
+`PluginConfig` embeds `#[lenso(default = <JSON literal>)]` field values as
+locked `configuration_defaults` in the generated Plugin Descriptor. App
 Definitions may omit those values; Plan resolution still materializes and
-validates one complete configuration before boot. A Module using an explicit
+validates one complete configuration before boot. A Plugin using an explicit
 complex Schema can instead select a package-local defaults object with
 
 ```rust,ignore
-#[module(
+#[plugin(
     configuration_schema = "config.schema.json",
     configuration_defaults = "config.defaults.json"
 )]
 ```
 
-Stateless Modules omit configuration entirely; the facade derives a closed
+Stateless Plugins omit configuration entirely; the facade derives a closed
 empty-object Schema and rejects non-empty configuration before readiness:
 
 ```rust,ignore
-#[module]
+#[plugin]
 #[derive(Clone, Debug, Default)]
 struct Health {}
 
@@ -71,7 +71,7 @@ impl Health {
 }
 ```
 
-A cohesive Module may provide several Capabilities from the same state and
+A cohesive Plugin may provide several Capabilities from the same state and
 lifecycle. List them once and keep their generated domain methods in one
 inherent implementation:
 
@@ -105,16 +105,16 @@ impl OpenAiModel {
 ```
 
 The annotation order is preserved in the generated Descriptor. All Request,
-Stream, and Event endpoints are aggregated into one factory and one Module
+Stream, and Event endpoints are aggregated into one factory and one Plugin
 lifecycle. Repeating a Capability is rejected. Explicit generated Provider
 trait implementations remain a single-Capability compatibility escape hatch;
-multi-Capability Modules use the inherent implementation above.
+multi-Capability Plugins use the inherent implementation above.
 
 Generated lowering owns the Provider trait implementation, future boxing,
 endpoint construction, and native registration. A method that only has
 Capability-defined rejection returns an ordinary domain `Result`. A method
 that must deliberately preserve infrastructure failure returns
-`ModuleResult<T, DomainError>` and constructs `ModuleError::runtime(error)`.
+`PluginResult<T, DomainError>` and constructs `PluginError::runtime(error)`.
 
 Stream providers return `ProviderStream<C>`. `ProviderStream::channel(&ctx,
 capacity)` also returns a `ProviderStreamChannel<C>` for a generation-managed
@@ -133,7 +133,7 @@ impl Notifications {
         &self,
         ctx: Ctx,
         event: notifications::NotifyRequest,
-    ) -> ModuleEventResult {
+    ) -> PluginEventResult {
         self.handle(ctx, event).await
     }
 }
@@ -141,15 +141,15 @@ impl Notifications {
 
 Publishing remains volatile fan-out: every explicit subscriber binding has an
 independent bounded admission result. The handler runs after native admission,
-so it has no publisher-visible Domain result. Returning `ModuleEventResult`
-preserves a handler Runtime Failure for diagnostics and Module supervision;
+so it has no publisher-visible Domain result. Returning `PluginEventResult`
+preserves a handler Runtime Failure for diagnostics and Plugin supervision;
 a simple infallible async handler may return `()`.
 
-Modules with resources or managed work opt into convention-based lifecycle
+Plugins with resources or managed work opt into convention-based lifecycle
 methods and override only the phases they own:
 
 ```rust,ignore
-#[module(lifecycle)]
+#[plugin(lifecycle)]
 #[derive(Clone, Debug)]
 struct Worker {
     #[config]
@@ -174,11 +174,11 @@ impl Lifecycle for Worker {
 The existing function-path lifecycle attributes remain available for
 compatibility.
 
-Modules that only need generation-owned background work can declare a managed task field without
+Plugins that only need generation-owned background work can declare a managed task field without
 storing an optional Kernel scope or writing an activation hook:
 
 ```rust,ignore
-#[module]
+#[plugin]
 #[derive(Clone, Debug)]
 struct Worker {
     #[tasks]
@@ -188,7 +188,7 @@ struct Worker {
 impl Worker {
     fn start(&self) -> Result<(), ManagedTasksError> {
         self.tasks.spawn_local(async move {
-            // Work is cancelled and joined with this Module generation.
+            // Work is cancelled and joined with this Plugin generation.
         })?;
         Ok(())
     }

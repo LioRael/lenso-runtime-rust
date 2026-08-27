@@ -1,9 +1,9 @@
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
-use lenso_app_plan::{ModuleInstancePlan, ResolvedAppPlan, RestartPolicy};
+use lenso_app_plan::{PluginInstancePlan, ResolvedAppPlan, RestartPolicy};
 use lenso_kernel::{DeterministicDriver, Kernel, RuntimeDriver, RuntimeFailure};
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
 
 #[derive(Debug)]
@@ -11,7 +11,7 @@ struct RecordingFactory {
     observed: Rc<RefCell<Vec<(String, String, String)>>>,
 }
 
-impl NativeModuleFactory for RecordingFactory {
+impl NativePluginFactory for RecordingFactory {
     fn package_id(&self) -> &'static str {
         "test.configured"
     }
@@ -21,14 +21,14 @@ impl NativeModuleFactory for RecordingFactory {
 
     fn instantiate(
         &self,
-        context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
         self.observed.borrow_mut().push((
             context.instance_key().to_owned(),
             context.entrypoint().to_owned(),
             context.configuration().to_owned(),
         ));
-        Ok(NativeModuleInstance::default())
+        Ok(NativePluginInstance::default())
     }
 }
 
@@ -37,7 +37,7 @@ struct PluginFactory {
     observed: Rc<RefCell<Vec<(String, String, String)>>>,
 }
 
-impl NativeModuleFactory for PluginFactory {
+impl NativePluginFactory for PluginFactory {
     fn package_id(&self) -> &'static str {
         "test.configured"
     }
@@ -52,14 +52,14 @@ impl NativeModuleFactory for PluginFactory {
 
     fn instantiate(
         &self,
-        context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
         self.observed.borrow_mut().push((
             context.instance_key().to_owned(),
             context.entrypoint().to_owned(),
             context.configuration().to_owned(),
         ));
-        Ok(NativeModuleInstance::default())
+        Ok(NativePluginInstance::default())
     }
 }
 
@@ -68,7 +68,7 @@ fn native_factory_version_must_match_the_authoring_resolved_version() {
     let observed = Rc::new(RefCell::new(Vec::new()));
     let plan = ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("configured", "test.configured").with_package_revision("2.0.0"),
+            PluginInstancePlan::new("configured", "test.configured").with_package_revision("2.0.0"),
         ],
         vec![],
     );
@@ -77,10 +77,10 @@ fn native_factory_version_must_match_the_authoring_resolved_version() {
         .run(Kernel::start_native(
             plan,
             driver.clone(),
-            NativeModuleRegistry::new().with_factory(RecordingFactory { observed }),
+            NativePluginRegistry::new().with_factory(RecordingFactory { observed }),
         ))
         .expect_err("a differently linked Cargo package must be rejected");
-    assert!(matches!(error, RuntimeFailure::MissingModuleFactory { .. }));
+    assert!(matches!(error, RuntimeFailure::MissingPluginFactory { .. }));
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn native_factory_identity_matches_a_plugin_resolved_revision() {
     let observed = Rc::new(RefCell::new(Vec::new()));
     let plan = ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("configured", "test.configured")
+            PluginInstancePlan::new("configured", "test.configured")
                 .with_package_revision("test.configured@host-build-a"),
         ],
         vec![],
@@ -99,7 +99,7 @@ fn native_factory_identity_matches_a_plugin_resolved_revision() {
         .run(Kernel::start_native(
             plan,
             driver.clone(),
-            NativeModuleRegistry::new().with_factory(PluginFactory {
+            NativePluginRegistry::new().with_factory(PluginFactory {
                 observed: observed.clone(),
             }),
         ))
@@ -120,7 +120,7 @@ fn native_factory_receives_the_exact_immutable_instance_input() {
     let observed = Rc::new(RefCell::new(Vec::new()));
     let plan = ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("configured", "test.configured")
+            PluginInstancePlan::new("configured", "test.configured")
                 .with_entrypoint("native.main")
                 .with_configuration(r#"{"mode":"test"}"#)
                 .with_restart_policy(RestartPolicy::on_failure(
@@ -139,12 +139,12 @@ fn native_factory_receives_the_exact_immutable_instance_input() {
         .run(Kernel::start_native(
             plan,
             driver.clone(),
-            NativeModuleRegistry::new().with_factory(RecordingFactory {
+            NativePluginRegistry::new().with_factory(RecordingFactory {
                 observed: observed.clone(),
             }),
         ))
         .expect("the configured native App should start");
-    app.report_module_failure("configured")
+    app.report_plugin_failure("configured")
         .expect("the configured Instance should schedule recreation");
     driver.run(async {
         for _ in 0..6 {
