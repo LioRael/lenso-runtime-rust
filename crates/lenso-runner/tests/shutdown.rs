@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use lenso_app_plan::{ExecutionClassId, ModuleCriticality, ModuleInstancePlan, ResolvedAppPlan};
+use lenso_app_plan::{ExecutionClassId, PluginCriticality, PluginInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
     ActivateContext, DeactivateContext, DeterministicDriver, ExecutionAdapter,
-    ExecutionAdapterCatalog, ModuleFuture, ModuleLifecycle, PreparedNativeApp,
-    PreparedNativeModule, RuntimeDriver, RuntimeFailure, TerminalOutcome,
+    ExecutionAdapterCatalog, PluginFuture, PluginLifecycle, PreparedNativeApp,
+    PreparedNativePlugin, RuntimeDriver, RuntimeFailure, TerminalOutcome,
 };
 use lenso_runner::run;
 
@@ -50,8 +50,8 @@ enum CleanupMode {
 #[derive(Debug)]
 struct RuntimeFailureLifecycle;
 
-impl ModuleLifecycle for RuntimeFailureLifecycle {
-    fn activate(&self, context: ActivateContext) -> ModuleFuture {
+impl PluginLifecycle for RuntimeFailureLifecycle {
+    fn activate(&self, context: ActivateContext) -> PluginFuture {
         context
             .tasks()
             .spawn_local(Box::pin(configured_runtime_failure()))
@@ -63,8 +63,8 @@ impl ModuleLifecycle for RuntimeFailureLifecycle {
 #[derive(Debug)]
 struct CleanupLifecycle(CleanupMode);
 
-impl ModuleLifecycle for CleanupLifecycle {
-    fn deactivate(&self, _context: DeactivateContext) -> ModuleFuture {
+impl PluginLifecycle for CleanupLifecycle {
+    fn deactivate(&self, _context: DeactivateContext) -> PluginFuture {
         match self.0 {
             CleanupMode::Failure => Box::pin(async {
                 Err(RuntimeFailure::Internal {
@@ -93,11 +93,11 @@ impl ExecutionAdapter for RuntimeThenCleanupAdapter {
             BTreeMap::from([
                 (
                     "cleanup".to_owned(),
-                    PreparedNativeModule::new(Vec::new(), CleanupLifecycle(self.0)),
+                    PreparedNativePlugin::new(Vec::new(), CleanupLifecycle(self.0)),
                 ),
                 (
                     "failing".to_owned(),
-                    PreparedNativeModule::new(Vec::new(), RuntimeFailureLifecycle),
+                    PreparedNativePlugin::new(Vec::new(), RuntimeFailureLifecycle),
                 ),
             ]),
         ))
@@ -107,9 +107,9 @@ impl ExecutionAdapter for RuntimeThenCleanupAdapter {
 fn terminal_failure_plan() -> ResolvedAppPlan {
     ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("cleanup", "package.cleanup"),
-            ModuleInstancePlan::new("failing", "package.failing")
-                .with_criticality(ModuleCriticality::Critical),
+            PluginInstancePlan::new("cleanup", "package.cleanup"),
+            PluginInstancePlan::new("failing", "package.failing")
+                .with_criticality(PluginCriticality::Critical),
         ],
         vec![],
     )
@@ -140,7 +140,7 @@ fn runner_returns_startup_failure_without_entering_shutdown() {
     let driver = DeterministicDriver::new();
 
     let outcome = driver.run(run(
-        ResolvedAppPlan::new(vec![ModuleInstancePlan::new("module", "package")], vec![]),
+        ResolvedAppPlan::new(vec![PluginInstancePlan::new("module", "package")], vec![]),
         driver.clone(),
         ExecutionAdapterCatalog::single(FailingAdapter),
         Duration::from_secs(1),
@@ -168,7 +168,7 @@ fn runner_preserves_runtime_and_cleanup_failures() {
     assert!(matches!(
         outcome,
         Ok(TerminalOutcome::RuntimeFailureDuringShutdown {
-            error: RuntimeFailure::ModuleRestartExhausted { instance, attempts: 0 },
+            error: RuntimeFailure::PluginRestartExhausted { instance, attempts: 0 },
             cleanup_error: RuntimeFailure::Internal { detail },
         }) if instance == "failing" && detail == "cleanup failed"
     ));
@@ -197,7 +197,7 @@ fn runner_preserves_runtime_failure_when_shutdown_times_out() {
     assert!(matches!(
         outcome,
         Ok(TerminalOutcome::RuntimeFailureWithShutdownTimeout {
-            error: RuntimeFailure::ModuleRestartExhausted { instance, attempts: 0 },
+            error: RuntimeFailure::PluginRestartExhausted { instance, attempts: 0 },
         }) if instance == "failing"
     ));
 }

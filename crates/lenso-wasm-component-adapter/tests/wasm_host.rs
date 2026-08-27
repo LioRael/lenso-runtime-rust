@@ -3,11 +3,11 @@ use std::{any::Any, process::Command, time::Duration};
 use futures::FutureExt;
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
+    ExecutionClassId, PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, ExecutionAdapter, ExecutionAdapterCatalog,
-    InvocationContext, Kernel, ModuleDependencyHandle, NativeStreamItem, RequestCapability,
+    InvocationContext, Kernel, NativeStreamItem, PluginDependencyHandle, RequestCapability,
     RuntimeFailure,
 };
 use lenso_plugin_bundle::{
@@ -19,7 +19,7 @@ use lenso_runtime_codec::{
     JsonInvocationOutcome,
 };
 use lenso_runtime_conformance::{
-    ConformanceExecutionAdapter, ConformanceModule, ConformanceModuleFactory, PROBE_CAPABILITY_ID,
+    ConformanceExecutionAdapter, ConformancePlugin, ConformancePluginFactory, PROBE_CAPABILITY_ID,
     PROBE_DESCRIPTOR_VERSION, PROBE_OPERATION, PROBE_PROVIDER_PACKAGE_ID, Probe, ProbeError,
     ProbeProviderFactory, ProbeRequest,
 };
@@ -93,36 +93,25 @@ fn source_bundle_builds_one_v2_entry_without_a_manifest_template() {
     .unwrap();
     let component = std::fs::read(bundle_root.join("plugin.wasm")).unwrap();
     let manifest = std::fs::read_to_string(bundle_root.join("lenso-plugin.json")).unwrap();
-    let expected = serde_json::json!({
-        "artifact": {
-            "digest": sha256_digest(&component),
-            "media_type": "application/wasm",
-            "path": "plugin.wasm",
-            "size": component.len(),
-            "target": "wasm32-unknown-unknown",
-        },
-        "entry": {
-            "descriptor": {
-                "abi": "lenso.json-request@1",
-                "capabilities": [{
-                    "capability_id": "test.echo@1",
-                    "descriptor_version": "1.0.0",
-                    "request_operations": ["echo", "fail", "trap", "loop"],
-                }],
-            },
-        },
-        "plugin_id": "test.echo",
-        "release_version": "0.0.0",
-        "schema_version": 2,
-    })
-    .to_string();
-
-    assert_eq!(manifest, expected);
+    let parsed: Value = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(parsed["schema_version"], 2);
+    assert_eq!(parsed["plugin_id"], "test.echo");
+    assert_eq!(parsed["artifact"]["digest"], sha256_digest(&component));
+    assert_eq!(parsed["artifact"]["size"], component.len());
+    assert_eq!(parsed["entry"]["descriptor"]["plugin_id"], "test.echo");
+    assert_eq!(
+        parsed["entry"]["descriptor"]["runtime_package_revision"],
+        sha256_digest(&component)
+    );
+    assert_eq!(
+        parsed["entry"]["descriptor"]["provided_capabilities"][0]["operations"],
+        serde_json::json!(["echo", "fail", "trap", "loop"])
+    );
     assert_eq!(built, verify_bundle_directory(&bundle_root).unwrap());
-    assert!(!manifest.contains("module_contributions"));
+    assert!(!manifest.contains("plugin_contributions"));
 
     let mut conflicting: Value = serde_json::from_str(&manifest).unwrap();
-    conflicting["module_contributions"] = serde_json::json!([]);
+    conflicting["plugin_contributions"] = serde_json::json!([]);
     std::fs::write(
         bundle_root.join("lenso-plugin.json"),
         serde_json::to_vec(&conflicting).unwrap(),
@@ -131,7 +120,7 @@ fn source_bundle_builds_one_v2_entry_without_a_manifest_template() {
     assert!(verify_bundle_directory(&bundle_root).is_err());
 
     let mut mismatched: Value = serde_json::from_str(&manifest).unwrap();
-    mismatched["entry"]["descriptor"]["capabilities"][0]["request_operations"] =
+    mismatched["entry"]["descriptor"]["provided_capabilities"][0]["operations"] =
         serde_json::json!(["different"]);
     std::fs::write(
         bundle_root.join("lenso-plugin.json"),
@@ -196,7 +185,7 @@ impl JsonCapabilityCodec for ProbeCodec {
 
     fn invoke_host_request(
         &self,
-        dependency: ModuleDependencyHandle,
+        dependency: PluginDependencyHandle,
         operation: String,
         request: Value,
         context: InvocationContext,
@@ -234,13 +223,13 @@ impl JsonCapabilityCodec for ProbeCodec {
 #[derive(Debug)]
 struct EmptyConsumerFactory;
 
-impl ConformanceModuleFactory for EmptyConsumerFactory {
+impl ConformancePluginFactory for EmptyConsumerFactory {
     fn package_id(&self) -> &'static str {
         "test.echo-consumer"
     }
 
-    fn instantiate(&self, _: &ModuleInstancePlan) -> Result<ConformanceModule, RuntimeFailure> {
-        Ok(ConformanceModule::default())
+    fn instantiate(&self, _: &PluginInstancePlan) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::default())
     }
 }
 
@@ -642,7 +631,7 @@ fn real_component_runs_without_wasi_and_retires_on_trap_or_cancellation() {
 fn narrow_plan() -> ResolvedAppPlan {
     ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("plugin", "test.component")
+            PluginInstancePlan::new("plugin", "test.component")
                 .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_capability(CapabilityEndpointPlan::new(
@@ -658,7 +647,7 @@ fn narrow_plan() -> ResolvedAppPlan {
 fn plan() -> ResolvedAppPlan {
     ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("plugin", "test.component")
+            PluginInstancePlan::new("plugin", "test.component")
                 .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_capability(CapabilityEndpointPlan::new(
@@ -674,7 +663,7 @@ fn plan() -> ResolvedAppPlan {
 fn stream_plan() -> ResolvedAppPlan {
     ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("plugin", "test.component")
+            PluginInstancePlan::new("plugin", "test.component")
                 .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_capability(
@@ -689,14 +678,14 @@ fn stream_plan() -> ResolvedAppPlan {
 fn wasm_guest_import_plan() -> ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("provider", PROBE_PROVIDER_PACKAGE_ID).with_capability(
+            PluginInstancePlan::new("provider", PROBE_PROVIDER_PACKAGE_ID).with_capability(
                 CapabilityEndpointPlan::new(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                     [PROBE_OPERATION],
                 ),
             ),
-            ModuleInstancePlan::new("plugin", "test.component")
+            PluginInstancePlan::new("plugin", "test.component")
                 .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_requirement(CapabilityRequirementPlan::one(
@@ -708,7 +697,7 @@ fn wasm_guest_import_plan() -> ResolvedAppPlan {
                     EchoCapability::DESCRIPTOR_VERSION,
                     ["echo"],
                 )),
-            ModuleInstancePlan::new("consumer", "test.echo-consumer").with_requirement(
+            PluginInstancePlan::new("consumer", "test.echo-consumer").with_requirement(
                 CapabilityRequirementPlan::one(
                     EchoCapability::ID,
                     EchoCapability::DESCRIPTOR_VERSION,

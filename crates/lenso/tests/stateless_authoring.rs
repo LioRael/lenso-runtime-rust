@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
 use lenso::prelude::*;
-use lenso_app_plan::{AppComposition, CapabilityEndpointPlan, ModuleInstancePlan};
+use lenso_app_plan::{AppComposition, CapabilityEndpointPlan, PluginInstancePlan};
 use lenso_kernel::NativeExecutionAdapter;
-use lenso_native_adapter::NativeModuleRegistry;
+use lenso_native_adapter::NativePluginRegistry;
 
 #[derive(Clone, Debug, PluginConfig)]
 struct PluginSettings {
@@ -13,7 +13,7 @@ struct PluginSettings {
 #[doc(hidden)]
 pub mod __lenso_native_support {
     pub use lenso::__private::{
-        NativeEventEndpoint, NativeModuleInstance, NativeRequestEndpoint, NativeStreamEndpoint,
+        NativeEventEndpoint, NativePluginInstance, NativeRequestEndpoint, NativeStreamEndpoint,
     };
 }
 
@@ -98,7 +98,7 @@ impl StatelessHealthPlugin {}
 #[test]
 fn stateless_plugin_derives_empty_configuration() {
     let descriptor: lenso::__private::serde_json::Value =
-        lenso::__private::serde_json::from_str(MODULE_DESCRIPTOR_JSON)
+        lenso::__private::serde_json::from_str(PLUGIN_DESCRIPTOR_JSON)
             .expect("generated Descriptor should be valid JSON");
     assert_eq!(
         descriptor["configuration_schema"],
@@ -111,7 +111,7 @@ fn stateless_plugin_derives_empty_configuration() {
         })
     );
 
-    let provider = ModuleInstancePlan::new("health", "lenso")
+    let provider = PluginInstancePlan::new("health", "lenso")
         .with_configuration("{}")
         .with_capability(CapabilityEndpointPlan::new(
             "example.health@1",
@@ -121,13 +121,13 @@ fn stateless_plugin_derives_empty_configuration() {
     let plan = AppComposition::new(vec![provider], vec![])
         .resolve()
         .expect("stateless plan should resolve");
-    NativeExecutionAdapter::prepare(&NativeModuleRegistry::new().with_linked_factories(), &plan)
+    NativeExecutionAdapter::prepare(&NativePluginRegistry::new().with_linked_factories(), &plan)
         .expect("stateless Plugin should accept empty configuration");
 }
 
 #[test]
 fn stateless_plugin_rejects_non_empty_configuration() {
-    let provider = ModuleInstancePlan::new("health", "lenso")
+    let provider = PluginInstancePlan::new("health", "lenso")
         .with_configuration(r#"{"unexpected":true}"#)
         .with_capability(CapabilityEndpointPlan::new(
             "example.health@1",
@@ -136,9 +136,9 @@ fn stateless_plugin_rejects_non_empty_configuration() {
         ));
     let plan = AppComposition::new(vec![provider], vec![])
         .resolve()
-        .expect("composition resolution defers Module-owned configuration validation");
+        .expect("composition resolution defers Plugin-owned configuration validation");
     let error = NativeExecutionAdapter::prepare(
-        &NativeModuleRegistry::new().with_linked_factories(),
+        &NativePluginRegistry::new().with_linked_factories(),
         &plan,
     )
     .expect_err("stateless Plugin must reject non-empty configuration");

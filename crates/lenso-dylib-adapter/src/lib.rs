@@ -18,10 +18,10 @@ use std::{
 
 use futures::{FutureExt, select};
 
-use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
+use lenso_app_plan::{ExecutionClassId, PluginInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
-    ExecutionAdapter, InvocationContext, ModuleLifecycle, NativeRequestEndpoint, PreparedNativeApp,
-    PreparedNativeModule, RuntimeFailure,
+    ExecutionAdapter, InvocationContext, NativeRequestEndpoint, PluginLifecycle, PreparedNativeApp,
+    PreparedNativePlugin, RuntimeFailure,
 };
 use lenso_runtime_codec::{
     ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonInvocationOutcome,
@@ -29,7 +29,7 @@ use lenso_runtime_codec::{
 };
 
 pub use abi::{
-    ABI_VERSION, LensoBufferV1, LensoHostV1, LensoModuleV1, STATUS_DOMAIN_ERROR, STATUS_OK,
+    ABI_VERSION, LensoBufferV1, LensoHostV1, LensoPluginV1, STATUS_DOMAIN_ERROR, STATUS_OK,
 };
 
 /// Stable open execution-class identity.
@@ -146,8 +146,8 @@ impl DylibAdapter {
 
     fn prepare_instance(
         &self,
-        instance: &ModuleInstancePlan,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+        instance: &PluginInstancePlan,
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
         let artifact = self.artifacts.require(instance.instance_key())?;
         self.verifier.verify(artifact)?;
         validate_content_addressed_path(artifact)?;
@@ -178,7 +178,7 @@ impl DylibAdapter {
                 }) as Rc<dyn NativeRequestEndpoint>
             })
             .collect();
-        Ok(PreparedNativeModule::new(
+        Ok(PreparedNativePlugin::new(
             endpoints,
             DylibLifecycle { generation },
         ))
@@ -198,7 +198,7 @@ impl ExecutionAdapter for DylibAdapter {
         let execution_class = self.execution_class();
         let mut generations = BTreeMap::new();
         for instance in plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .filter(|instance| instance.execution_class() == &execution_class)
         {
@@ -217,8 +217,8 @@ impl ExecutionAdapter for DylibAdapter {
         &self,
         plan: &ResolvedAppPlan,
         instance_key: &str,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
-        let instance = plan.module_instance(instance_key).ok_or_else(|| {
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        let instance = plan.plugin_instance(instance_key).ok_or_else(|| {
             RuntimeFailure::InvalidResolvedPlan {
                 detail: format!("unknown Instance `{instance_key}`"),
             }
@@ -324,7 +324,7 @@ impl DylibGeneration {
             }
             Err(error) => {
                 let _ = worker.join();
-                Err(RuntimeFailure::ModuleFailure {
+                Err(RuntimeFailure::PluginFailure {
                     detail: format!("native dylib worker stopped before Ready: {error}"),
                 })
             }
@@ -339,7 +339,7 @@ impl DylibGeneration {
         context: InvocationContext,
     ) -> Result<JsonInvocationOutcome, RuntimeFailure> {
         if self.failed.load(Ordering::Acquire) {
-            return Err(RuntimeFailure::ModuleFailure {
+            return Err(RuntimeFailure::PluginFailure {
                 detail: "native dylib generation is retired".to_owned(),
             });
         }
@@ -361,7 +361,7 @@ impl DylibGeneration {
         select! {
             result = response => match result {
                 Ok(result) => result,
-                Err(_) => Err(RuntimeFailure::ModuleFailure {
+                Err(_) => Err(RuntimeFailure::PluginFailure {
                     detail: "native dylib worker stopped".to_owned(),
                 }),
             },
@@ -470,8 +470,8 @@ struct DylibLifecycle {
     generation: Rc<DylibGeneration>,
 }
 
-impl ModuleLifecycle for DylibLifecycle {
-    fn deactivate(&self, _context: lenso_kernel::DeactivateContext) -> lenso_kernel::ModuleFuture {
+impl PluginLifecycle for DylibLifecycle {
+    fn deactivate(&self, _context: lenso_kernel::DeactivateContext) -> lenso_kernel::PluginFuture {
         self.generation.stop();
         Box::pin(futures::future::ready(Ok(())))
     }

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = true
 repository.workspace = true
-description = "Typed Plan-bound Capability imports for Lenso guest Modules."
+description = "Typed Plan-bound Capability imports for Lenso guest Plugins."
 
 [dependencies]
 serde.workspace = true

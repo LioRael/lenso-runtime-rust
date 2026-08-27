@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use lenso_native_adapter::module;
+use lenso_native_adapter::plugin;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 struct ManualConfig {
@@ -8,13 +8,13 @@ struct ManualConfig {
     retries: u32,
 }
 
-#[module(
+#[plugin(
     consumer,
     configuration_schema = "tests/fixtures/manual-config.schema.json",
     configuration_defaults = "tests/fixtures/manual-config.defaults.json"
 )]
 #[derive(Clone, Debug)]
-struct ManualDefaultsModule {
+struct ManualDefaultsPlugin {
     #[config]
     config: ManualConfig,
 }
@@ -22,7 +22,7 @@ struct ManualDefaultsModule {
 #[test]
 fn explicit_package_schema_embeds_package_local_defaults() {
     let descriptor: serde_json::Value =
-        serde_json::from_str(MODULE_DESCRIPTOR_JSON).expect("descriptor should be valid JSON");
+        serde_json::from_str(PLUGIN_DESCRIPTOR_JSON).expect("descriptor should be valid JSON");
 
     assert_eq!(
         descriptor["configuration_defaults"],

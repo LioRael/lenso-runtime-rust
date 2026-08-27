@@ -2,7 +2,7 @@
   "schema_version": 3,
   "captured_on": "2026-08-24",
   "decision": "ADR-0063",
-  "fixture": "module-owned generated Probe client through replicated Runner lanes",
+  "fixture": "plugin-owned generated Probe client through replicated Runner lanes",
   "requests_per_sample": 100000,
   "samples_per_path": 5,
   "cross_lane_sample_order": [false, true, true, false, true, false, false, true, false, true],

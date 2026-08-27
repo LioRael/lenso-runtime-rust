@@ -13,9 +13,9 @@ use std::{
 };
 
 use futures::{FutureExt, StreamExt, channel::mpsc as futures_mpsc, select};
-use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
+use lenso_app_plan::{ExecutionClassId, PluginInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
-    ExecutionAdapter, InvocationContext, ModuleLifecycle, PreparedNativeApp, PreparedNativeModule,
+    ExecutionAdapter, InvocationContext, PluginLifecycle, PreparedNativeApp, PreparedNativePlugin,
     RuntimeFailure,
 };
 use lenso_runtime_codec::{
@@ -23,7 +23,7 @@ use lenso_runtime_codec::{
     JsonRequestTransport, JsonStreamFrame, JsonStreamItem, JsonStreamOpenFuture,
     JsonStreamSessionTransport, JsonStreamTransport, codecs_for_instance, codecs_for_requirements,
     json_host_invocation_envelope, json_request_endpoints, json_runtime_failure,
-    json_stream_endpoints, prepare_request_app, validate_json_module_descriptor,
+    json_stream_endpoints, prepare_request_app, validate_json_plugin_descriptor,
 };
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
@@ -170,8 +170,8 @@ impl WasmComponentAdapter {
 
     fn prepare_instance(
         &self,
-        instance: &ModuleInstancePlan,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+        instance: &PluginInstancePlan,
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
         if instance.entrypoint() != "plugin" {
             return invalid(format!(
                 "Wasm Component Instance `{}` requires the `plugin` world entrypoint",
@@ -189,7 +189,7 @@ impl WasmComponentAdapter {
             .require(instance.instance_key())?
             .read_verified()?;
         if bytes.len() > self.limits.max_component_bytes {
-            return module_failure("Wasm Component exceeds max_component_bytes");
+            return plugin_failure("Wasm Component exceeds max_component_bytes");
         }
         let codecs = codecs_for_instance(instance, &self.codecs)?;
         let import_codecs = codecs_for_requirements(instance, &self.codecs)?;
@@ -201,7 +201,7 @@ impl WasmComponentAdapter {
         )?);
         let endpoints = json_request_endpoints(generation.clone(), codecs.clone());
         let stream_endpoints = json_stream_endpoints(generation.clone(), codecs);
-        Ok(PreparedNativeModule::with_endpoints(
+        Ok(PreparedNativePlugin::with_endpoints(
             endpoints,
             stream_endpoints,
             WasmLifecycle { generation },
@@ -222,7 +222,7 @@ impl ExecutionAdapter for WasmComponentAdapter {
         let execution_class = self.execution_class();
         let mut generations = BTreeMap::new();
         for instance in plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .filter(|instance| instance.execution_class() == &execution_class)
         {
@@ -241,8 +241,8 @@ impl ExecutionAdapter for WasmComponentAdapter {
         &self,
         plan: &ResolvedAppPlan,
         instance_key: &str,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
-        let instance = plan.module_instance(instance_key).ok_or_else(|| {
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        let instance = plan.plugin_instance(instance_key).ok_or_else(|| {
             RuntimeFailure::InvalidResolvedPlan {
                 detail: format!("unknown Instance `{instance_key}`"),
             }
@@ -354,7 +354,7 @@ impl std::fmt::Debug for WasmGeneration {
 impl WasmGeneration {
     fn start(
         bytes: Vec<u8>,
-        instance: ModuleInstancePlan,
+        instance: PluginInstancePlan,
         import_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
         limits: WasmComponentLimits,
     ) -> Result<Self, RuntimeFailure> {
@@ -413,7 +413,7 @@ impl WasmGeneration {
             Ok(Err(detail)) => {
                 engine.increment_epoch();
                 let _ = worker.join();
-                module_failure(detail)
+                plugin_failure(detail)
             }
         }
     }
@@ -455,7 +455,7 @@ impl WasmGeneration {
         operation_name: &'static str,
     ) -> Result<JsonInvocationOutcome, RuntimeFailure> {
         if self.failed.load(Ordering::Acquire) {
-            return Err(RuntimeFailure::ModuleFailure {
+            return Err(RuntimeFailure::PluginFailure {
                 detail: "Wasm Component generation is retired".to_owned(),
             });
         }
@@ -487,11 +487,11 @@ impl WasmGeneration {
                         Ok(Ok(outcome)) => Ok(outcome),
                         Ok(Err(detail)) => {
                             self.failed.store(true, Ordering::Release);
-                            Err(RuntimeFailure::ModuleFailure { detail: bounded(detail) })
+                            Err(RuntimeFailure::PluginFailure { detail: bounded(detail) })
                         }
                         Err(_) => {
                             self.failed.store(true, Ordering::Release);
-                            Err(RuntimeFailure::ModuleFailure {
+                            Err(RuntimeFailure::PluginFailure {
                                 detail: "Wasm Component worker stopped".to_owned(),
                             })
                         }
@@ -962,7 +962,7 @@ struct WasmWorkerInputs<'a> {
     engine: &'a Engine,
     component: &'a Component,
     linker: &'a Linker<HostState>,
-    instance: &'a ModuleInstancePlan,
+    instance: &'a PluginInstancePlan,
     limits: &'a WasmComponentLimits,
 }
 
@@ -1047,7 +1047,7 @@ fn run_worker(
     if descriptor.len() > limits.max_result_bytes {
         return Err("Wasm Component descriptor exceeds max_result_bytes".to_owned());
     }
-    validate_json_module_descriptor(instance, &descriptor)
+    validate_json_plugin_descriptor(instance, &descriptor)
         .map_err(|error| bounded(format!("Wasm Component descriptor mismatch: {error:?}")))?;
     deadline_tx
         .send(DeadlineCommand::Disarm)
@@ -1308,8 +1308,8 @@ struct WasmLifecycle {
     generation: Rc<WasmGeneration>,
 }
 
-impl ModuleLifecycle for WasmLifecycle {
-    fn activate(&self, context: lenso_kernel::ActivateContext) -> lenso_kernel::ModuleFuture {
+impl PluginLifecycle for WasmLifecycle {
+    fn activate(&self, context: lenso_kernel::ActivateContext) -> lenso_kernel::PluginFuture {
         let result = self
             .generation
             .host_imports
@@ -1317,7 +1317,7 @@ impl ModuleLifecycle for WasmLifecycle {
         Box::pin(futures::future::ready(result))
     }
 
-    fn deactivate(&self, _context: lenso_kernel::DeactivateContext) -> lenso_kernel::ModuleFuture {
+    fn deactivate(&self, _context: lenso_kernel::DeactivateContext) -> lenso_kernel::PluginFuture {
         self.generation.host_imports.deactivate();
         self.generation.stop();
         Box::pin(futures::future::ready(Ok(())))
@@ -1331,13 +1331,13 @@ fn parse_host_payload(encoded: &str) -> Result<serde_json::Value, RuntimeFailure
 }
 
 fn wasm_failure(error: impl std::fmt::Display) -> RuntimeFailure {
-    RuntimeFailure::ModuleFailure {
+    RuntimeFailure::PluginFailure {
         detail: bounded(format!("Wasm Component generation failure: {error}")),
     }
 }
 
-fn module_failure<T>(detail: impl Into<String>) -> Result<T, RuntimeFailure> {
-    Err(RuntimeFailure::ModuleFailure {
+fn plugin_failure<T>(detail: impl Into<String>) -> Result<T, RuntimeFailure> {
+    Err(RuntimeFailure::PluginFailure {
         detail: bounded(detail.into()),
     })
 }

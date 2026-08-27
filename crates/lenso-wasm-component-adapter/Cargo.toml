@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = true
 repository.workspace = true
-description = "Wasmtime Component Model Execution Adapter for Lenso Module artifacts."
+description = "Wasmtime Component Model Execution Adapter for Lenso Plugin artifacts."
 
 [dependencies]
 futures.workspace = true

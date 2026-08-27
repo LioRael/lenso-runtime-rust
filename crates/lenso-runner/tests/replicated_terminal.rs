@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use lenso_app_plan::{
-    AppComposition, ExecutionLaneId, ExecutionLanePlan, ModuleCriticality, ModuleInstancePlan,
+    AppComposition, ExecutionLaneId, ExecutionLanePlan, PluginCriticality, PluginInstancePlan,
 };
-use lenso_kernel::{ActivateContext, ExecutionAdapterCatalog, ModuleLifecycle, RuntimeFailure};
+use lenso_kernel::{ActivateContext, ExecutionAdapterCatalog, PluginLifecycle, RuntimeFailure};
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
 use lenso_runner::{ReplicatedNativeApp, ReplicatedRunnerError};
 
@@ -15,16 +15,16 @@ const PEER_PACKAGE: &str = "fixture.terminal-peer";
 #[derive(Debug)]
 struct FailingFactory;
 
-impl NativeModuleFactory for FailingFactory {
+impl NativePluginFactory for FailingFactory {
     fn package_id(&self) -> &'static str {
         FAILING_PACKAGE
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::with_lifecycle(
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::with_lifecycle(
             Vec::new(),
             FailingLifecycle,
         ))
@@ -34,8 +34,8 @@ impl NativeModuleFactory for FailingFactory {
 #[derive(Debug)]
 struct FailingLifecycle;
 
-impl ModuleLifecycle for FailingLifecycle {
-    fn activate(&self, context: ActivateContext) -> lenso_kernel::ModuleFuture {
+impl PluginLifecycle for FailingLifecycle {
+    fn activate(&self, context: ActivateContext) -> lenso_kernel::PluginFuture {
         context
             .tasks()
             .spawn_local(Box::pin(async { panic!("injected managed task failure") }))
@@ -47,26 +47,26 @@ impl ModuleLifecycle for FailingLifecycle {
 #[derive(Debug)]
 struct PeerFactory;
 
-impl NativeModuleFactory for PeerFactory {
+impl NativePluginFactory for PeerFactory {
     fn package_id(&self) -> &'static str {
         PEER_PACKAGE
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::default())
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::default())
     }
 }
 
 fn terminal_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("failing", FAILING_PACKAGE)
+            PluginInstancePlan::new("failing", FAILING_PACKAGE)
                 .with_execution_lane(ExecutionLaneId::new("failing-lane"))
-                .with_criticality(ModuleCriticality::Critical),
-            ModuleInstancePlan::new("peer", PEER_PACKAGE)
+                .with_criticality(PluginCriticality::Critical),
+            PluginInstancePlan::new("peer", PEER_PACKAGE)
                 .with_execution_lane(ExecutionLaneId::new("peer-lane")),
         ],
         Vec::new(),
@@ -83,7 +83,7 @@ fn terminal_plan() -> lenso_app_plan::ResolvedAppPlan {
 async fn kernel_terminal_failure_stops_every_replicated_lane_and_is_preserved() {
     let app = ReplicatedNativeApp::start(terminal_plan(), |_| {
         ExecutionAdapterCatalog::single(
-            NativeModuleRegistry::new()
+            NativePluginRegistry::new()
                 .with_factory(FailingFactory)
                 .with_factory(PeerFactory),
         )
@@ -97,7 +97,7 @@ async fn kernel_terminal_failure_stops_every_replicated_lane_and_is_preserved() 
         &failure,
         ReplicatedRunnerError::LaneRuntimeFailure {
             lane,
-            error: RuntimeFailure::ModuleRestartExhausted {
+            error: RuntimeFailure::PluginRestartExhausted {
                 instance,
                 attempts: 0,
             },

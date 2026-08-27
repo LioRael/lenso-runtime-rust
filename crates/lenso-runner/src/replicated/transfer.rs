@@ -118,10 +118,10 @@ impl CrossLaneRequestCatalog {
     ) -> Result<(), super::ReplicatedRunnerError> {
         for binding in plan.capability_bindings() {
             let consumer = plan
-                .module_instance(binding.consumer_instance())
+                .plugin_instance(binding.consumer_instance())
                 .expect("validated binding consumer should exist");
             let provider = plan
-                .module_instance(binding.provider_instance())
+                .plugin_instance(binding.provider_instance())
                 .expect("validated binding provider should exist");
             let endpoint = provider
                 .provided_capabilities()

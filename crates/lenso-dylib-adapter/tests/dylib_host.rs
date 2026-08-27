@@ -3,7 +3,7 @@
 use std::{any::Any, process::Command};
 
 use lenso_app_plan::{
-    CapabilityEndpointPlan, ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
+    CapabilityEndpointPlan, ExecutionClassId, PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_dylib_adapter::{DylibAdapter, EXECUTION_CLASS, ExplicitDigestTrust};
 use lenso_kernel::{CancellationToken, ExecutionAdapter, InvocationContext, RuntimeFailure};
@@ -62,7 +62,7 @@ impl JsonCapabilityCodec for EchoCodec {
 #[test]
 fn versioned_c_abi_uses_host_owned_buffers_and_exact_trust() {
     let directory = tempfile::tempdir().unwrap();
-    let compiled = directory.path().join("module-under-test");
+    let compiled = directory.path().join("plugin-under-test");
     let mut command = Command::new("cc");
     #[cfg(target_os = "macos")]
     command.arg("-dynamiclib");
@@ -70,7 +70,7 @@ fn versioned_c_abi_uses_host_owned_buffers_and_exact_trust() {
     command.args(["-shared", "-fPIC"]);
     let status = command
         .args(["-O2", "-fvisibility=hidden"])
-        .arg("tests/fixtures/module.c")
+        .arg("tests/fixtures/plugin.c")
         .arg("-o")
         .arg(&compiled)
         .status()
@@ -112,8 +112,8 @@ fn versioned_c_abi_uses_host_owned_buffers_and_exact_trust() {
 fn plan() -> ResolvedAppPlan {
     ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("plugin", "test.dylib")
-                .with_entrypoint("lenso_module_v1")
+            PluginInstancePlan::new("plugin", "test.dylib")
+                .with_entrypoint("lenso_plugin_v1")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_capability(CapabilityEndpointPlan::new(
                     "test.echo@1",

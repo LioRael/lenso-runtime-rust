@@ -11,7 +11,7 @@ use lenso_kernel::{
     StreamCapability,
 };
 
-use crate::ModuleResult;
+use crate::PluginResult;
 
 /// One typed value sent by a Capability consumer to a Stream provider.
 #[derive(Debug)]
@@ -31,7 +31,7 @@ enum ProviderOutput<C: StreamCapability> {
 
 /// The typed provider side of one bounded bidirectional Stream session.
 ///
-/// Module code uses this channel to exchange Capability values. Generated
+/// Plugin code uses this channel to exchange Capability values. Generated
 /// lowering keeps type erasure and [`NativeStreamSession`] behind the facade.
 pub struct ProviderStreamChannel<C: StreamCapability> {
     outgoing: mpsc::Sender<ProviderOutput<C>>,
@@ -88,19 +88,19 @@ impl<C: StreamCapability> ProviderStreamChannel<C> {
 
     /// Closes the provider send direction and completes the Stream exactly once.
     ///
-    /// Consuming the channel prevents Module code from accidentally sending or
+    /// Consuming the channel prevents Plugin code from accidentally sending or
     /// terminating the session again after its operation result is known.
     pub async fn complete(
         mut self,
-        result: ModuleResult<(), C::DomainError>,
+        result: PluginResult<(), C::DomainError>,
     ) -> Result<(), RuntimeFailure> {
         if !self.send_closed {
             self.close_send().await?;
         }
         match result {
             Ok(()) => self.finish().await,
-            Err(crate::ModuleError::Domain(error)) => self.fail(error).await,
-            Err(crate::ModuleError::Runtime(error)) => self.fail_runtime(error).await,
+            Err(crate::PluginError::Domain(error)) => self.fail(error).await,
+            Err(crate::PluginError::Runtime(error)) => self.fail_runtime(error).await,
         }
     }
 
@@ -250,7 +250,7 @@ impl<C: StreamCapability> NativeStreamSession for ProviderStream<C> {
                     terminated.set(true);
                     Err(error)
                 }
-                Either::Left((None, _)) => Err(RuntimeFailure::ModuleFailure {
+                Either::Left((None, _)) => Err(RuntimeFailure::PluginFailure {
                     detail: format!("provider Stream {} ended without a terminal outcome", C::ID),
                 }),
                 Either::Right(_) => Err(RuntimeFailure::AdmissionClosed),

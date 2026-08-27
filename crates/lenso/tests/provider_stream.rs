@@ -78,14 +78,14 @@ fn typed_provider_stream_preserves_runtime_failure_and_cancellation() {
     let (runtime_stream, mut runtime_provider) =
         ProviderStream::<Conversation>::channel(&context(2), 1);
     block_on(
-        runtime_provider.fail_runtime(RuntimeFailure::ModuleFailure {
+        runtime_provider.fail_runtime(RuntimeFailure::PluginFailure {
             detail: "storage lost".to_owned(),
         }),
     )
     .expect("runtime terminal should be admitted");
     assert!(matches!(
         block_on(runtime_stream.receive()),
-        Err(RuntimeFailure::ModuleFailure { detail }) if detail == "storage lost"
+        Err(RuntimeFailure::PluginFailure { detail }) if detail == "storage lost"
     ));
 
     let (cancelled_stream, mut cancelled_provider) =
@@ -103,10 +103,10 @@ fn typed_provider_stream_preserves_runtime_failure_and_cancellation() {
 }
 
 #[test]
-fn typed_provider_stream_completes_from_one_module_result() {
+fn typed_provider_stream_completes_from_one_plugin_result() {
     block_on(async {
         let (stream, provider) = ProviderStream::<Conversation>::channel(&context(6), 1);
-        let completing = provider.complete(Err(lenso::ModuleError::Domain("rejected")));
+        let completing = provider.complete(Err(lenso::PluginError::Domain("rejected")));
         let receiving = async {
             assert!(matches!(
                 stream.receive().await,

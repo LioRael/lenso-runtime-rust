@@ -28,10 +28,10 @@ rust-version = "1.94"
 futures = "0.3"
 hex = "0.4"
 inventory = "0.3"
-lenso-app-plan = "0.2.0"
-lenso-kernel = "0.1.12"
-lenso-runtime-conformance = "0.1.12"
-lenso-module-authoring = { version = "0.1.1", git = "https://github.com/LioRael/lenso-protocols", rev = "1424ffe25f05c0d3aaf746fb7fd66b26b9f803e0" }
+lenso-app-plan = { version = "0.2.0", git = "https://github.com/LioRael/lenso", rev = "d95e2240e83e9f4b90139a48ca97e067376f4fa9" }
+lenso-kernel = { version = "0.1.12", git = "https://github.com/LioRael/lenso", rev = "d95e2240e83e9f4b90139a48ca97e067376f4fa9" }
+lenso-runtime-conformance = { version = "0.1.12", git = "https://github.com/LioRael/lenso", rev = "d95e2240e83e9f4b90139a48ca97e067376f4fa9" }
+lenso-plugin-authoring = { version = "0.1.1", git = "https://github.com/LioRael/lenso-protocols", rev = "239381609da51158d0aae5991bc0d074f742ef42" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

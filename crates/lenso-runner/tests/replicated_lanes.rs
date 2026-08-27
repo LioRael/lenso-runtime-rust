@@ -3,17 +3,17 @@ use std::{rc::Rc, sync::mpsc, time::Duration};
 use futures::future::LocalBoxFuture;
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionLaneId, ExecutionLanePlan, ModuleInstancePlan,
+    ExecutionLaneId, ExecutionLanePlan, PluginInstancePlan,
 };
 use lenso_kernel::{
-    ActivateContext, ExecutionAdapterCatalog, InvocationContext, ModuleLifecycle, RuntimeFailure,
+    ActivateContext, ExecutionAdapterCatalog, InvocationContext, PluginLifecycle, RuntimeFailure,
 };
 use lenso_runner::{
     CrossLaneRequestCatalog, LaneCancellationToken, LaneInvocationOptions, ReplicatedNativeApp,
     ReplicatedRunnerError,
 };
 use lenso_runtime_conformance::{
-    ConformanceExecutionAdapter, ConformanceModule, ConformanceModuleFactory, PROBE_CAPABILITY_ID,
+    ConformanceExecutionAdapter, ConformancePlugin, ConformancePluginFactory, PROBE_CAPABILITY_ID,
     PROBE_CONSUMER_PACKAGE_ID, PROBE_DESCRIPTOR_VERSION, PROBE_OPERATION,
     PROBE_PROVIDER_PACKAGE_ID, Probe, ProbeConsumerFactory, ProbeEndpoint, ProbeError,
     ProbeInvocationError, ProbeProvider, ProbeProviderFactory, ProbeRequest, ProbeResponse,
@@ -25,16 +25,16 @@ const SLOW_PROBE_PROVIDER_PACKAGE_ID: &str = "fixture.slow-provider";
 #[derive(Debug)]
 struct EmptyConsumerFactory;
 
-impl ConformanceModuleFactory for EmptyConsumerFactory {
+impl ConformancePluginFactory for EmptyConsumerFactory {
     fn package_id(&self) -> &'static str {
         EMPTY_PROBE_CONSUMER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _instance: &ModuleInstancePlan,
-    ) -> Result<ConformanceModule, RuntimeFailure> {
-        Ok(ConformanceModule::default())
+        _instance: &PluginInstancePlan,
+    ) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::default())
     }
 }
 
@@ -43,16 +43,16 @@ struct ReportingConsumerFactory {
     reported: mpsc::Sender<String>,
 }
 
-impl ConformanceModuleFactory for ReportingConsumerFactory {
+impl ConformancePluginFactory for ReportingConsumerFactory {
     fn package_id(&self) -> &'static str {
         PROBE_CONSUMER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _instance: &ModuleInstancePlan,
-    ) -> Result<ConformanceModule, RuntimeFailure> {
-        Ok(ConformanceModule::with_lifecycle(
+        _instance: &PluginInstancePlan,
+    ) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::with_lifecycle(
             Vec::new(),
             ReportingConsumerLifecycle {
                 reported: self.reported.clone(),
@@ -66,8 +66,8 @@ struct ReportingConsumerLifecycle {
     reported: mpsc::Sender<String>,
 }
 
-impl ModuleLifecycle for ReportingConsumerLifecycle {
-    fn activate(&self, context: ActivateContext) -> lenso_kernel::ModuleFuture {
+impl PluginLifecycle for ReportingConsumerLifecycle {
+    fn activate(&self, context: ActivateContext) -> lenso_kernel::PluginFuture {
         let client =
             lenso_runtime_conformance::ProbeClient::from_dependencies(context.dependencies());
         let reported = self.reported.clone();
@@ -77,7 +77,7 @@ impl ModuleLifecycle for ReportingConsumerLifecycle {
                     value: "module-client".to_owned(),
                 })
                 .await
-                .map_err(|error| RuntimeFailure::ModuleFailure {
+                .map_err(|error| RuntimeFailure::PluginFailure {
                     detail: format!("typed cross-lane client failed: {error:?}"),
                 })?;
             let _ = reported.send(response.value);
@@ -89,16 +89,16 @@ impl ModuleLifecycle for ReportingConsumerLifecycle {
 #[derive(Debug)]
 struct SlowProbeProviderFactory;
 
-impl ConformanceModuleFactory for SlowProbeProviderFactory {
+impl ConformancePluginFactory for SlowProbeProviderFactory {
     fn package_id(&self) -> &'static str {
         SLOW_PROBE_PROVIDER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _instance: &ModuleInstancePlan,
-    ) -> Result<ConformanceModule, RuntimeFailure> {
-        Ok(ConformanceModule::new(vec![Rc::new(ProbeEndpoint::new(
+        _instance: &PluginInstancePlan,
+    ) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::new(vec![Rc::new(ProbeEndpoint::new(
             SlowProbeProvider,
         ))]))
     }
@@ -125,13 +125,13 @@ impl ProbeProvider for SlowProbeProvider {
 fn two_lane_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("consumer", PROBE_CONSUMER_PACKAGE_ID)
+            PluginInstancePlan::new("consumer", PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("provider", PROBE_PROVIDER_PACKAGE_ID)
+            PluginInstancePlan::new("provider", PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
                     CapabilityEndpointPlan::new(
@@ -160,13 +160,13 @@ fn two_lane_plan() -> lenso_app_plan::ResolvedAppPlan {
 fn same_and_cross_lane_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("same-consumer", PROBE_CONSUMER_PACKAGE_ID)
+            PluginInstancePlan::new("same-consumer", PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("same-provider", PROBE_PROVIDER_PACKAGE_ID)
+            PluginInstancePlan::new("same-provider", PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_capability(
                     CapabilityEndpointPlan::new(
@@ -176,13 +176,13 @@ fn same_and_cross_lane_plan() -> lenso_app_plan::ResolvedAppPlan {
                     )
                     .with_cross_lane_transfer(),
                 ),
-            ModuleInstancePlan::new("cross-consumer", PROBE_CONSUMER_PACKAGE_ID)
+            PluginInstancePlan::new("cross-consumer", PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("cross-provider", PROBE_PROVIDER_PACKAGE_ID)
+            PluginInstancePlan::new("cross-provider", PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
                     CapabilityEndpointPlan::new(
@@ -234,13 +234,13 @@ fn probe_transfers() -> CrossLaneRequestCatalog {
 fn slow_conformance_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("same-consumer", EMPTY_PROBE_CONSUMER_PACKAGE_ID)
+            PluginInstancePlan::new("same-consumer", EMPTY_PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("same-provider", SLOW_PROBE_PROVIDER_PACKAGE_ID)
+            PluginInstancePlan::new("same-provider", SLOW_PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_capability(
                     CapabilityEndpointPlan::new(
@@ -251,13 +251,13 @@ fn slow_conformance_plan() -> lenso_app_plan::ResolvedAppPlan {
                     .with_limits(0, 1)
                     .with_cross_lane_transfer(),
                 ),
-            ModuleInstancePlan::new("cross-consumer", EMPTY_PROBE_CONSUMER_PACKAGE_ID)
+            PluginInstancePlan::new("cross-consumer", EMPTY_PROBE_CONSUMER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("frontend"))
                 .with_requirement(CapabilityRequirementPlan::one(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                 )),
-            ModuleInstancePlan::new("cross-provider", SLOW_PROBE_PROVIDER_PACKAGE_ID)
+            PluginInstancePlan::new("cross-provider", SLOW_PROBE_PROVIDER_PACKAGE_ID)
                 .with_execution_lane(ExecutionLaneId::new("workers"))
                 .with_capability(
                     CapabilityEndpointPlan::new(
@@ -328,7 +328,7 @@ async fn one_plan_runs_two_kernel_lanes_and_invokes_across_them() {
     assert_eq!(
         report
             .recv_timeout(Duration::from_secs(1))
-            .expect("the Module's typed client should invoke across lanes"),
+            .expect("the Plugin's typed client should invoke across lanes"),
         "Echo: module-client"
     );
     let response = app

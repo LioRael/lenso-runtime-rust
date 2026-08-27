@@ -341,7 +341,7 @@ pub(crate) fn validate_state_compatibility(
         };
         let document = receipts
             .values()
-            .find(|document| document.value().module_instance_key == instance_key)
+            .find(|document| document.value().plugin_instance_key == instance_key)
             .ok_or_else(|| ControlPlaneError::TransitionRejected {
                 detail: format!(
                     "changed stateful Instance `{instance_key}` has no compatibility receipt"

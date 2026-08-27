@@ -184,7 +184,7 @@ impl LaneRuntime {
             .find(|binding| {
                 binding.capability_id() == C::ID && binding.provider_instance() == provider_instance
             })
-            .and_then(lenso_kernel::ModuleDependency::stream_handle)
+            .and_then(lenso_kernel::PluginDependency::stream_handle)
             .ok_or(RuntimeFailure::Unavailable { capability: C::ID })?
             .typed::<C>()
     }
@@ -201,7 +201,7 @@ impl LaneRuntime {
             .find(|binding| {
                 binding.capability_id() == C::ID && binding.provider_instance() == provider_instance
             })
-            .and_then(lenso_kernel::ModuleDependency::event_handle)
+            .and_then(lenso_kernel::PluginDependency::event_handle)
             .ok_or(RuntimeFailure::Unavailable { capability: C::ID })?
             .typed::<C>()
     }
@@ -664,14 +664,14 @@ impl ReplicatedAppRoute {
         caller_instance: &str,
     ) -> Result<(&ReplicatedLaneRoute, Option<CrossLaneDiagnostics>), RuntimeFailure> {
         let binding = singular_binding::<C>(&self.plan, caller_instance)?;
-        let consumer = self.plan.module_instance(caller_instance).ok_or_else(|| {
+        let consumer = self.plan.plugin_instance(caller_instance).ok_or_else(|| {
             RuntimeFailure::InvalidResolvedPlan {
                 detail: format!("binding consumer `{caller_instance}` is absent from the Plan"),
             }
         })?;
         let provider = self
             .plan
-            .module_instance(binding.provider_instance())
+            .plugin_instance(binding.provider_instance())
             .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
                     "binding provider `{}` is absent from the Plan",
@@ -736,7 +736,7 @@ impl ReplicatedAppRoute {
     {
         self.ensure_running()?;
         // An invocation entering through the Runner can start on the resolved provider owner.
-        // Calls originating inside a Module still use the projected cross-lane transfer endpoint.
+        // Calls originating inside a Plugin still use the projected cross-lane transfer endpoint.
         let (lane, cross_lane_diagnostics) = self.resolve_request_lane::<C>(caller_instance)?;
         let caller_instance = caller_instance.to_owned();
         let operation = operation.to_owned();

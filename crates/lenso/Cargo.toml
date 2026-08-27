@@ -5,16 +5,17 @@ edition.workspace = true
 license.workspace = true
 publish = true
 repository.workspace = true
-description = "Rust authoring facade for Lenso Plugins and built-in Modules."
+description = "Rust authoring facade for Lenso Plugins and built-in Plugins."
 readme = "README.md"
 
 [package.metadata.lenso]
-package-id = "lenso"
+plugin-id = "lenso"
+root-slot = "test"
 
 [dependencies]
 futures.workspace = true
 lenso-kernel.workspace = true
-lenso-module-authoring.workspace = true
+lenso-plugin-authoring.workspace = true
 lenso-native-adapter = { version = "0.2.4", path = "../lenso-native-adapter" }
 serde.workspace = true
 serde_json.workspace = true

@@ -23,7 +23,7 @@ pub trait HostImports: Clone + std::fmt::Debug + 'static {
 ///
 /// Keep one instance in guest-local state and delegate `stream_open`, the
 /// message functions, and `stream_cancel` to it instead of reimplementing ID
-/// allocation and lookup for every guest Module.
+/// allocation and lookup for every guest Plugin.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuestSessions<T> {
     next_id: u64,
@@ -98,7 +98,7 @@ pub enum GuestSessionError {
     UnknownSession(u64),
 }
 
-/// One Capability implemented by a guest Plugin or built-in Module.
+/// One Capability implemented by a guest Plugin or built-in Plugin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestProvidedCapability<'a> {
     pub capability_id: &'a str,
@@ -107,7 +107,7 @@ pub struct GuestProvidedCapability<'a> {
     pub stream_operations: &'a [&'a str],
 }
 
-/// One Host Capability required by a guest Plugin or built-in Module.
+/// One Host Capability required by a guest Plugin or built-in Plugin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestRequiredCapability<'a> {
     pub capability_id: &'a str,
@@ -131,7 +131,7 @@ struct EncodedRequiredCapability<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct GuestModuleDescriptor<'a> {
+struct GuestPluginDescriptor<'a> {
     abi: &'static str,
     capabilities: Vec<EncodedProvidedCapability<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -173,7 +173,7 @@ pub fn encode_guest_descriptor(
     } else {
         "lenso.json-request@1"
     };
-    serde_json::to_string(&GuestModuleDescriptor {
+    serde_json::to_string(&GuestPluginDescriptor {
         abi,
         capabilities,
         required_capabilities,
@@ -181,7 +181,7 @@ pub fn encode_guest_descriptor(
     .expect("guest descriptor contains only infallible borrowed JSON values")
 }
 
-/// Derives a legacy guest Module descriptor from Capability package constants.
+/// Derives a legacy guest Plugin descriptor from Capability package constants.
 ///
 /// Capability aliases name the same source-derived packages used by generated
 /// guest clients, so IDs and descriptor versions cannot drift into copied JSON.
@@ -460,7 +460,7 @@ pub struct GuestContext<H: HostImports> {
 }
 
 impl<H: HostImports> GuestContext<H> {
-    /// Loads the exact binding table activated for this Module generation.
+    /// Loads the exact binding table activated for this Plugin generation.
     pub fn load(host: H) -> Result<Self, GuestError<Value>> {
         let encoded = host.bindings();
         let bindings = decode_transport_success::<Vec<GuestBinding>>(&encoded)?;

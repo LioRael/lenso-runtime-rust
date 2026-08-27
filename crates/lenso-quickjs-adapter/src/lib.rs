@@ -14,9 +14,9 @@ use std::{
 };
 
 use futures::{FutureExt, StreamExt, channel::mpsc as futures_mpsc, select};
-use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
+use lenso_app_plan::{ExecutionClassId, PluginInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
-    ExecutionAdapter, InvocationContext, ModuleLifecycle, PreparedNativeApp, PreparedNativeModule,
+    ExecutionAdapter, InvocationContext, PluginLifecycle, PreparedNativeApp, PreparedNativePlugin,
     RuntimeFailure,
 };
 use lenso_runtime_codec::{
@@ -24,7 +24,7 @@ use lenso_runtime_codec::{
     JsonRequestTransport, JsonStreamFrame, JsonStreamItem, JsonStreamOpenFuture,
     JsonStreamSessionTransport, JsonStreamTransport, codecs_for_instance, codecs_for_requirements,
     json_host_invocation_envelope, json_request_endpoints, json_runtime_failure,
-    json_stream_endpoints, prepare_request_app, validate_json_module_descriptor,
+    json_stream_endpoints, prepare_request_app, validate_json_plugin_descriptor,
 };
 use rquickjs::{
     Context, Function, Module, Persistent, Runtime, function::Func, promise::MaybePromise,
@@ -115,8 +115,8 @@ impl QuickJsAdapter {
 
     fn prepare_instance(
         &self,
-        instance: &ModuleInstancePlan,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+        instance: &PluginInstancePlan,
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
         if instance.entrypoint().is_empty() || instance.entrypoint() == "default" {
             return invalid(format!(
                 "QuickJS Instance `{}` needs an ES module entrypoint",
@@ -134,10 +134,10 @@ impl QuickJsAdapter {
             .require(instance.instance_key())?
             .read_verified()?;
         if source.len() > self.limits.max_module_bytes {
-            return exhausted("QuickJS Module Artifact exceeds max_module_bytes");
+            return exhausted("QuickJS Plugin Artifact exceeds max_module_bytes");
         }
-        let source = String::from_utf8(source).map_err(|_| RuntimeFailure::ModuleFailure {
-            detail: "QuickJS Module Artifact is not UTF-8 source".to_owned(),
+        let source = String::from_utf8(source).map_err(|_| RuntimeFailure::PluginFailure {
+            detail: "QuickJS Plugin Artifact is not UTF-8 source".to_owned(),
         })?;
         let codecs = codecs_for_instance(instance, &self.codecs)?;
         let import_codecs = codecs_for_requirements(instance, &self.codecs)?;
@@ -150,7 +150,7 @@ impl QuickJsAdapter {
         )?);
         let endpoints = json_request_endpoints(generation.clone(), codecs.clone());
         let stream_endpoints = json_stream_endpoints(generation.clone(), codecs);
-        Ok(PreparedNativeModule::with_endpoints(
+        Ok(PreparedNativePlugin::with_endpoints(
             endpoints,
             stream_endpoints,
             QuickJsLifecycle { generation },
@@ -171,7 +171,7 @@ impl ExecutionAdapter for QuickJsAdapter {
         let execution_class = self.execution_class();
         let mut generations = BTreeMap::new();
         for instance in plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .filter(|instance| instance.execution_class() == &execution_class)
         {
@@ -190,8 +190,8 @@ impl ExecutionAdapter for QuickJsAdapter {
         &self,
         plan: &ResolvedAppPlan,
         instance_key: &str,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
-        let instance = plan.module_instance(instance_key).ok_or_else(|| {
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        let instance = plan.plugin_instance(instance_key).ok_or_else(|| {
             RuntimeFailure::InvalidResolvedPlan {
                 detail: format!("unknown Instance `{instance_key}`"),
             }
@@ -304,7 +304,7 @@ impl QuickJsGeneration {
     fn load(
         entrypoint: &str,
         source: &str,
-        instance: ModuleInstancePlan,
+        instance: PluginInstancePlan,
         import_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
         limits: QuickJsLimits,
     ) -> Result<Self, RuntimeFailure> {
@@ -355,7 +355,7 @@ impl QuickJsGeneration {
             Ok(Err(detail)) => {
                 interrupt.store(true, Ordering::Release);
                 let _ = worker.join();
-                Err(RuntimeFailure::ModuleFailure { detail })
+                Err(RuntimeFailure::PluginFailure { detail })
             }
             Err(error) => {
                 interrupt.store(true, Ordering::Release);
@@ -391,7 +391,7 @@ impl QuickJsGeneration {
         operation_name: &'static str,
     ) -> Result<JsonInvocationOutcome, RuntimeFailure> {
         if self.failed.load(Ordering::Acquire) {
-            return Err(RuntimeFailure::ModuleFailure {
+            return Err(RuntimeFailure::PluginFailure {
                 detail: "QuickJS generation is retired".to_owned(),
             });
         }
@@ -423,11 +423,11 @@ impl QuickJsGeneration {
                         Ok(Ok(outcome)) => Ok(outcome),
                         Ok(Err(detail)) => {
                             self.failed.store(true, Ordering::Release);
-                            Err(RuntimeFailure::ModuleFailure { detail: bounded(detail) })
+                            Err(RuntimeFailure::PluginFailure { detail: bounded(detail) })
                         }
                         Err(_) => {
                             self.failed.store(true, Ordering::Release);
-                            Err(RuntimeFailure::ModuleFailure {
+                            Err(RuntimeFailure::PluginFailure {
                                 detail: "QuickJS worker stopped".to_owned(),
                             })
                         }
@@ -811,7 +811,7 @@ impl Drop for AbandonmentGuard {
 struct QuickJsWorkerInputs<'a> {
     entrypoint: &'a str,
     source: &'a str,
-    instance: &'a ModuleInstancePlan,
+    instance: &'a PluginInstancePlan,
     limits: &'a QuickJsLimits,
 }
 
@@ -866,30 +866,30 @@ fn run_quickjs_worker(
         .with(|context| {
             install_host_imports(&context, host_import_sender.clone(), invocation.clone())?;
             harden_globals(&context)?;
-            let (module, promise) = Module::declare(context.clone(), entrypoint, source)?.eval()?;
+            let (plugin, promise) = Module::declare(context.clone(), entrypoint, source)?.eval()?;
             finish_promise(&context, &promise, limits.max_pending_jobs)?;
-            let describe: Function<'_> = module.get("describe")?;
+            let describe: Function<'_> = plugin.get("describe")?;
             let descriptor: MaybePromise<'_> = describe.call(())?;
             let descriptor = finish_maybe_promise(&context, &descriptor, limits.max_pending_jobs)?;
-            let invoke: Function<'_> = module.get("invoke")?;
+            let invoke: Function<'_> = plugin.get("invoke")?;
             let stream_open = requires_stream
-                .then(|| module.get::<_, Function<'_>>("streamOpen"))
+                .then(|| plugin.get::<_, Function<'_>>("streamOpen"))
                 .transpose()?
                 .map(|function| Persistent::save(&context, function));
             let stream_send = requires_stream
-                .then(|| module.get::<_, Function<'_>>("streamSend"))
+                .then(|| plugin.get::<_, Function<'_>>("streamSend"))
                 .transpose()?
                 .map(|function| Persistent::save(&context, function));
             let stream_receive = requires_stream
-                .then(|| module.get::<_, Function<'_>>("streamReceive"))
+                .then(|| plugin.get::<_, Function<'_>>("streamReceive"))
                 .transpose()?
                 .map(|function| Persistent::save(&context, function));
             let stream_close_send = requires_stream
-                .then(|| module.get::<_, Function<'_>>("streamCloseSend"))
+                .then(|| plugin.get::<_, Function<'_>>("streamCloseSend"))
                 .transpose()?
                 .map(|function| Persistent::save(&context, function));
             let stream_cancel = requires_stream
-                .then(|| module.get::<_, Function<'_>>("streamCancel"))
+                .then(|| plugin.get::<_, Function<'_>>("streamCancel"))
                 .transpose()?
                 .map(|function| Persistent::save(&context, function));
             Ok::<_, rquickjs::Error>((
@@ -908,7 +908,7 @@ fn run_quickjs_worker(
     if descriptor.len() > limits.max_result_bytes {
         return Err("QuickJS descriptor exceeds max_result_bytes".to_owned());
     }
-    validate_json_module_descriptor(instance, &descriptor)
+    validate_json_plugin_descriptor(instance, &descriptor)
         .map_err(|error| bounded(format!("QuickJS descriptor mismatch: {error:?}")))?;
     invocation.replace(None);
     ready.send(Ok(())).map_err(|error| error.to_string())?;
@@ -1054,8 +1054,8 @@ struct QuickJsLifecycle {
     generation: Rc<QuickJsGeneration>,
 }
 
-impl ModuleLifecycle for QuickJsLifecycle {
-    fn activate(&self, context: lenso_kernel::ActivateContext) -> lenso_kernel::ModuleFuture {
+impl PluginLifecycle for QuickJsLifecycle {
+    fn activate(&self, context: lenso_kernel::ActivateContext) -> lenso_kernel::PluginFuture {
         let result = self
             .generation
             .host_imports
@@ -1063,7 +1063,7 @@ impl ModuleLifecycle for QuickJsLifecycle {
         Box::pin(futures::future::ready(result))
     }
 
-    fn deactivate(&self, _context: lenso_kernel::DeactivateContext) -> lenso_kernel::ModuleFuture {
+    fn deactivate(&self, _context: lenso_kernel::DeactivateContext) -> lenso_kernel::PluginFuture {
         self.generation.host_imports.deactivate();
         self.generation.stop();
         Box::pin(futures::future::ready(Ok(())))
@@ -1218,7 +1218,7 @@ fn harden_globals(context: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
 
 fn decode_envelope(value: Value) -> Result<JsonInvocationOutcome, RuntimeFailure> {
     let Value::Object(mut object) = value else {
-        return Err(RuntimeFailure::ModuleFailure {
+        return Err(RuntimeFailure::PluginFailure {
             detail: "QuickJS result envelope is not an object".to_owned(),
         });
     };
@@ -1229,7 +1229,7 @@ fn decode_envelope(value: Value) -> Result<JsonInvocationOutcome, RuntimeFailure
     ) {
         (Some(value), None, true) => Ok(JsonInvocationOutcome::Success(value)),
         (None, Some(value), true) => Ok(JsonInvocationOutcome::DomainError(value)),
-        _ => Err(RuntimeFailure::ModuleFailure {
+        _ => Err(RuntimeFailure::PluginFailure {
             detail: "QuickJS result envelope must contain exactly one of `ok` or `error`"
                 .to_owned(),
         }),
@@ -1237,7 +1237,7 @@ fn decode_envelope(value: Value) -> Result<JsonInvocationOutcome, RuntimeFailure
 }
 
 fn quickjs_failure(error: impl std::fmt::Display) -> RuntimeFailure {
-    RuntimeFailure::ModuleFailure {
+    RuntimeFailure::PluginFailure {
         detail: bounded(format!("QuickJS generation failure: {error}")),
     }
 }
@@ -1247,7 +1247,7 @@ fn invalid<T>(detail: String) -> Result<T, RuntimeFailure> {
 }
 
 fn exhausted<T>(detail: &str) -> Result<T, RuntimeFailure> {
-    Err(RuntimeFailure::ModuleFailure {
+    Err(RuntimeFailure::PluginFailure {
         detail: detail.to_owned(),
     })
 }

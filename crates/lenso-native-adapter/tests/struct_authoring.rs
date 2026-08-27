@@ -1,9 +1,10 @@
 #![allow(dead_code)]
 
-use lenso_module_authoring::{
+use lenso_app_plan::authoring::HostSlot;
+use lenso_native_adapter::{Lifecycle, NativePluginRegistry, plugin, provides};
+use lenso_plugin_authoring::{
     BoundCapabilityClient, CapabilityClient, CapabilityClientMany, ManyPort,
 };
-use lenso_native_adapter::{Lifecycle, NativeModuleRegistry, module, provides};
 
 mod echo {
     #[macro_export]
@@ -44,7 +45,7 @@ mod echo {
     pub struct EchoClient;
 
     impl super::CapabilityClient for EchoClient {
-        type Dependencies = lenso_kernel::ModuleDependencies;
+        type Dependencies = lenso_kernel::PluginDependencies;
         type Error = lenso_kernel::RuntimeFailure;
 
         const CAPABILITY_ID: &'static str = "example.echo@1";
@@ -55,7 +56,7 @@ mod echo {
         }
 
         fn already_connected() -> Self::Error {
-            lenso_kernel::RuntimeFailure::ModuleFailure {
+            lenso_kernel::RuntimeFailure::PluginFailure {
                 detail: "Echo Port was connected more than once".to_owned(),
             }
         }
@@ -70,7 +71,7 @@ mod echo {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize, lenso_native_adapter::ModuleConfig)]
+#[derive(Clone, Debug, serde::Deserialize, lenso_native_adapter::PluginConfig)]
 struct ExampleConfig {
     name: String,
     #[lenso(default = 3)]
@@ -88,15 +89,15 @@ fn validate(configuration: &ExampleConfig) -> Result<(), lenso_native_adapter::R
     Ok(())
 }
 
-#[module(validate = validate, lifecycle)]
+#[plugin(validate = validate, lifecycle)]
 #[derive(Clone, Debug)]
-struct ExampleModule {
+struct ExamplePlugin {
     #[config]
     config: ExampleConfig,
     echoes: ManyPort<echo::EchoClient>,
 }
 
-impl Lifecycle for ExampleModule {
+impl Lifecycle for ExamplePlugin {
     async fn activate(
         &self,
         _context: lenso_kernel::ActivateContext,
@@ -107,13 +108,14 @@ impl Lifecycle for ExampleModule {
 }
 
 #[provides(echo::Echo)]
-impl echo::EchoProvider for ExampleModule {}
+impl echo::EchoProvider for ExamplePlugin {}
 
 #[test]
-fn struct_module_derives_descriptor_factory_and_configuration() {
+fn struct_plugin_derives_descriptor_factory_and_host_catalog() {
     let descriptor: serde_json::Value =
-        serde_json::from_str(MODULE_DESCRIPTOR_JSON).expect("descriptor should be valid JSON");
-    assert_eq!(descriptor["package_id"], "lenso.native-adapter");
+        serde_json::from_str(PLUGIN_DESCRIPTOR_JSON).expect("descriptor should be valid JSON");
+    assert_eq!(descriptor["plugin_id"], "lenso.native-adapter");
+    assert_eq!(descriptor["root_slot"], "test");
     assert_eq!(
         descriptor["provided_capabilities"][0]["capability_id"],
         "example.echo@1"
@@ -140,9 +142,15 @@ fn struct_module_derives_descriptor_factory_and_configuration() {
         serde_json::json!({"retries": 3, "tags": ["local", "safe"]})
     );
 
-    let registry = NativeModuleRegistry::new().with_linked_factories();
+    let registry = NativePluginRegistry::new().with_linked_factories();
     assert!(registry.factories().any(|factory| {
         factory.package_id() == "lenso.native-adapter"
             && factory.package_version() == env!("CARGO_PKG_VERSION")
     }));
+    let host = NativePluginRegistry::host_catalog([HostSlot::one("test")], []).unwrap();
+    assert_eq!(host.plugins().len(), 1);
+    assert_eq!(
+        host.plugins()[0].descriptor().plugin_id(),
+        "lenso.native-adapter"
+    );
 }

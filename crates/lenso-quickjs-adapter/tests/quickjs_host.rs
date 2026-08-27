@@ -2,12 +2,12 @@ use std::{any::Any, time::Duration};
 
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan,
+    ExecutionClassId, PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, ExecutionAdapter, ExecutionAdapterCatalog,
-    InvocationContext, Kernel, ModuleDependencyHandle, ModuleStreamDependencyHandle,
-    NativeStreamItem, RequestCapability, RuntimeFailure,
+    InvocationContext, Kernel, NativeStreamItem, PluginDependencyHandle,
+    PluginStreamDependencyHandle, RequestCapability, RuntimeFailure,
 };
 use lenso_quickjs_adapter::{EXECUTION_CLASS, QuickJsAdapter, QuickJsLimits};
 use lenso_runtime_codec::{
@@ -15,7 +15,7 @@ use lenso_runtime_codec::{
     JsonHostStreamOpenFuture, JsonInvocationOutcome, json_host_stream,
 };
 use lenso_runtime_conformance::{
-    ConformanceExecutionAdapter, ConformanceModule, ConformanceModuleFactory, PROBE_CAPABILITY_ID,
+    ConformanceExecutionAdapter, ConformancePlugin, ConformancePluginFactory, PROBE_CAPABILITY_ID,
     PROBE_DESCRIPTOR_VERSION, PROBE_OPERATION, PROBE_PROVIDER_PACKAGE_ID, Probe, ProbeError,
     ProbeProviderFactory, ProbeRequest, STREAM_PROBE_CAPABILITY_ID,
     STREAM_PROBE_DESCRIPTOR_VERSION, STREAM_PROBE_OPERATION, STREAM_PROBE_PROVIDER_PACKAGE_ID,
@@ -120,7 +120,7 @@ impl JsonCapabilityCodec for ProbeCodec {
 
     fn invoke_host_request(
         &self,
-        dependency: ModuleDependencyHandle,
+        dependency: PluginDependencyHandle,
         operation: String,
         request: Value,
         context: InvocationContext,
@@ -202,7 +202,7 @@ impl JsonCapabilityCodec for StreamProbeCodec {
 
     fn open_host_stream(
         &self,
-        dependency: ModuleStreamDependencyHandle,
+        dependency: PluginStreamDependencyHandle,
         operation: String,
         request: Value,
         context: InvocationContext,
@@ -391,13 +391,13 @@ impl JsonCapabilityCodec for ChatCodec {
 #[derive(Debug)]
 struct EmptyConsumerFactory;
 
-impl ConformanceModuleFactory for EmptyConsumerFactory {
+impl ConformancePluginFactory for EmptyConsumerFactory {
     fn package_id(&self) -> &'static str {
         "test.bridge-consumer"
     }
 
-    fn instantiate(&self, _: &ModuleInstancePlan) -> Result<ConformanceModule, RuntimeFailure> {
-        Ok(ConformanceModule::default())
+    fn instantiate(&self, _: &PluginInstancePlan) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::default())
     }
 }
 
@@ -702,7 +702,7 @@ fn bundled_esm_runs_without_ambient_host_apis_and_recreates_after_interrupt() {
 
     let context = InvocationContext::new(3, None, CancellationToken::new());
     let failure = futures::executor::block_on(endpoint.invoke("loop", Box::new(0_u64), context));
-    assert!(matches!(failure, Err(RuntimeFailure::ModuleFailure { .. })));
+    assert!(matches!(failure, Err(RuntimeFailure::PluginFailure { .. })));
     let recreated = adapter.recreate(&plan, "plugin").unwrap();
     let endpoint = recreated.endpoints()[0].clone();
     let cancellation = CancellationToken::new();
@@ -749,7 +749,7 @@ fn readiness_rejects_descriptor_drift_and_duplicate_codecs() {
 fn plan() -> ResolvedAppPlan {
     ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("plugin", "test.quickjs")
+            PluginInstancePlan::new("plugin", "test.quickjs")
                 .with_entrypoint("plugin.mjs")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_capability(CapabilityEndpointPlan::new(
@@ -765,7 +765,7 @@ fn plan() -> ResolvedAppPlan {
 fn stream_plan() -> ResolvedAppPlan {
     ResolvedAppPlan::new(
         vec![
-            ModuleInstancePlan::new("plugin", "test.quickjs")
+            PluginInstancePlan::new("plugin", "test.quickjs")
                 .with_entrypoint("plugin.mjs")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_capability(
@@ -780,14 +780,14 @@ fn stream_plan() -> ResolvedAppPlan {
 fn guest_import_plan() -> ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("provider", PROBE_PROVIDER_PACKAGE_ID).with_capability(
+            PluginInstancePlan::new("provider", PROBE_PROVIDER_PACKAGE_ID).with_capability(
                 CapabilityEndpointPlan::new(
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                     [PROBE_OPERATION],
                 ),
             ),
-            ModuleInstancePlan::new("plugin", "test.quickjs")
+            PluginInstancePlan::new("plugin", "test.quickjs")
                 .with_entrypoint("plugin.mjs")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_requirement(CapabilityRequirementPlan::one(
@@ -799,7 +799,7 @@ fn guest_import_plan() -> ResolvedAppPlan {
                     Bridge::DESCRIPTOR_VERSION,
                     ["bridge"],
                 )),
-            ModuleInstancePlan::new("consumer", "test.bridge-consumer").with_requirement(
+            PluginInstancePlan::new("consumer", "test.bridge-consumer").with_requirement(
                 CapabilityRequirementPlan::one(Bridge::ID, Bridge::DESCRIPTOR_VERSION),
             ),
         ],
@@ -820,7 +820,7 @@ fn guest_import_plan() -> ResolvedAppPlan {
 fn guest_stream_import_plan() -> ResolvedAppPlan {
     AppComposition::new(
         vec![
-            ModuleInstancePlan::new("provider", STREAM_PROBE_PROVIDER_PACKAGE_ID).with_capability(
+            PluginInstancePlan::new("provider", STREAM_PROBE_PROVIDER_PACKAGE_ID).with_capability(
                 CapabilityEndpointPlan::new(
                     STREAM_PROBE_CAPABILITY_ID,
                     STREAM_PROBE_DESCRIPTOR_VERSION,
@@ -828,7 +828,7 @@ fn guest_stream_import_plan() -> ResolvedAppPlan {
                 )
                 .with_stream_operation(STREAM_PROBE_OPERATION),
             ),
-            ModuleInstancePlan::new("plugin", "test.quickjs")
+            PluginInstancePlan::new("plugin", "test.quickjs")
                 .with_entrypoint("plugin.mjs")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
                 .with_requirement(CapabilityRequirementPlan::one(
@@ -840,7 +840,7 @@ fn guest_stream_import_plan() -> ResolvedAppPlan {
                     Bridge::DESCRIPTOR_VERSION,
                     ["bridge"],
                 )),
-            ModuleInstancePlan::new("consumer", "test.bridge-consumer").with_requirement(
+            PluginInstancePlan::new("consumer", "test.bridge-consumer").with_requirement(
                 CapabilityRequirementPlan::one(Bridge::ID, Bridge::DESCRIPTOR_VERSION),
             ),
         ],
