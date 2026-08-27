@@ -13,6 +13,7 @@ use lenso::prelude::*;
 
 #[derive(Clone, Debug, serde::Deserialize, ModuleConfig)]
 struct GreetingConfig {
+    #[lenso(default = "Hello")]
     prefix: String,
 }
 
@@ -35,6 +36,19 @@ impl Greeting {
         todo!("ordinary async domain behavior")
     }
 }
+```
+
+`ModuleConfig` embeds `#[lenso(default = <JSON literal>)]` field values as
+locked `configuration_defaults` in the generated Module Descriptor. App
+Definitions may omit those values; Plan resolution still materializes and
+validates one complete configuration before boot. A Module using an explicit
+complex Schema can instead select a package-local defaults object with
+
+```rust,ignore
+#[module(
+    configuration_schema = "config.schema.json",
+    configuration_defaults = "config.defaults.json"
+)]
 ```
 
 Stateless Modules omit configuration entirely; the facade derives a closed

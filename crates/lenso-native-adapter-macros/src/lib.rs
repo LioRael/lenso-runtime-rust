@@ -7,13 +7,15 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use quote::{format_ident, quote};
 use serde_json::{Map, Value, json};
 use syn::{
-    Attribute, Data, DeriveInput, Fields, GenericArgument, Item, ItemFn, ItemImpl, ItemStruct,
-    LitStr, Path, PathArguments, Token, Type, parse_macro_input, punctuated::Punctuated,
+    Attribute, Data, DeriveInput, Expr, Fields, GenericArgument, Item, ItemFn, ItemImpl,
+    ItemStruct, LitStr, Path, PathArguments, Token, Type, parse_macro_input,
+    punctuated::Punctuated,
 };
 
 struct ModuleAttributes {
     descriptor: Option<LitStr>,
     configuration_schema: Option<LitStr>,
+    configuration_defaults: Option<LitStr>,
     validate: Option<Path>,
     prepare: Option<Path>,
     activate: Option<Path>,
@@ -28,6 +30,7 @@ impl syn::parse::Parse for ModuleAttributes {
             return Ok(Self {
                 descriptor: None,
                 configuration_schema: None,
+                configuration_defaults: None,
                 validate: None,
                 prepare: None,
                 activate: None,
@@ -38,6 +41,7 @@ impl syn::parse::Parse for ModuleAttributes {
         }
         let mut descriptor = None;
         let mut configuration_schema = None;
+        let mut configuration_defaults = None;
         let mut validate = None;
         let mut prepare = None;
         let mut activate = None;
@@ -74,12 +78,16 @@ impl syn::parse::Parse for ModuleAttributes {
                 "configuration_schema" if configuration_schema.is_none() => {
                     configuration_schema = Some(input.parse()?);
                 }
+                "configuration_defaults" if configuration_defaults.is_none() => {
+                    configuration_defaults = Some(input.parse()?);
+                }
                 "validate" if validate.is_none() => validate = Some(input.parse()?),
                 "prepare" if prepare.is_none() => prepare = Some(input.parse()?),
                 "activate" if activate.is_none() => activate = Some(input.parse()?),
                 "deactivate" if deactivate.is_none() => deactivate = Some(input.parse()?),
                 "descriptor"
                 | "configuration_schema"
+                | "configuration_defaults"
                 | "validate"
                 | "prepare"
                 | "activate"
@@ -89,7 +97,7 @@ impl syn::parse::Parse for ModuleAttributes {
                 _ => {
                     return Err(syn::Error::new(
                         name.span(),
-                        "expected `descriptor`, `configuration_schema`, `validate`, `prepare`, `activate`, `deactivate`, `lifecycle`, or `consumer`",
+                        "expected `descriptor`, `configuration_schema`, `configuration_defaults`, `validate`, `prepare`, `activate`, `deactivate`, `lifecycle`, or `consumer`",
                     ));
                 }
             }
@@ -101,6 +109,7 @@ impl syn::parse::Parse for ModuleAttributes {
         Ok(Self {
             descriptor,
             configuration_schema,
+            configuration_defaults,
             validate,
             prepare,
             activate,
@@ -132,7 +141,7 @@ pub fn module(attributes: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// Derives the locked JSON Schema fragment consumed by a struct-level Module.
-#[proc_macro_derive(ModuleConfig, attributes(serde))]
+#[proc_macro_derive(ModuleConfig, attributes(lenso, serde))]
 pub fn module_config(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as DeriveInput);
     expand_module_config(&input)
@@ -154,11 +163,21 @@ fn expand_module_config(input: &DeriveInput) -> syn::Result<proc_macro2::TokenSt
         ));
     };
     let mut properties = Map::new();
+    let mut defaults = Map::new();
     let mut required = Vec::new();
     for field in &fields.named {
         let ident = field.ident.as_ref().expect("named fields have identifiers");
         let name = serde_field_name(&field.attrs, ident)?;
         let (schema, optional) = configuration_type_schema(&field.ty)?;
+        if let Some(default) = configuration_field_default(&field.attrs)? {
+            if !configuration_value_matches_schema(&default, &schema) {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "Module configuration default does not match the field type",
+                ));
+            }
+            defaults.insert(name.clone(), default);
+        }
         properties.insert(name.clone(), schema);
         if !optional {
             required.push(Value::String(name));
@@ -171,14 +190,69 @@ fn expand_module_config(input: &DeriveInput) -> syn::Result<proc_macro2::TokenSt
         "required": required,
         "properties": properties,
     }));
+    let defaults = canonical_json(&Value::Object(defaults));
     let macro_name = format_ident!("__lenso_config_schema_{}", snake(&input.ident.to_string()));
+    let defaults_macro_name = format_ident!(
+        "__lenso_config_defaults_{}",
+        snake(&input.ident.to_string())
+    );
     Ok(quote! {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #macro_name {
             () => { #schema };
         }
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #defaults_macro_name {
+            () => { #defaults };
+        }
     })
+}
+
+fn configuration_field_default(attributes: &[Attribute]) -> syn::Result<Option<Value>> {
+    let mut default = None;
+    for attribute in attributes {
+        if !attribute.path().is_ident("lenso") {
+            continue;
+        }
+        attribute.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("default") {
+                return Err(meta.error("expected `default = <JSON literal>`"));
+            }
+            if default.is_some() {
+                return Err(meta.error("duplicate Module configuration default"));
+            }
+            let expression = meta.value()?.parse::<Expr>()?;
+            let encoded = quote!(#expression).to_string();
+            default = Some(serde_json::from_str(&encoded).map_err(|error| {
+                meta.error(format!(
+                    "Module configuration default must be a JSON literal: {error}"
+                ))
+            })?);
+            Ok(())
+        })?;
+    }
+    Ok(default)
+}
+
+fn configuration_value_matches_schema(value: &Value, schema: &Value) -> bool {
+    match schema.get("type").and_then(Value::as_str) {
+        Some("array") => value.as_array().is_some_and(|items| {
+            schema.get("items").is_some_and(|schema| {
+                items
+                    .iter()
+                    .all(|item| configuration_value_matches_schema(item, schema))
+            })
+        }),
+        Some("boolean") => value.is_boolean(),
+        Some("integer") => value
+            .as_number()
+            .is_some_and(|number| number.is_i64() || number.is_u64()),
+        Some("number") => value.is_number(),
+        Some("string") => value.is_string(),
+        _ => false,
+    }
 }
 
 fn serde_field_name(attributes: &[Attribute], ident: &syn::Ident) -> syn::Result<String> {
@@ -253,10 +327,13 @@ fn expand_module_function(
     function: &ItemFn,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let sdk = authoring_crate();
-    if attributes.descriptor.is_none() && attributes.configuration_schema.is_some() {
+    if attributes.descriptor.is_none()
+        && (attributes.configuration_schema.is_some()
+            || attributes.configuration_defaults.is_some())
+    {
         return Err(syn::Error::new_spanned(
             function,
-            "`configuration_schema` requires `descriptor` on a factory function",
+            "`configuration_schema` and `configuration_defaults` require `descriptor` on a factory function",
         ));
     }
     if attributes.validate.is_some()
@@ -280,6 +357,7 @@ fn expand_module_function(
                 &package_id,
                 descriptor,
                 attributes.configuration_schema.as_ref(),
+                attributes.configuration_defaults.as_ref(),
             )
         })
         .transpose()?;
@@ -290,11 +368,10 @@ fn expand_module_function(
             format!("LENSO_MODULE_DESCRIPTOR_V1\0{descriptor}\0END_LENSO_MODULE_DESCRIPTOR_V1");
         let artifact_length = artifact.len();
         let artifact = proc_macro2::Literal::byte_string(artifact.as_bytes());
-        let schema_tracking = attributes.configuration_schema.as_ref().map(|schema| {
-            quote! {
-                const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", #schema));
-            }
-        });
+        let package_file_tracking = package_file_tracking([
+            attributes.configuration_schema.as_ref(),
+            attributes.configuration_defaults.as_ref(),
+        ]);
         quote! {
             /// Generated package-owned Module Descriptor bytes.
             pub const MODULE_DESCRIPTOR_JSON: &str = #descriptor;
@@ -302,7 +379,7 @@ fn expand_module_function(
             #[doc(hidden)]
             #[used]
             pub static __LENSO_MODULE_DESCRIPTOR_ARTIFACT: [u8; #artifact_length] = *#artifact;
-            #schema_tracking
+            #(#package_file_tracking)*
         }
     });
 
@@ -595,6 +672,11 @@ fn expand_module_struct(
         attributes.configuration_schema.as_ref(),
         config_type.as_ref(),
     )?;
+    let configuration_defaults = configuration_defaults_tokens(
+        attributes.configuration_schema.as_ref(),
+        attributes.configuration_defaults.as_ref(),
+        config_type.as_ref(),
+    )?;
     let name = &module.ident;
     let lifecycle_name = format_ident!("__LensoLifecycle{name}");
     let descriptor_macro = format_ident!("__lenso_module_descriptor_{}", snake(&name.to_string()));
@@ -632,6 +714,12 @@ fn expand_module_struct(
             return Err(syn::Error::new_spanned(
                 &module.ident,
                 "`validate` requires a `#[config]` field",
+            ));
+        }
+        if attributes.configuration_defaults.is_some() {
+            return Err(syn::Error::new_spanned(
+                &module.ident,
+                "`configuration_defaults` requires a `#[config]` field",
             ));
         }
         quote! {
@@ -707,7 +795,10 @@ fn expand_module_struct(
             deactivation
         }
     };
-    let schema_tracking = schema_tracking(attributes.configuration_schema.as_ref());
+    let package_file_tracking = package_file_tracking([
+        attributes.configuration_schema.as_ref(),
+        attributes.configuration_defaults.as_ref(),
+    ]);
     let consumer_finalizer = if attributes.consumer {
         let generated_module = format_ident!("__lenso_consumer_{}", snake(&name.to_string()));
         let artifact = format_ident!("__LENSO_MODULE_DESCRIPTOR_ARTIFACT_{name}");
@@ -776,10 +867,10 @@ fn expand_module_struct(
         #[doc(hidden)]
         macro_rules! #descriptor_macro {
             () => {
-                concat!(#prefix, #schema, #after_schema, #suffix #(, #requirement_parts)*, #defaults)
+                concat!(#prefix, #schema, ",\"configuration_defaults\":", #configuration_defaults, #after_schema, #suffix #(, #requirement_parts)*, #defaults)
             };
             ($first:expr $(, $rest:expr)*) => {
-                concat!(#prefix, #schema, #after_schema, $first $(, ",", $rest)*, #suffix #(, #requirement_parts)*, #defaults)
+                concat!(#prefix, #schema, ",\"configuration_defaults\":", #configuration_defaults, #after_schema, $first $(, ",", $rest)*, #suffix #(, #requirement_parts)*, #defaults)
             };
         }
 
@@ -827,7 +918,7 @@ fn expand_module_struct(
         }
 
         const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
-        #schema_tracking
+        #(#package_file_tracking)*
 
         #consumer_finalizer
     })
@@ -848,12 +939,18 @@ fn descriptor_affixes(
     (prefix, after_schema, suffix, defaults)
 }
 
-fn schema_tracking(path: Option<&LitStr>) -> Option<proc_macro2::TokenStream> {
-    path.map(|path| {
-        quote!(
-            const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", #path));
-        )
-    })
+fn package_file_tracking<'a>(
+    paths: impl IntoIterator<Item = Option<&'a LitStr>>,
+) -> Vec<proc_macro2::TokenStream> {
+    paths
+        .into_iter()
+        .flatten()
+        .map(|path| {
+            quote!(
+                const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", #path));
+            )
+        })
+        .collect()
 }
 
 fn configuration_schema_tokens(
@@ -889,6 +986,59 @@ fn configuration_schema_tokens(
         .ident;
     namespace.segments.pop_punct();
     let macro_name = format_ident!("__lenso_config_schema_{}", snake(&config_name.to_string()));
+    if namespace.segments.is_empty() {
+        Ok(quote!(#macro_name!()))
+    } else {
+        Ok(quote!(#namespace::#macro_name!()))
+    }
+}
+
+fn configuration_defaults_tokens(
+    schema_path: Option<&LitStr>,
+    defaults_path: Option<&LitStr>,
+    config_type: Option<&Type>,
+) -> syn::Result<proc_macro2::TokenStream> {
+    if let Some(path) = defaults_path {
+        if schema_path.is_none() {
+            return Err(syn::Error::new(
+                path.span(),
+                "`configuration_defaults` requires an explicit `configuration_schema`",
+            ));
+        }
+        let defaults = read_configuration_defaults(path)?;
+        let schema = read_configuration_schema(schema_path.expect("checked above"))?;
+        validate_configuration_defaults(&defaults, &schema).map_err(|detail| {
+            syn::Error::new(
+                path.span(),
+                format!("invalid package configuration defaults: {detail}"),
+            )
+        })?;
+        let defaults = canonical_json(&defaults);
+        return Ok(quote!(#defaults));
+    }
+    if schema_path.is_some() || config_type.is_none() {
+        let defaults = canonical_json(&json!({}));
+        return Ok(quote!(#defaults));
+    }
+    let config_type = config_type.expect("checked above");
+    let Type::Path(config) = config_type else {
+        return Err(syn::Error::new_spanned(
+            config_type,
+            "the `#[config]` field type must be a path",
+        ));
+    };
+    let mut namespace = config.path.clone();
+    let config_name = namespace
+        .segments
+        .pop()
+        .expect("type paths are non-empty")
+        .into_value()
+        .ident;
+    namespace.segments.pop_punct();
+    let macro_name = format_ident!(
+        "__lenso_config_defaults_{}",
+        snake(&config_name.to_string())
+    );
     if namespace.segments.is_empty() {
         Ok(quote!(#macro_name!()))
     } else {
@@ -1120,6 +1270,7 @@ fn module_descriptor(
     package_id: &str,
     descriptor: &LitStr,
     configuration_schema: Option<&LitStr>,
+    configuration_defaults: Option<&LitStr>,
 ) -> syn::Result<String> {
     let supplied: Value = serde_json::from_str(&descriptor.value()).map_err(|error| {
         syn::Error::new(
@@ -1139,11 +1290,36 @@ fn module_descriptor(
             "Module Descriptor input cannot contain `configuration_schema`; use the package-owned schema path attribute",
         ));
     }
+    if supplied.contains_key("configuration_defaults") {
+        return Err(syn::Error::new(
+            descriptor.span(),
+            "Module Descriptor input cannot contain `configuration_defaults`; use the package-owned defaults path attribute",
+        ));
+    }
     if let Some(schema_path) = configuration_schema {
         supplied.insert(
             "configuration_schema".to_owned(),
             read_configuration_schema(schema_path)?,
         );
+    }
+    if let Some(defaults_path) = configuration_defaults {
+        if configuration_schema.is_none() {
+            return Err(syn::Error::new(
+                defaults_path.span(),
+                "`configuration_defaults` requires `configuration_schema`",
+            ));
+        }
+        let defaults = read_configuration_defaults(defaults_path)?;
+        let schema = supplied
+            .get("configuration_schema")
+            .expect("explicit configuration Schema was inserted above");
+        validate_configuration_defaults(&defaults, schema).map_err(|detail| {
+            syn::Error::new(
+                defaults_path.span(),
+                format!("invalid package configuration defaults: {detail}"),
+            )
+        })?;
+        supplied.insert("configuration_defaults".to_owned(), defaults);
     }
     for owned in [
         "package_id",
@@ -1174,42 +1350,7 @@ fn module_descriptor(
 }
 
 fn read_configuration_schema(schema_path: &LitStr) -> syn::Result<Value> {
-    let relative = PathBuf::from(schema_path.value());
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err(syn::Error::new(
-            schema_path.span(),
-            "configuration Schema path must stay inside the Module package",
-        ));
-    }
-    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
-        syn::Error::new(
-            schema_path.span(),
-            "CARGO_MANIFEST_DIR is unavailable while deriving configuration Schema",
-        )
-    })?;
-    let path = PathBuf::from(manifest_dir).join(relative);
-    let bytes = fs::read(&path).map_err(|error| {
-        syn::Error::new(
-            schema_path.span(),
-            format!(
-                "failed to read configuration Schema {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
-    let schema: Value = serde_json::from_slice(&bytes).map_err(|error| {
-        syn::Error::new(
-            schema_path.span(),
-            format!(
-                "configuration Schema {} is invalid JSON: {error}",
-                path.display()
-            ),
-        )
-    })?;
+    let schema = read_package_json(schema_path, "configuration Schema")?;
     if !schema.is_object() {
         return Err(syn::Error::new(
             schema_path.span(),
@@ -1217,6 +1358,164 @@ fn read_configuration_schema(schema_path: &LitStr) -> syn::Result<Value> {
         ));
     }
     Ok(schema)
+}
+
+fn read_configuration_defaults(defaults_path: &LitStr) -> syn::Result<Value> {
+    let defaults = read_package_json(defaults_path, "configuration defaults")?;
+    if !defaults.is_object() {
+        return Err(syn::Error::new(
+            defaults_path.span(),
+            "configuration defaults must be a JSON object",
+        ));
+    }
+    Ok(defaults)
+}
+
+fn read_package_json(path: &LitStr, label: &str) -> syn::Result<Value> {
+    let relative = PathBuf::from(path.value());
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(syn::Error::new(
+            path.span(),
+            format!("{label} path must stay inside the Module package"),
+        ));
+    }
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
+        syn::Error::new(
+            path.span(),
+            format!("CARGO_MANIFEST_DIR is unavailable while deriving {label}"),
+        )
+    })?;
+    let full_path = PathBuf::from(manifest_dir).join(relative);
+    let bytes = fs::read(&full_path).map_err(|error| {
+        syn::Error::new(
+            path.span(),
+            format!("failed to read {label} {}: {error}", full_path.display()),
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        syn::Error::new(
+            path.span(),
+            format!("{label} {} is invalid JSON: {error}", full_path.display()),
+        )
+    })
+}
+
+fn validate_configuration_defaults(defaults: &Value, schema: &Value) -> Result<(), String> {
+    if !defaults.is_object() {
+        return Err("$: defaults must be an object".to_owned());
+    }
+    validate_default_value(defaults, schema, "$")
+}
+
+fn validate_default_value(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
+    let schema = schema
+        .as_object()
+        .ok_or_else(|| format!("{path}: configuration Schema must be an object"))?;
+    if schema
+        .get("x-lenso-sensitive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(format!(
+            "{path}: sensitive configuration cannot have a package default"
+        ));
+    }
+    if let Some(expected) = schema.get("type").and_then(Value::as_str) {
+        let valid = match expected {
+            "array" => value.is_array(),
+            "boolean" => value.is_boolean(),
+            "integer" => value
+                .as_number()
+                .is_some_and(|number| number.is_i64() || number.is_u64()),
+            "null" => value.is_null(),
+            "number" => value.is_number(),
+            "object" => value.is_object(),
+            "string" => value.is_string(),
+            _ => false,
+        };
+        if !valid {
+            return Err(format!(
+                "{path}: default does not match Schema type `{expected}`"
+            ));
+        }
+    }
+    if let (Some(minimum), Some(number)) = (schema.get("minimum"), value.as_f64()) {
+        let minimum = minimum
+            .as_f64()
+            .ok_or_else(|| format!("{path}: Schema minimum must be a number"))?;
+        if number < minimum {
+            return Err(format!(
+                "{path}: default must be greater than or equal to {minimum}"
+            ));
+        }
+    }
+    if let Some(expected) = schema.get("const")
+        && value != expected
+    {
+        return Err(format!("{path}: default does not match Schema const"));
+    }
+    if let Some(allowed) = schema.get("enum") {
+        let allowed = allowed
+            .as_array()
+            .ok_or_else(|| format!("{path}: Schema enum must be an array"))?;
+        if !allowed.contains(value) {
+            return Err(format!("{path}: default is not in Schema enum"));
+        }
+    }
+    validate_default_object(value, schema, path)?;
+    validate_default_array(value, schema, path)
+}
+
+fn validate_default_object(
+    value: &Value,
+    schema: &Map<String, Value>,
+    path: &str,
+) -> Result<(), String> {
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    let empty = Map::new();
+    let properties = schema.get("properties").map_or(Ok(&empty), |properties| {
+        properties
+            .as_object()
+            .ok_or_else(|| format!("{path}: Schema properties must be an object"))
+    })?;
+    for (name, child) in object {
+        if let Some(child_schema) = properties.get(name) {
+            validate_default_value(child, child_schema, &format!("{path}.{name}"))?;
+            continue;
+        }
+        match schema.get("additionalProperties") {
+            Some(Value::Bool(false)) => {
+                return Err(format!("{path}.{name}: additional property is not allowed"));
+            }
+            Some(Value::Object(additional_schema)) => validate_default_value(
+                child,
+                &Value::Object(additional_schema.clone()),
+                &format!("{path}.{name}"),
+            )?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_default_array(
+    value: &Value,
+    schema: &Map<String, Value>,
+    path: &str,
+) -> Result<(), String> {
+    let (Some(items), Some(item_schema)) = (value.as_array(), schema.get("items")) else {
+        return Ok(());
+    };
+    for (index, item) in items.iter().enumerate() {
+        validate_default_value(item, item_schema, &format!("{path}[{index}]"))?;
+    }
+    Ok(())
 }
 
 fn complete_module_descriptor(
@@ -1315,7 +1614,76 @@ mod tests {
         let schema = read_configuration_schema(&path).unwrap();
 
         assert_eq!(schema["type"], "object");
-        assert_eq!(schema["required"], json!(["name"]));
+        assert_eq!(schema["required"], json!(["name", "retries"]));
+    }
+
+    #[test]
+    fn package_defaults_are_embedded_as_descriptor_data() {
+        let path = LitStr::new(
+            "tests/fixtures/config.defaults.json",
+            proc_macro2::Span::call_site(),
+        );
+        let defaults = read_configuration_defaults(&path).unwrap();
+
+        assert_eq!(defaults, json!({"name": "fixture", "retries": 3}));
+    }
+
+    #[test]
+    fn factory_function_descriptor_embeds_package_defaults() {
+        let descriptor = LitStr::new(
+            r#"{"provided_capabilities":[],"required_capabilities":[]}"#,
+            proc_macro2::Span::call_site(),
+        );
+        let schema = LitStr::new(
+            "tests/fixtures/config.schema.json",
+            proc_macro2::Span::call_site(),
+        );
+        let defaults = LitStr::new(
+            "tests/fixtures/config.defaults.json",
+            proc_macro2::Span::call_site(),
+        );
+
+        let generated =
+            module_descriptor("example.tool", &descriptor, Some(&schema), Some(&defaults)).unwrap();
+        let generated: Value = serde_json::from_str(&generated).unwrap();
+        assert_eq!(
+            generated["configuration_defaults"],
+            json!({"name": "fixture", "retries": 3})
+        );
+    }
+
+    #[test]
+    fn typed_configuration_defaults_must_match_the_field_type() {
+        let input: DeriveInput = parse_quote! {
+            struct InvalidConfig {
+                #[lenso(default = 3)]
+                name: String,
+            }
+        };
+
+        let error = expand_module_config(&input).unwrap_err();
+        assert!(error.to_string().contains("does not match the field type"));
+    }
+
+    #[test]
+    fn package_defaults_fail_closed_against_schema_constraints() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "retries": {"type": "integer", "minimum": 1},
+                "token": {"x-lenso-sensitive": true}
+            },
+            "additionalProperties": false
+        });
+
+        assert_eq!(
+            validate_configuration_defaults(&json!({"retries": 0}), &schema),
+            Err("$.retries: default must be greater than or equal to 1".to_owned())
+        );
+        assert_eq!(
+            validate_configuration_defaults(&json!({"token": {"secret_ref": "TOKEN"}}), &schema),
+            Err("$.token: sensitive configuration cannot have a package default".to_owned())
+        );
     }
 
     #[test]

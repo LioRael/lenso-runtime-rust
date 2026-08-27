@@ -73,7 +73,9 @@ mod echo {
 #[derive(Clone, Debug, serde::Deserialize, lenso_native_adapter::ModuleConfig)]
 struct ExampleConfig {
     name: String,
+    #[lenso(default = 3)]
     retries: u32,
+    #[lenso(default = ["local", "safe"])]
     tags: Option<Vec<String>>,
 }
 
@@ -132,6 +134,10 @@ fn struct_module_derives_descriptor_factory_and_configuration() {
     assert_eq!(
         descriptor["configuration_schema"]["properties"]["tags"]["items"]["type"],
         "string"
+    );
+    assert_eq!(
+        descriptor["configuration_defaults"],
+        serde_json::json!({"retries": 3, "tags": ["local", "safe"]})
     );
 
     let registry = NativeModuleRegistry::new().with_linked_factories();
