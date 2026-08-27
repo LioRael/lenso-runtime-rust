@@ -1,4 +1,4 @@
-//! Derivation macros for statically linked native Lenso Modules.
+//! Derivation macros for statically linked Lenso Plugins and built-in Modules.
 
 use std::{collections::BTreeSet, env, fs, path::PathBuf};
 
@@ -126,18 +126,60 @@ impl syn::parse::Parse for ModuleAttributes {
 /// consuming crate's `Cargo.toml`; the package version remains Cargo-owned.
 #[proc_macro_attribute]
 pub fn module(attributes: TokenStream, item: TokenStream) -> TokenStream {
-    let attributes = parse_macro_input!(attributes as ModuleAttributes);
-    let item = parse_macro_input!(item as Item);
-    match item {
+    expand_authoring_item(attributes, item, "Module")
+}
+
+/// Derives native Plugin source through the same runtime lowering as [`module`].
+///
+/// ```compile_fail
+/// use lenso_native_adapter_macros::plugin;
+///
+/// #[plugin]
+/// enum InvalidPlugin {}
+/// ```
+#[proc_macro_attribute]
+pub fn plugin(attributes: TokenStream, item: TokenStream) -> TokenStream {
+    expand_authoring_item(attributes, item, "Plugin")
+}
+
+fn expand_authoring_item(
+    attributes: TokenStream,
+    item: TokenStream,
+    authoring_unit: &str,
+) -> TokenStream {
+    let attributes = match syn::parse::<ModuleAttributes>(attributes) {
+        Ok(attributes) => attributes,
+        Err(error) => return authoring_error(&error, authoring_unit),
+    };
+    let item = match syn::parse::<Item>(item) {
+        Ok(item) => item,
+        Err(error) => return authoring_error(&error, authoring_unit),
+    };
+    let expanded = match item {
         Item::Fn(function) => expand_module_function(&attributes, &function),
         Item::Struct(module) => expand_module_struct(&attributes, module),
         other => Err(syn::Error::new_spanned(
             other,
-            "a native Module must be declared by a factory function or a named-field struct",
+            format!(
+                "a native {authoring_unit} must be declared by a factory function or a named-field struct"
+            ),
         )),
+    };
+    match expanded {
+        Ok(tokens) => tokens.into(),
+        Err(error) => authoring_error(&error, authoring_unit),
     }
-    .unwrap_or_else(syn::Error::into_compile_error)
-    .into()
+}
+
+fn authoring_error(error: &syn::Error, authoring_unit: &str) -> TokenStream {
+    let message = if authoring_unit == "Plugin" {
+        error.to_string().replace("Module", "Plugin")
+    } else {
+        error.to_string()
+    };
+    syn::Error::new(error.span(), message)
+        .into_compile_error()
+        .into()
 }
 
 /// Derives the locked JSON Schema fragment consumed by a struct-level Module.
@@ -147,6 +189,19 @@ pub fn module_config(item: TokenStream) -> TokenStream {
     expand_module_config(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+/// Derives Plugin configuration through the retained Module runtime schema.
+#[proc_macro_derive(PluginConfig, attributes(lenso, serde))]
+pub fn plugin_config(item: TokenStream) -> TokenStream {
+    let input = match syn::parse::<DeriveInput>(item) {
+        Ok(input) => input,
+        Err(error) => return authoring_error(&error, "Plugin"),
+    };
+    match expand_module_config(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => authoring_error(&error, "Plugin"),
+    }
 }
 
 fn expand_module_config(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {

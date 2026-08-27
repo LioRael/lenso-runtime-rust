@@ -15,7 +15,13 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile = "3"
+toml = "0.9"
 wit-component = "0.252"
+wasmparser = { version = "0.252", features = ["component-model"] }
+
+[dev-dependencies]
+lenso-guest-sdk = { version = "0.1.2", path = "../lenso-guest-sdk" }
+wasm-encoder = "0.252"
 
 [lints]
 workspace = true

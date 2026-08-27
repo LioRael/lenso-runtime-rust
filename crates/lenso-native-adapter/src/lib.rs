@@ -9,7 +9,7 @@ pub use inventory as __inventory;
 use lenso_app_plan::{ExecutionClassId, ResolvedAppPlan};
 use lenso_kernel::{ActivateContext, DeactivateContext, PrepareContext};
 pub use lenso_kernel::{CancellationToken, RuntimeFailure};
-pub use lenso_native_adapter_macros::{ModuleConfig, module, provides};
+pub use lenso_native_adapter_macros::{ModuleConfig, PluginConfig, module, plugin, provides};
 pub use managed_tasks::{ManagedTasks, ManagedTasksError};
 
 /// Optional convention-based lifecycle hooks for a struct-level Module.

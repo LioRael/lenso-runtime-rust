@@ -5,6 +5,11 @@ use lenso_app_plan::{AppComposition, CapabilityEndpointPlan, ModuleInstancePlan}
 use lenso_kernel::NativeExecutionAdapter;
 use lenso_native_adapter::NativeModuleRegistry;
 
+#[derive(Clone, Debug, PluginConfig)]
+struct PluginSettings {
+    enabled: bool,
+}
+
 #[doc(hidden)]
 pub mod __lenso_native_support {
     pub use lenso::__private::{
@@ -83,15 +88,15 @@ mod health {
     pub trait HealthProvider {}
 }
 
-#[module]
+#[plugin]
 #[derive(Clone, Debug, Default)]
-struct StatelessHealth {}
+struct StatelessHealthPlugin {}
 
 #[provides(health::Health)]
-impl StatelessHealth {}
+impl StatelessHealthPlugin {}
 
 #[test]
-fn stateless_module_derives_empty_configuration() {
+fn stateless_plugin_derives_empty_configuration() {
     let descriptor: lenso::__private::serde_json::Value =
         lenso::__private::serde_json::from_str(MODULE_DESCRIPTOR_JSON)
             .expect("generated Descriptor should be valid JSON");
@@ -117,11 +122,11 @@ fn stateless_module_derives_empty_configuration() {
         .resolve()
         .expect("stateless plan should resolve");
     NativeExecutionAdapter::prepare(&NativeModuleRegistry::new().with_linked_factories(), &plan)
-        .expect("stateless Module should accept empty configuration");
+        .expect("stateless Plugin should accept empty configuration");
 }
 
 #[test]
-fn stateless_module_rejects_non_empty_configuration() {
+fn stateless_plugin_rejects_non_empty_configuration() {
     let provider = ModuleInstancePlan::new("health", "lenso")
         .with_configuration(r#"{"unexpected":true}"#)
         .with_capability(CapabilityEndpointPlan::new(
@@ -136,6 +141,6 @@ fn stateless_module_rejects_non_empty_configuration() {
         &NativeModuleRegistry::new().with_linked_factories(),
         &plan,
     )
-    .expect_err("stateless Module must reject non-empty configuration");
+    .expect_err("stateless Plugin must reject non-empty configuration");
     assert!(format!("{error:?}").contains("does not accept configuration"));
 }
