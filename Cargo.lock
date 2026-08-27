@@ -614,8 +614,8 @@ dependencies = [
 
 [[package]]
 name = "lenso-app-plan"
-version = "0.2.0"
-source = "git+https://github.com/LioRael/lenso?rev=d95e2240e83e9f4b90139a48ca97e067376f4fa9#d95e2240e83e9f4b90139a48ca97e067376f4fa9"
+version = "0.3.0"
+source = "git+https://github.com/LioRael/lenso?rev=cd35675a191d815b690c8889756dfe859a0e4d7b#cd35675a191d815b690c8889756dfe859a0e4d7b"
 dependencies = [
  "serde",
  "serde_json",
@@ -660,8 +660,8 @@ dependencies = [
 
 [[package]]
 name = "lenso-kernel"
-version = "0.1.12"
-source = "git+https://github.com/LioRael/lenso?rev=d95e2240e83e9f4b90139a48ca97e067376f4fa9#d95e2240e83e9f4b90139a48ca97e067376f4fa9"
+version = "0.2.0"
+source = "git+https://github.com/LioRael/lenso?rev=cd35675a191d815b690c8889756dfe859a0e4d7b#cd35675a191d815b690c8889756dfe859a0e4d7b"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -784,8 +784,8 @@ dependencies = [
 
 [[package]]
 name = "lenso-runtime-conformance"
-version = "0.1.12"
-source = "git+https://github.com/LioRael/lenso?rev=d95e2240e83e9f4b90139a48ca97e067376f4fa9#d95e2240e83e9f4b90139a48ca97e067376f4fa9"
+version = "0.2.0"
+source = "git+https://github.com/LioRael/lenso?rev=cd35675a191d815b690c8889756dfe859a0e4d7b#cd35675a191d815b690c8889756dfe859a0e4d7b"
 dependencies = [
  "futures",
  "lenso-app-plan",
