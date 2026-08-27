@@ -76,8 +76,8 @@ mod echo {
 
     #[macro_export]
     macro_rules! __test_lenso_native_lower_echo {
-        ($module:ty, $support:path) => {
-            impl $crate::echo::EchoProvider for $module {}
+        ($plugin:ty, $support:path) => {
+            impl $crate::echo::EchoProvider for $plugin {}
         };
     }
     pub use crate::__test_lenso_native_lower_echo as __lenso_native_lower_echo;
@@ -154,8 +154,8 @@ mod conversation {
 
     #[macro_export]
     macro_rules! __test_lenso_native_lower_conversation {
-        ($module:ty, $support:path) => {
-            impl $crate::conversation::ConversationProvider for $module {}
+        ($plugin:ty, $support:path) => {
+            impl $crate::conversation::ConversationProvider for $plugin {}
         };
     }
     pub use crate::__test_lenso_native_lower_conversation as __lenso_native_lower_conversation;
@@ -222,8 +222,8 @@ mod audit {
 
     #[macro_export]
     macro_rules! __test_lenso_native_lower_audit {
-        ($module:ty, $support:path) => {
-            impl $crate::audit::AuditProvider for $module {}
+        ($plugin:ty, $support:path) => {
+            impl $crate::audit::AuditProvider for $plugin {}
         };
     }
     pub use crate::__test_lenso_native_lower_audit as __lenso_native_lower_audit;

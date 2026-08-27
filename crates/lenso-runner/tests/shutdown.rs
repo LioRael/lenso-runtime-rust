@@ -140,7 +140,7 @@ fn runner_returns_startup_failure_without_entering_shutdown() {
     let driver = DeterministicDriver::new();
 
     let outcome = driver.run(run(
-        ResolvedAppPlan::new(vec![PluginInstancePlan::new("module", "package")], vec![]),
+        ResolvedAppPlan::new(vec![PluginInstancePlan::new("plugin", "package")], vec![]),
         driver.clone(),
         ExecutionAdapterCatalog::single(FailingAdapter),
         Duration::from_secs(1),

@@ -78,8 +78,8 @@ mod health {
 
     #[macro_export]
     macro_rules! __test_lenso_native_lower_health {
-        ($module:ty, $support:path) => {
-            impl $crate::health::HealthProvider for $module {}
+        ($plugin:ty, $support:path) => {
+            impl $crate::health::HealthProvider for $plugin {}
         };
     }
     pub use crate::__test_lenso_native_lower_health as __lenso_native_lower_health;

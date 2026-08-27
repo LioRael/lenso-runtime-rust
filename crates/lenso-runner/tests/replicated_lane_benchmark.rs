@@ -336,7 +336,7 @@ fn plugin_request_transfer_plan(
         ExecutionLanePlan::new("workers"),
     ])
     .resolve()
-    .expect("module request transfer benchmark Plan should resolve")
+    .expect("Plugin request transfer benchmark Plan should resolve")
 }
 
 async fn measure_plugin_request_throughput(
@@ -363,7 +363,7 @@ async fn measure_plugin_request_throughput(
         },
         CrossLaneRequestCatalog::new().with_request::<Probe>(&[PROBE_OPERATION]),
     )
-    .expect("module request transfer benchmark lanes should start");
+    .expect("Plugin request transfer benchmark lanes should start");
     let throughput = report
         .recv_timeout(Duration::from_secs(60))
         .expect("benchmark consumer should report throughput");
@@ -476,7 +476,7 @@ async fn lane_scaling_benchmark() {
 /// Reproducible evidence command:
 /// `cargo test --release -p lenso-runner --test replicated_lane_benchmark request_transfer_benchmark -- --exact --ignored --nocapture`
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "module request transfer benchmark; run explicitly when changing lane scheduling"]
+#[ignore = "Plugin request transfer benchmark; run explicitly when changing lane scheduling"]
 async fn request_transfer_benchmark() {
     let requests = 100_000;
     let (same_lane_samples, cross_lane_samples) =
@@ -487,7 +487,7 @@ async fn request_transfer_benchmark() {
 /// Reproducible evidence command:
 /// `cargo test --release -p lenso-runner --test replicated_lane_benchmark concurrent_request_transfer_benchmark -- --exact --ignored --nocapture`
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "concurrent module request benchmark; run explicitly when changing lane scheduling"]
+#[ignore = "concurrent Plugin request benchmark; run explicitly when changing lane scheduling"]
 async fn concurrent_request_transfer_benchmark() {
     let requests = 100_000;
     let concurrency = 64;
