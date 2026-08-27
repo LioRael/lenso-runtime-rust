@@ -706,11 +706,15 @@ version = "0.1.2"
 dependencies = [
  "hex",
  "lenso-app-plan",
+ "lenso-guest-sdk",
  "semver",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "toml",
+ "wasm-encoder",
+ "wasmparser",
  "wit-component",
 ]
 
@@ -818,6 +822,7 @@ dependencies = [
  "hex",
  "lenso-app-plan",
  "lenso-kernel",
+ "lenso-plugin-bundle",
  "lenso-runtime-codec",
  "lenso-runtime-conformance",
  "serde_json",

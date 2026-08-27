@@ -1,4 +1,4 @@
-//! Typed, Plan-bound Capability imports for byte-oriented Lenso guest Modules.
+//! Typed Capability imports and source-derived declarations for guest Plugins.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -98,7 +98,7 @@ pub enum GuestSessionError {
     UnknownSession(u64),
 }
 
-/// One Capability implemented by a guest Module.
+/// One Capability implemented by a guest Plugin or built-in Module.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestProvidedCapability<'a> {
     pub capability_id: &'a str,
@@ -107,7 +107,7 @@ pub struct GuestProvidedCapability<'a> {
     pub stream_operations: &'a [&'a str],
 }
 
-/// One Host Capability required by a guest Module.
+/// One Host Capability required by a guest Plugin or built-in Module.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestRequiredCapability<'a> {
     pub capability_id: &'a str,
@@ -138,7 +138,7 @@ struct GuestModuleDescriptor<'a> {
     required_capabilities: Vec<EncodedRequiredCapability<'a>>,
 }
 
-/// Encodes the canonical guest Module descriptor consumed by Execution Adapters.
+/// Encodes the canonical guest runtime descriptor consumed by Execution Adapters.
 #[must_use]
 pub fn encode_guest_descriptor(
     capabilities: &[GuestProvidedCapability<'_>],
@@ -181,7 +181,7 @@ pub fn encode_guest_descriptor(
     .expect("guest descriptor contains only infallible borrowed JSON values")
 }
 
-/// Derives a guest Module descriptor from generated Capability package constants.
+/// Derives a legacy guest Module descriptor from Capability package constants.
 ///
 /// Capability aliases name the same source-derived packages used by generated
 /// guest clients, so IDs and descriptor versions cannot drift into copied JSON.
@@ -218,6 +218,84 @@ macro_rules! guest_descriptor {
         ];
         $crate::encode_guest_descriptor(&capabilities, &required_capabilities)
     }};
+}
+
+/// Defines one request-only guest Plugin from a single source declaration.
+///
+/// The declaration emits both the runtime description and a non-executable
+/// WebAssembly custom section consumed by Plugin packaging.
+#[macro_export]
+macro_rules! guest_request_plugin {
+    (
+        impl $guest_trait:ident for $plugin:ty {
+            provides: {
+                capability_id: $capability_id:literal,
+                descriptor_version: $descriptor_version:literal,
+                requests: [$first_request:literal $(, $request:literal)* $(,)?],
+            }
+            $($implementation:tt)*
+        }
+    ) => {
+        const __LENSO_PLUGIN_DESCRIPTOR: &str = $crate::__request_plugin_descriptor!(
+            $capability_id,
+            $descriptor_version,
+            $first_request $(, $request)*
+        );
+
+        #[cfg(target_arch = "wasm32")]
+        #[used]
+        #[unsafe(link_section = "lenso.plugin-descriptor.v1")]
+        static __LENSO_PLUGIN_DESCRIPTOR_SECTION: [u8; __LENSO_PLUGIN_DESCRIPTOR.len()] =
+            $crate::__descriptor_bytes(__LENSO_PLUGIN_DESCRIPTOR);
+
+        impl $guest_trait for $plugin {
+            fn describe() -> ::std::string::String {
+                __LENSO_PLUGIN_DESCRIPTOR.to_owned()
+            }
+
+            $($implementation)*
+        }
+    };
+}
+
+/// Copies a compile-time descriptor string into a linkable custom-section array.
+#[doc(hidden)]
+pub const fn __descriptor_bytes<const N: usize>(descriptor: &str) -> [u8; N] {
+    let source = descriptor.as_bytes();
+    let mut output = [0; N];
+    let mut index = 0;
+    while index < N {
+        output[index] = source[index];
+        index += 1;
+    }
+    output
+}
+
+/// Internal canonical encoder used by [`guest_request_plugin!`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __request_plugin_descriptor {
+    (
+        $capability_id:literal,
+        $descriptor_version:literal,
+        $first_request:literal $(, $request:literal)*
+    ) => {
+        concat!(
+            r#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":""#,
+            $capability_id,
+            r#"","descriptor_version":""#,
+            $descriptor_version,
+            r#"","request_operations":[""#,
+            $first_request,
+            "\"",
+            $(
+                ",\"",
+                $request,
+                "\"",
+            )*
+            "]}]}"
+        )
+    };
 }
 
 /// Defines a zero-sized [`HostImports`] implementation over `wit-bindgen` world imports.
@@ -713,6 +791,23 @@ mod tests {
             interactions,
             r#"{"abi":"lenso.json-interactions@1","capabilities":[{"capability_id":"example.stream@1","descriptor_version":"1.0.0","request_operations":[],"stream_operations":["watch"]}]}"#
         );
+    }
+
+    #[test]
+    fn request_plugin_packaging_descriptor_matches_runtime_encoder() {
+        const PACKAGING: &str =
+            __request_plugin_descriptor!("example.request@1", "1.0.0", "inspect", "execute");
+        let runtime = encode_guest_descriptor(
+            &[GuestProvidedCapability {
+                capability_id: "example.request@1",
+                descriptor_version: "1.0.0",
+                request_operations: &["inspect", "execute"],
+                stream_operations: &[],
+            }],
+            &[],
+        );
+
+        assert_eq!(PACKAGING, runtime);
     }
 
     #[derive(Clone, Debug)]

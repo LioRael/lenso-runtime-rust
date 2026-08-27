@@ -16,6 +16,12 @@ use sha2::{Digest, Sha256};
 /// The only manifest filename accepted in a materialized Plugin Bundle.
 pub const MANIFEST_FILE: &str = "lenso-plugin.json";
 
+/// Custom section carrying source-derived Plugin descriptor bytes.
+pub const PLUGIN_DESCRIPTOR_SECTION: &str = "lenso.plugin-descriptor.v1";
+
+/// Maximum accepted source-derived descriptor size.
+pub const MAX_PLUGIN_DESCRIPTOR_BYTES: usize = 64 * 1024;
+
 /// A source Artifact selected while materializing one Release.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArtifactSource {
@@ -29,6 +35,14 @@ pub struct BundleBuild {
     pub template: PathBuf,
     pub output: PathBuf,
     pub artifact_sources: Vec<ArtifactSource>,
+}
+
+/// Source-only input for one generated V2 Plugin Bundle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourcePluginBuild {
+    pub package_manifest: PathBuf,
+    pub wasm_module: PathBuf,
+    pub output: PathBuf,
 }
 
 /// Canonical Plugin Manifest plus its content identity.
@@ -75,6 +89,57 @@ impl ManifestDocument {
     }
 }
 
+#[derive(Clone, Debug)]
+struct SourceManifestDocument {
+    value: PluginManifestV2,
+    bytes: Vec<u8>,
+    digest: String,
+}
+
+impl SourceManifestDocument {
+    fn parse(input: &[u8]) -> Result<Self, BundleError> {
+        let value = strict_json::<PluginManifestV2>(input)?;
+        Self::from_value(value)
+    }
+
+    fn from_value(value: PluginManifestV2) -> Result<Self, BundleError> {
+        validate_source_manifest(&value)?;
+        let json = serde_json::to_value(&value)
+            .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+        validate_json_value(&json)?;
+        let bytes = serde_json::to_vec(&json)
+            .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+        let digest = sha256_digest(&bytes);
+        Ok(Self {
+            value,
+            bytes,
+            digest,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoManifest {
+    package: CargoPackage,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoPackage {
+    version: String,
+    metadata: CargoMetadata,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    lenso: CargoLensoMetadata,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct CargoLensoMetadata {
+    plugin_id: String,
+}
+
 /// Verified closure of one immutable Plugin Release.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedBundle {
@@ -112,7 +177,60 @@ impl fmt::Display for BundleError {
 
 impl std::error::Error for BundleError {}
 
+/// Builds a one-entry V2 Plugin Bundle entirely from package and source evidence.
+pub fn build_source_plugin_bundle(
+    build: &SourcePluginBuild,
+) -> Result<VerifiedBundle, BundleError> {
+    if build.output.exists() {
+        return invalid_bundle(format!(
+            "output `{}` already exists",
+            build.output.display()
+        ));
+    }
+    let package_bytes = read_regular_file(&build.package_manifest, "Cargo manifest")?;
+    let package = toml::from_slice::<CargoManifest>(&package_bytes)
+        .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+    let module = read_regular_file(&build.wasm_module, "Plugin Wasm module")?;
+    let component = wit_component::ComponentEncoder::default()
+        .module(&module)
+        .map_err(|error| BundleError::Wasm(error.to_string()))?
+        .validate(true)
+        .encode()
+        .map_err(|error| BundleError::Wasm(error.to_string()))?;
+    let descriptor = extract_plugin_descriptor(&component)?;
+    let descriptor = strict_json::<Value>(&descriptor)?;
+    let artifact = PluginArtifactV2 {
+        path: "plugin.wasm".to_owned(),
+        digest: sha256_digest(&component),
+        size: u64::try_from(component.len())
+            .map_err(|_| BundleError::InvalidBundle("Artifact size exceeds u64".to_owned()))?,
+        media_type: "application/wasm".to_owned(),
+        target: "wasm32-unknown-unknown".to_owned(),
+    };
+    let document = SourceManifestDocument::from_value(PluginManifestV2 {
+        schema_version: 2,
+        plugin_id: package.package.metadata.lenso.plugin_id,
+        release_version: package.package.version,
+        artifact,
+        entry: PluginEntryV2 { descriptor },
+    })?;
+
+    let output_parent = build.output.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(output_parent).map_err(io_error)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".lenso-plugin-")
+        .tempdir_in(output_parent)
+        .map_err(io_error)?;
+    write_bundle_file(staging.path(), &document.value.artifact.path, &component)?;
+    fs::write(staging.path().join(MANIFEST_FILE), &document.bytes).map_err(io_error)?;
+    fs::rename(staging.path(), &build.output).map_err(io_error)?;
+    verify_bundle_directory(&build.output)
+}
+
 /// Builds an immutable Bundle directory without executing publisher code.
+///
+/// This is the schema-version-1 compatibility creator. New Plugin authoring
+/// uses [`build_source_plugin_bundle`].
 pub fn build_bundle(build: &BundleBuild) -> Result<VerifiedBundle, BundleError> {
     if build.output.exists() {
         return invalid_bundle(format!(
@@ -189,11 +307,15 @@ pub fn build_bundle(build: &BundleBuild) -> Result<VerifiedBundle, BundleError> 
 /// Verifies an already materialized directory as an exact immutable Bundle closure.
 pub fn verify_bundle_directory(root: &Path) -> Result<VerifiedBundle, BundleError> {
     let manifest_path = root.join(MANIFEST_FILE);
-    let manifest = ManifestDocument::parse(&read_regular_file(&manifest_path, "Plugin Manifest")?)?;
+    let manifest_bytes = read_regular_file(&manifest_path, "Plugin Manifest")?;
     let mut files = BTreeMap::new();
     collect_bundle_files(root, root, &mut files)?;
     files.remove(MANIFEST_FILE);
-    verify_bundle_files(&manifest, &files)
+    match manifest_schema_version(&manifest_bytes)? {
+        1 => verify_bundle_files(&ManifestDocument::parse(&manifest_bytes)?, &files),
+        2 => verify_source_bundle_files(&SourceManifestDocument::parse(&manifest_bytes)?, &files),
+        _ => invalid_manifest("unsupported schema version"),
+    }
 }
 
 /// Verifies exact declared bytes without performing admission or granting authority.
@@ -266,6 +388,106 @@ pub fn verify_bundle_files(
         artifact_digests,
         product_metadata_digests,
     })
+}
+
+fn verify_source_bundle_files(
+    manifest: &SourceManifestDocument,
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<VerifiedBundle, BundleError> {
+    let artifact = &manifest.value.artifact;
+    if files.len() != 1 {
+        return invalid_bundle("V2 Bundle must contain exactly one Artifact");
+    }
+    let Some(bytes) = files.get(&artifact.path) else {
+        return invalid_bundle("V2 Bundle does not contain its declared Artifact");
+    };
+    if artifact.size != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+        || artifact.digest != sha256_digest(bytes)
+    {
+        return Err(BundleError::DigestMismatch(artifact.path.clone()));
+    }
+    let descriptor = extract_plugin_descriptor(bytes)?;
+    let packaged = serde_json::to_vec(&manifest.value.entry.descriptor)
+        .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+    if descriptor != packaged {
+        return invalid_bundle("source descriptor does not match the V2 Plugin entry");
+    }
+    Ok(VerifiedBundle {
+        plugin_id: manifest.value.plugin_id.clone(),
+        release_version: manifest.value.release_version.clone(),
+        manifest_digest: manifest.digest.clone(),
+        artifact_digests: vec![artifact.digest.clone()],
+        product_metadata_digests: Vec::new(),
+    })
+}
+
+fn manifest_schema_version(input: &[u8]) -> Result<u64, BundleError> {
+    let value = strict_json::<Value>(input)?;
+    value
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| BundleError::InvalidManifest("schema_version is required".to_owned()))
+}
+
+/// Extracts one canonical source-derived Plugin descriptor without executing it.
+pub fn extract_plugin_descriptor(component: &[u8]) -> Result<Vec<u8>, BundleError> {
+    let mut descriptors = Vec::new();
+    collect_plugin_descriptors(component, &mut descriptors)?;
+    let [descriptor] = descriptors.as_slice() else {
+        return invalid_bundle(if descriptors.is_empty() {
+            "Plugin Component does not contain a source-derived descriptor"
+        } else {
+            "Plugin Component contains duplicate source-derived descriptors"
+        });
+    };
+    let value = strict_json::<Value>(descriptor)?;
+    let canonical = serde_json::to_vec(&value)
+        .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+    if canonical != *descriptor {
+        return invalid_bundle("Plugin descriptor is not canonical JSON");
+    }
+    Ok(descriptor.clone())
+}
+
+fn collect_plugin_descriptors(
+    bytes: &[u8],
+    descriptors: &mut Vec<Vec<u8>>,
+) -> Result<(), BundleError> {
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        match payload.map_err(|error| BundleError::Wasm(error.to_string()))? {
+            wasmparser::Payload::CustomSection(section)
+                if section.name() == PLUGIN_DESCRIPTOR_SECTION =>
+            {
+                if section.data().len() > MAX_PLUGIN_DESCRIPTOR_BYTES {
+                    return invalid_bundle("Plugin descriptor exceeds the size limit");
+                }
+                descriptors.push(section.data().to_vec());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_manifest(manifest: &PluginManifestV2) -> Result<(), BundleError> {
+    if manifest.schema_version != 2 {
+        return invalid_manifest("unsupported schema version");
+    }
+    if manifest.plugin_id.is_empty() || semver::Version::parse(&manifest.release_version).is_err() {
+        return invalid_manifest("Plugin identity or Release version is invalid");
+    }
+    validate_relative_path(&manifest.artifact.path)?;
+    digest_component(&manifest.artifact.digest)?;
+    if manifest.artifact.size == 0
+        || manifest.artifact.media_type != "application/wasm"
+        || manifest.artifact.target != "wasm32-unknown-unknown"
+    {
+        return invalid_manifest("V2 Artifact size, Wasm media type, and target must be exact");
+    }
+    if !manifest.entry.descriptor.is_object() {
+        return invalid_manifest("V2 Plugin entry descriptor must be an object");
+    }
+    Ok(())
 }
 
 /// Validates publisher-owned Manifest semantics independently of Host policy.
@@ -749,6 +971,8 @@ fn io_error(error: impl fmt::Display) -> BundleError {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     const ZERO_DIGEST: &str =
@@ -777,8 +1001,185 @@ mod tests {
         }
     }
 
+    fn wasm_template_with_duplicated_descriptor() -> PluginManifest {
+        PluginManifest {
+            schema_version: 1,
+            plugin_id: "example.echo".to_owned(),
+            release_version: "1.0.0".to_owned(),
+            artifacts: vec![ArtifactDeclaration {
+                id: "guest".to_owned(),
+                kind: ArtifactKind::WasmComponent,
+                digest: ZERO_DIGEST.to_owned(),
+                size: 0,
+                media_type: "application/wasm".to_owned(),
+                path: "plugin.wasm".to_owned(),
+                targets: vec!["wasm32-unknown-unknown".to_owned()],
+            }],
+            module_contributions: vec![ModuleContribution {
+                id: "echo".to_owned(),
+                package_id: "example.echo".to_owned(),
+                configuration_schema_digest: ZERO_DIGEST.to_owned(),
+                provides: vec![CapabilityDeclaration {
+                    capability_id: "test.echo@1".to_owned(),
+                    descriptor_version: "1.0.0".to_owned(),
+                    descriptor_digest: ZERO_DIGEST.to_owned(),
+                    request_operations: vec!["echo".to_owned()],
+                    operation_kinds: BTreeMap::new(),
+                }],
+                requires: Vec::new(),
+                implementations: vec![ImplementationVariant {
+                    id: "wasm".to_owned(),
+                    artifact: Some("guest".to_owned()),
+                    built_in_factory: None,
+                    entrypoint: "echo".to_owned(),
+                    execution_class: "lenso.wasm-component@1".to_owned(),
+                    targets: vec!["wasm32-unknown-unknown".to_owned()],
+                    profiles: vec!["provide-request-v1".to_owned()],
+                    support_channel: SupportChannel::Preview,
+                    trust: TrustLevel::Constrained,
+                }],
+                permission_request_ids: Vec::new(),
+                state: None,
+            }],
+            data_contributions: Vec::new(),
+            permission_requests: Vec::new(),
+            features: Vec::new(),
+            binding_templates: Vec::new(),
+            product_metadata: Vec::new(),
+        }
+    }
+
+    fn wasm_with_descriptors(descriptors: &[&[u8]]) -> Vec<u8> {
+        let mut module = wasm_encoder::Module::new();
+        for descriptor in descriptors {
+            module.section(&wasm_encoder::CustomSection {
+                name: Cow::Borrowed(PLUGIN_DESCRIPTOR_SECTION),
+                data: Cow::Borrowed(descriptor),
+            });
+        }
+        module.finish()
+    }
+
     #[test]
-    fn build_materializes_and_verifies_an_exact_bundle() {
+    fn publisher_template_duplicates_guest_descriptor() {
+        let guest_descriptor = lenso_guest_sdk::encode_guest_descriptor(
+            &[lenso_guest_sdk::GuestProvidedCapability {
+                capability_id: "test.echo@1",
+                descriptor_version: "1.0.0",
+                request_operations: &["echo"],
+                stream_operations: &[],
+            }],
+            &[],
+        );
+        let guest: Value = serde_json::from_str(&guest_descriptor).unwrap();
+        let template = wasm_template_with_duplicated_descriptor();
+        let contribution = &template.module_contributions[0];
+        let implementation = &contribution.implementations[0];
+
+        assert_eq!(
+            (
+                contribution.provides[0].capability_id.as_str(),
+                contribution.provides[0].descriptor_version.as_str(),
+                contribution.provides[0].request_operations.as_slice(),
+                implementation.artifact.as_deref(),
+                implementation.execution_class.as_str(),
+                implementation.targets.as_slice(),
+                implementation.trust,
+            ),
+            (
+                guest["capabilities"][0]["capability_id"].as_str().unwrap(),
+                guest["capabilities"][0]["descriptor_version"]
+                    .as_str()
+                    .unwrap(),
+                &["echo".to_owned()][..],
+                Some("guest"),
+                "lenso.wasm-component@1",
+                &["wasm32-unknown-unknown".to_owned()][..],
+                TrustLevel::Constrained,
+            )
+        );
+    }
+
+    #[test]
+    fn bundle_build_requires_a_publisher_template_before_reading_artifacts() {
+        let source = tempfile::tempdir().unwrap();
+        let error = build_bundle(&BundleBuild {
+            template: source.path().join("missing-template.json"),
+            output: source.path().join("dist/plugin"),
+            artifact_sources: Vec::new(),
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Plugin Manifest template"));
+    }
+
+    #[test]
+    fn source_metadata_rejects_publisher_owned_runtime_fields() {
+        let error = toml::from_str::<CargoManifest>(
+            r#"
+                [package]
+                version = "1.0.0"
+
+                [package.metadata.lenso]
+                plugin-id = "example.echo"
+                module-contributions = []
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("module-contributions"));
+    }
+
+    #[test]
+    fn descriptor_extraction_rejects_missing_evidence() {
+        let error = extract_plugin_descriptor(&wasm_with_descriptors(&[])).unwrap_err();
+
+        assert!(error.to_string().contains("does not contain"));
+    }
+
+    #[test]
+    fn descriptor_extraction_rejects_duplicate_evidence() {
+        let descriptor = br#"{"profile":"one"}"#;
+        let error = extract_plugin_descriptor(&wasm_with_descriptors(&[
+            descriptor.as_slice(),
+            descriptor.as_slice(),
+        ]))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn descriptor_extraction_rejects_oversized_evidence() {
+        let descriptor = vec![b' '; MAX_PLUGIN_DESCRIPTOR_BYTES + 1];
+        let error = extract_plugin_descriptor(&wasm_with_descriptors(&[&descriptor])).unwrap_err();
+
+        assert!(error.to_string().contains("size limit"));
+    }
+
+    #[test]
+    fn descriptor_extraction_rejects_malformed_or_noncanonical_json() {
+        let malformed = extract_plugin_descriptor(&wasm_with_descriptors(&[b"{"])).unwrap_err();
+        let noncanonical =
+            extract_plugin_descriptor(&wasm_with_descriptors(&[br#"{ "profile": "one" }"#]))
+                .unwrap_err();
+
+        assert!(
+            malformed.to_string().contains("invalid Plugin Manifest")
+                && noncanonical.to_string().contains("not canonical")
+        );
+    }
+
+    #[test]
+    fn descriptor_changes_are_closed_by_the_final_artifact_digest() {
+        let first = wasm_with_descriptors(&[br#"{"profile":"one"}"#]);
+        let second = wasm_with_descriptors(&[br#"{"profile":"two"}"#]);
+
+        assert_ne!(sha256_digest(&first), sha256_digest(&second));
+    }
+
+    #[test]
+    fn v1_creation_and_verification_remain_compatible_during_migration() {
         let source = tempfile::tempdir().unwrap();
         let template_path = source.path().join("lenso-plugin.template.json");
         fs::write(&template_path, serde_json::to_vec(&template()).unwrap()).unwrap();

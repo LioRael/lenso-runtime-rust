@@ -10,6 +10,10 @@ use lenso_kernel::{
     InvocationContext, Kernel, ModuleDependencyHandle, NativeStreamItem, RequestCapability,
     RuntimeFailure,
 };
+use lenso_plugin_bundle::{
+    SourcePluginBuild, build_source_plugin_bundle, extract_plugin_descriptor, sha256_digest,
+    verify_bundle_directory,
+};
 use lenso_runtime_codec::{
     ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonHostRequestFuture,
     JsonInvocationOutcome,
@@ -22,6 +26,124 @@ use lenso_runtime_conformance::{
 use lenso_wasm_component_adapter::{EXECUTION_CLASS, WasmComponentAdapter, WasmComponentLimits};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+#[test]
+fn source_descriptor_survives_component_encoding_without_execution() {
+    let fixture_target = tempfile::tempdir().unwrap();
+    let status = Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--manifest-path",
+            "tests/fixtures/rust-guest/Cargo.toml",
+            "--target-dir",
+        ])
+        .arg(fixture_target.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let core = std::fs::read(
+        fixture_target
+            .path()
+            .join("wasm32-unknown-unknown/release/lenso_wasm_test_guest.wasm"),
+    )
+    .unwrap();
+    let component = wit_component::ComponentEncoder::default()
+        .module(&core)
+        .unwrap()
+        .validate(true)
+        .encode()
+        .unwrap();
+
+    assert_eq!(
+        extract_plugin_descriptor(&component).unwrap(),
+        br#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":"test.echo@1","descriptor_version":"1.0.0","request_operations":["echo","fail","trap","loop"]}]}"#
+    );
+}
+
+#[test]
+fn source_bundle_builds_one_v2_entry_without_a_manifest_template() {
+    let fixture_target = tempfile::tempdir().unwrap();
+    let status = Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--manifest-path",
+            "tests/fixtures/rust-guest/Cargo.toml",
+            "--target-dir",
+        ])
+        .arg(fixture_target.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let bundle_root = fixture_target.path().join("bundle");
+    let built = build_source_plugin_bundle(&SourcePluginBuild {
+        package_manifest: "tests/fixtures/rust-guest/Cargo.toml".into(),
+        wasm_module: fixture_target
+            .path()
+            .join("wasm32-unknown-unknown/release/lenso_wasm_test_guest.wasm"),
+        output: bundle_root.clone(),
+    })
+    .unwrap();
+    let component = std::fs::read(bundle_root.join("plugin.wasm")).unwrap();
+    let manifest = std::fs::read_to_string(bundle_root.join("lenso-plugin.json")).unwrap();
+    let expected = serde_json::json!({
+        "artifact": {
+            "digest": sha256_digest(&component),
+            "media_type": "application/wasm",
+            "path": "plugin.wasm",
+            "size": component.len(),
+            "target": "wasm32-unknown-unknown",
+        },
+        "entry": {
+            "descriptor": {
+                "abi": "lenso.json-request@1",
+                "capabilities": [{
+                    "capability_id": "test.echo@1",
+                    "descriptor_version": "1.0.0",
+                    "request_operations": ["echo", "fail", "trap", "loop"],
+                }],
+            },
+        },
+        "plugin_id": "test.echo",
+        "release_version": "0.0.0",
+        "schema_version": 2,
+    })
+    .to_string();
+
+    assert_eq!(manifest, expected);
+    assert_eq!(built, verify_bundle_directory(&bundle_root).unwrap());
+    assert!(!manifest.contains("module_contributions"));
+
+    let mut conflicting: Value = serde_json::from_str(&manifest).unwrap();
+    conflicting["module_contributions"] = serde_json::json!([]);
+    std::fs::write(
+        bundle_root.join("lenso-plugin.json"),
+        serde_json::to_vec(&conflicting).unwrap(),
+    )
+    .unwrap();
+    assert!(verify_bundle_directory(&bundle_root).is_err());
+
+    let mut mismatched: Value = serde_json::from_str(&manifest).unwrap();
+    mismatched["entry"]["descriptor"]["capabilities"][0]["request_operations"] =
+        serde_json::json!(["different"]);
+    std::fs::write(
+        bundle_root.join("lenso-plugin.json"),
+        serde_json::to_vec(&mismatched).unwrap(),
+    )
+    .unwrap();
+    assert!(verify_bundle_directory(&bundle_root).is_err());
+
+    std::fs::write(bundle_root.join("lenso-plugin.json"), &manifest).unwrap();
+    std::fs::write(bundle_root.join("plugin.wasm"), b"tampered").unwrap();
+    assert!(verify_bundle_directory(&bundle_root).is_err());
+}
 
 #[derive(Debug)]
 struct EchoCodec;
