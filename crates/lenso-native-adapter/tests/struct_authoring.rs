@@ -138,5 +138,6 @@ fn struct_module_derives_descriptor_factory_and_configuration() {
     assert!(registry.factories().any(|factory| {
         factory.package_id() == "lenso.native-adapter"
             && factory.package_version() == env!("CARGO_PKG_VERSION")
+            && factory.module_descriptor_json() == Some(MODULE_DESCRIPTOR_JSON)
     }));
 }

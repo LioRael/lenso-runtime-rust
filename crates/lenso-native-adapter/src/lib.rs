@@ -175,6 +175,13 @@ pub trait NativeModuleFactory: std::fmt::Debug + 'static {
     fn package_version(&self) -> &'static str {
         ""
     }
+    /// Generated package-owned Module Descriptor linked into this Host.
+    ///
+    /// Compatibility factories that predate descriptor authoring may return
+    /// `None`; source-derived App resolution must reject selecting them.
+    fn module_descriptor_json(&self) -> Option<&'static str> {
+        None
+    }
     /// Immutable factory identity advertised by the exact Host Build Manifest.
     ///
     /// Plugin-resolved Plans carry this value as their package revision. The

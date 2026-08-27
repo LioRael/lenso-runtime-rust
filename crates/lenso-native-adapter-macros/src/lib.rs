@@ -285,6 +285,13 @@ fn expand_module_function(
         .transpose()?;
     let function_name = &function.sig.ident;
     let generated_module = format_ident!("__lenso_module_{function_name}");
+    let descriptor_factory_method = descriptor_json.as_ref().map(|_| {
+        quote! {
+            fn module_descriptor_json(&self) -> Option<&'static str> {
+                Some(super::MODULE_DESCRIPTOR_JSON)
+            }
+        }
+    });
     let descriptor_constant = descriptor_json.map(|descriptor| {
         let artifact =
             format!("LENSO_MODULE_DESCRIPTOR_V1\0{descriptor}\0END_LENSO_MODULE_DESCRIPTOR_V1");
@@ -330,6 +337,8 @@ fn expand_module_function(
                 fn package_version(&self) -> &'static str {
                     env!("CARGO_PKG_VERSION")
                 }
+
+                #descriptor_factory_method
 
                 fn instantiate(
                     &self,
@@ -532,6 +541,9 @@ fn expand_provides(
             impl #sdk::__private::NativeModuleFactory for Factory {
                 fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                 fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
+                fn module_descriptor_json(&self) -> Option<&'static str> {
+                    Some(super::MODULE_DESCRIPTOR_JSON)
+                }
 
                 fn instantiate(
                     &self,
@@ -733,6 +745,9 @@ fn expand_module_struct(
                 impl #sdk::__private::NativeModuleFactory for Factory {
                     fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                     fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
+                    fn module_descriptor_json(&self) -> Option<&'static str> {
+                        Some(super::MODULE_DESCRIPTOR_JSON)
+                    }
 
                     fn instantiate(
                         &self,
