@@ -1010,9 +1010,11 @@ dependencies = [
  "lenso-kernel",
  "lenso-native-adapter",
  "lenso-plugin-authoring",
+ "lenso-plugin-control-plane",
  "lenso-test",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

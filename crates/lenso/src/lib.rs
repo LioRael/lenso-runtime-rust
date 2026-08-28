@@ -1,9 +1,12 @@
-//! The stable Rust authoring interface for Lenso Plugins.
+//! The stable Rust interface for Lenso Plugins and product Hosts.
 //!
 //! Adapter and Kernel implementation details remain behind generated glue.
 
 mod provider_stream;
 mod typed_extension;
+
+#[cfg(feature = "host")]
+pub mod host;
 
 pub use lenso_native_adapter::{
     Lifecycle, ManagedTasks, ManagedTasksError, PluginConfig, plugin, provides,
