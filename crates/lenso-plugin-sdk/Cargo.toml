@@ -1,6 +1,6 @@
 [package]
 name = "lenso-plugin-sdk"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -8,8 +8,7 @@ repository.workspace = true
 description = "Target-independent Rust authoring SDK for portable Lenso Plugins."
 
 [dependencies]
-schemars.workspace = true
-serde.workspace = true
+lenso-plugin-sdk-macros = { version = "0.1.0", path = "../lenso-plugin-sdk-macros" }
 serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
