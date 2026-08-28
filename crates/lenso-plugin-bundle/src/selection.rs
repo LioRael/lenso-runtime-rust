@@ -57,7 +57,7 @@ pub fn resolve_implementation(
                     .collect::<Vec<_>>();
                 match matches.as_slice() {
                     [] => {}
-                    [candidate] => return resolved_v3(value, candidate),
+                    [candidate] => return Ok(resolved_v3(value, candidate)),
                     _ => {
                         return invalid_bundle(format!(
                             "Host policy ambiguously matches {} implementations of `{}`",
@@ -75,12 +75,12 @@ pub fn resolve_implementation(
 fn resolved_v3(
     manifest: &crate::PluginManifestV3,
     candidate: &PluginImplementationV3,
-) -> Result<ResolvedPluginImplementation, BundleError> {
-    Ok(ResolvedPluginImplementation {
+) -> ResolvedPluginImplementation {
+    ResolvedPluginImplementation {
         implementation_id: candidate.id.clone(),
         descriptor: manifest.contract.resolve(&candidate.runtime),
         artifact: candidate.artifact.clone(),
-    })
+    }
 }
 
 fn target_matches(artifact: &PluginArtifactV2, host_target: &str) -> bool {

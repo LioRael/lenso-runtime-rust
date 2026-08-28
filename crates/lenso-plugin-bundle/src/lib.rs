@@ -740,8 +740,11 @@ fn validate_artifact(artifact: &PluginArtifactV2) -> Result<(), BundleError> {
     }
     match artifact.media_type.as_str() {
         "application/wasm" if artifact.target == "wasm32-unknown-unknown" => Ok(()),
-        "application/vnd.lenso.process" if !artifact.target.trim().is_empty() => Ok(()),
-        "application/javascript" if !artifact.target.trim().is_empty() => Ok(()),
+        "application/vnd.lenso.process" | "application/javascript"
+            if !artifact.target.trim().is_empty() =>
+        {
+            Ok(())
+        }
         _ => invalid_manifest("Artifact media type and target are not supported"),
     }
 }
