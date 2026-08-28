@@ -6,6 +6,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env,
     io::{self, BufRead as _, BufReader, BufWriter, Write as _},
     process::{Child, ChildStdin, Command, Stdio},
     rc::Rc,
@@ -246,7 +247,8 @@ impl ProcessGeneration {
         instance: &PluginInstancePlan,
         limits: ProcessLimits,
     ) -> Result<Rc<Self>, RuntimeFailure> {
-        let mut command = Command::new(executable);
+        let executable = absolute_executable(executable)?;
+        let mut command = Command::new(&executable);
         command
             .env_clear()
             .current_dir(
@@ -415,6 +417,17 @@ impl ProcessGeneration {
         }
         retire_pending(&self.pending, &self.failed, "Process Plugin stopped");
     }
+}
+
+fn absolute_executable(path: &std::path::Path) -> Result<std::path::PathBuf, RuntimeFailure> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    env::current_dir()
+        .map(|current| current.join(path))
+        .map_err(|error| RuntimeFailure::PluginFailure {
+            detail: format!("failed to resolve Process Plugin path: {error}"),
+        })
 }
 
 impl JsonRequestTransport for ProcessGeneration {

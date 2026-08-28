@@ -47,7 +47,9 @@ impl JsonCapabilityCodec for EchoCodec {
 
 #[test]
 fn real_process_descriptor_request_and_shutdown_cross_the_stdio_boundary() {
-    let generation = process_generation();
+    let generation = process_generation(std::path::Path::new(env!(
+        "CARGO_BIN_EXE_lenso-process-test-fixture"
+    )));
     let outcome = futures::executor::block_on(generation.endpoints()[0].invoke(
         "echo",
         Box::new(json!({"message": "hello"})),
@@ -63,7 +65,9 @@ fn real_process_descriptor_request_and_shutdown_cross_the_stdio_boundary() {
 
 #[test]
 fn cancellation_retires_a_blocked_process_without_replaying_the_request() {
-    let generation = process_generation();
+    let generation = process_generation(std::path::Path::new(env!(
+        "CARGO_BIN_EXE_lenso-process-test-fixture"
+    )));
     let cancellation = CancellationToken::new();
     let cancel_after_admission = cancellation.clone();
     let invocation = generation.endpoints()[0].invoke(
@@ -79,8 +83,27 @@ fn cancellation_retires_a_blocked_process_without_replaying_the_request() {
     drop(generation);
 }
 
-fn process_generation() -> lenso_kernel::PreparedNativePlugin {
-    let executable = std::path::Path::new(env!("CARGO_BIN_EXE_lenso-process-test-fixture"));
+#[test]
+fn relative_artifact_path_starts_after_the_child_working_directory_changes() {
+    let current = std::env::current_dir().unwrap();
+    let directory = tempfile::Builder::new()
+        .prefix("lenso-process-relative-")
+        .tempdir_in(&current)
+        .unwrap();
+    let executable = directory.path().join("plugin");
+    fs::copy(
+        env!("CARGO_BIN_EXE_lenso-process-test-fixture"),
+        &executable,
+    )
+    .unwrap();
+    let relative = executable.strip_prefix(&current).unwrap();
+
+    let generation = process_generation(relative);
+
+    drop(generation);
+}
+
+fn process_generation(executable: &std::path::Path) -> lenso_kernel::PreparedNativePlugin {
     let bytes = fs::read(executable).unwrap();
     let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
     let artifact = ArtifactHandle::open(executable, &digest, bytes.len() as u64).unwrap();
