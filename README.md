@@ -113,12 +113,13 @@ should terminate authorization policy in their deployment layer.
 
 ## Portable Plugin authoring
 
-`lenso-plugin-sdk` keeps execution targets out of Plugin business code. A Rust
-Plugin implements `RequestPlugin`, or a product-facing helper such as
-`AgentTool`, once and calls one export macro. The SDK lowers that declaration to
-a Wasm Component when Cargo targets `wasm32`, and to the framed Process protocol
-for native binaries. WIT bindings, runtime descriptors, and stdio framing are
-SDK-owned implementation details rather than files in each Plugin project.
+`lenso-plugin-sdk` is the domain-neutral lowering layer for portable Rust
+Plugins. Product SDKs own typed Capability authoring (for example Agent Tools)
+and generate one hidden JSON request dispatcher. This Runtime SDK lowers that
+dispatcher to a Wasm Component when Cargo targets `wasm32`, and to the framed
+Process protocol for native binaries. It does not contain Agent, Ingress, Auth,
+or other product semantics. WIT bindings, runtime descriptors, and stdio framing
+remain SDK-owned implementation details rather than files in each Plugin project.
 
 ## Releases
 
