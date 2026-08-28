@@ -4,6 +4,7 @@ use lenso_dylib_adapter::{DylibAdapter, DylibLimits, DylibVerifier};
 use lenso_kernel::ExecutionAdapterCatalog;
 use lenso_process_adapter::{ProcessAdapter, ProcessLimits};
 use lenso_quickjs_adapter::{QuickJsAdapter, QuickJsLimits};
+use lenso_remote_adapter::{RemoteAdapter, RemoteLimits};
 use lenso_runtime_codec::JsonCapabilityCodec;
 use lenso_wasm_component_adapter::{WasmComponentAdapter, WasmComponentLimits};
 
@@ -15,11 +16,14 @@ pub struct MultiExecutionCatalogFactory<B: CatalogFactory> {
     wasm_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
     quickjs_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
     process_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
+    remote_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
+    remote_http_client: Option<reqwest::blocking::Client>,
     dylib_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
     dylib_verifier: Option<Rc<dyn DylibVerifier>>,
     wasm_limits: WasmComponentLimits,
     quickjs_limits: QuickJsLimits,
     process_limits: ProcessLimits,
+    remote_limits: RemoteLimits,
     dylib_limits: DylibLimits,
 }
 
@@ -31,11 +35,14 @@ impl<B: CatalogFactory> MultiExecutionCatalogFactory<B> {
             wasm_codecs: Vec::new(),
             quickjs_codecs: Vec::new(),
             process_codecs: Vec::new(),
+            remote_codecs: Vec::new(),
+            remote_http_client: None,
             dylib_codecs: Vec::new(),
             dylib_verifier: None,
             wasm_limits: WasmComponentLimits::default(),
             quickjs_limits: QuickJsLimits::default(),
             process_limits: ProcessLimits::default(),
+            remote_limits: RemoteLimits::default(),
             dylib_limits: DylibLimits::default(),
         }
     }
@@ -65,6 +72,27 @@ impl<B: CatalogFactory> MultiExecutionCatalogFactory<B> {
     #[must_use]
     pub fn with_process_limits(mut self, limits: ProcessLimits) -> Self {
         self.process_limits = limits;
+        self
+    }
+
+    /// Registers a generated codec for remote HTTP Instances.
+    #[must_use]
+    pub fn with_remote_codec(mut self, codec: impl JsonCapabilityCodec) -> Self {
+        self.remote_codecs.push(Rc::new(codec));
+        self
+    }
+
+    /// Applies product-owned limits for remote HTTP Instances.
+    #[must_use]
+    pub fn with_remote_limits(mut self, limits: RemoteLimits) -> Self {
+        self.remote_limits = limits;
+        self
+    }
+
+    /// Installs product-owned proxy, identity, or mTLS policy for Remote Instances.
+    #[must_use]
+    pub fn with_remote_http_client(mut self, client: reqwest::blocking::Client) -> Self {
+        self.remote_http_client = Some(client);
         self
     }
 
@@ -104,6 +132,8 @@ impl<B: CatalogFactory> std::fmt::Debug for MultiExecutionCatalogFactory<B> {
             .field("wasm_codecs", &self.wasm_codecs.len())
             .field("quickjs_codecs", &self.quickjs_codecs.len())
             .field("process_codecs", &self.process_codecs.len())
+            .field("remote_codecs", &self.remote_codecs.len())
+            .field("has_remote_http_client", &self.remote_http_client.is_some())
             .field("dylib_codecs", &self.dylib_codecs.len())
             .field("has_dylib_verifier", &self.dylib_verifier.is_some())
             .finish_non_exhaustive()
@@ -144,6 +174,17 @@ impl<B: CatalogFactory> CatalogFactory for MultiExecutionCatalogFactory<B> {
                     .with_limits(self.process_limits.clone()),
                 ProcessAdapter::with_shared_codec,
             );
+            catalog = catalog.with_adapter(adapter).map_err(catalog_error)?;
+        }
+        if selected.contains(lenso_remote_adapter::EXECUTION_CLASS) {
+            let mut adapter = self.remote_codecs.iter().cloned().fold(
+                RemoteAdapter::new(generation.artifacts.clone())
+                    .with_limits(self.remote_limits.clone()),
+                RemoteAdapter::with_shared_codec,
+            );
+            if let Some(client) = &self.remote_http_client {
+                adapter = adapter.with_http_client(client.clone());
+            }
             catalog = catalog.with_adapter(adapter).map_err(catalog_error)?;
         }
         if selected.contains(lenso_dylib_adapter::EXECUTION_CLASS) {

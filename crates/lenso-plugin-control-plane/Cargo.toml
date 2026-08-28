@@ -15,9 +15,11 @@ lenso-kernel.workspace = true
 lenso-dylib-adapter = { version = "0.2.0", path = "../lenso-dylib-adapter" }
 lenso-process-adapter = { version = "0.1.0", path = "../lenso-process-adapter" }
 lenso-quickjs-adapter = { version = "0.2.0", path = "../lenso-quickjs-adapter" }
+lenso-remote-adapter = { version = "0.1.0", path = "../lenso-remote-adapter" }
 lenso-runner = { version = "0.2.0", path = "../lenso-runner" }
 lenso-runtime-codec = { version = "0.2.0", path = "../lenso-runtime-codec" }
 lenso-wasm-component-adapter = { version = "0.2.0", path = "../lenso-wasm-component-adapter" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -88,6 +88,29 @@ native executable retains ambient operating-system authority until a reviewed
 platform sandbox enforces narrower grants. Use the Wasm Component Adapter for
 untrusted third-party code.
 
+## Remote Plugins
+
+`lenso-remote-adapter` runs request-only Plugin providers behind an HTTP
+deployment while preserving Lenso's Plan and Generation boundaries. The Host
+admits a small digest-verified deployment-binding Artifact for each Instance,
+performs an exact descriptor handshake, bounds concurrency, response size, and
+request size and timeouts, and propagates cancellation without retrying an
+invocation. A binding uses the following shape:
+
+```json
+{
+  "schema_version": 1,
+  "protocol": "lenso.remote-http-json@1",
+  "base_url": "https://plugin.example.com/"
+}
+```
+
+The service implements `GET /lenso/v1/ready`, `POST /lenso/v1/invoke`, and
+`POST /lenso/v1/cancel`. HTTPS is mandatory outside loopback development.
+Authentication and streaming are intentionally not part of Remote V1; products
+can inject a product-owned HTTP client for proxy, default headers, or mTLS and
+should terminate authorization policy in their deployment layer.
+
 ## Releases
 
 Published crates use release PRs and crates.io Trusted Publishing through
