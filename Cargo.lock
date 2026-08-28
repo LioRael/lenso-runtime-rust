@@ -1080,6 +1080,7 @@ dependencies = [
  "lenso-kernel",
  "lenso-native-adapter-macros",
  "lenso-plugin-authoring",
+ "lenso-runtime-codec",
  "serde",
  "serde_json",
 ]

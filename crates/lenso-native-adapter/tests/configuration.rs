@@ -3,8 +3,10 @@ use std::{cell::RefCell, rc::Rc, time::Duration};
 use lenso_app_plan::{PluginInstancePlan, ResolvedAppPlan, RestartPolicy};
 use lenso_kernel::{DeterministicDriver, Kernel, RuntimeDriver, RuntimeFailure};
 use lenso_native_adapter::{
-    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
+    InstanceResources, NativePluginFactory, NativePluginFactoryContext, NativePluginInstance,
+    NativePluginRegistry,
 };
+use lenso_runtime_codec::InstanceResourceCatalog;
 
 #[derive(Debug)]
 struct RecordingFactory {
@@ -35,6 +37,34 @@ impl NativePluginFactory for RecordingFactory {
 #[derive(Debug)]
 struct PluginFactory {
     observed: Rc<RefCell<Vec<(String, String, String)>>>,
+}
+
+#[derive(Debug)]
+struct ResourceFactory {
+    observed: Rc<RefCell<Vec<String>>>,
+}
+
+impl NativePluginFactory for ResourceFactory {
+    fn package_id(&self) -> &'static str {
+        "test.resources"
+    }
+
+    fn package_version(&self) -> &'static str {
+        "1.0.0"
+    }
+
+    fn instantiate(
+        &self,
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        self.observed.borrow_mut().push(
+            context
+                .resources()
+                .read_text("prompts/system.md")?
+                .to_owned(),
+        );
+        Ok(NativePluginInstance::default())
+    }
 }
 
 impl NativePluginFactory for PluginFactory {
@@ -167,4 +197,38 @@ fn native_factory_receives_the_exact_immutable_instance_input() {
             ),
         ]
     );
+}
+
+#[test]
+fn native_factory_receives_the_generation_resource_snapshot() {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let plan = ResolvedAppPlan::new(
+        vec![PluginInstancePlan::new("resource-reader", "test.resources")],
+        vec![],
+    );
+    let resources = InstanceResourceCatalog::new()
+        .with_resources(
+            "resource-reader",
+            InstanceResources::from_files([(
+                "prompts/system.md".to_owned(),
+                b"generation one".to_vec(),
+            )])
+            .expect("resource snapshot should be valid"),
+        )
+        .expect("resource authority should be unique");
+    let driver = DeterministicDriver::new();
+
+    driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativePluginRegistry::new()
+                .with_resources(resources)
+                .with_factory(ResourceFactory {
+                    observed: observed.clone(),
+                }),
+        ))
+        .expect("the native App should start with snapshotted resources");
+
+    assert_eq!(*observed.borrow(), vec!["generation one".to_owned()]);
 }

@@ -59,6 +59,8 @@ pub struct ResolvedArtifactSet {
     pub resolution_authority_digest: String,
     pub host_execution_policy_digest: String,
     pub artifacts: Vec<ResolvedArtifact>,
+    #[serde(default)]
+    pub instance_resources: Vec<ResolvedInstanceResources>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -70,6 +72,16 @@ pub struct ResolvedArtifact {
     pub size: u64,
     pub media_type: String,
     pub target: String,
+}
+
+/// Content identity of one Plugin Instance's immutable supporting files.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedInstanceResources {
+    pub instance_key: String,
+    pub digest: String,
+    pub file_count: u64,
+    pub total_size: u64,
 }
 
 /// Effective, named enforcement authority for selected Instances.
