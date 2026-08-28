@@ -74,7 +74,7 @@ impl PluginLifecycle for ReportingConsumerLifecycle {
         Box::pin(async move {
             let response = client?
                 .probe(ProbeRequest {
-                    value: "module-client".to_owned(),
+                    value: "plugin-client".to_owned(),
                 })
                 .await
                 .map_err(|error| RuntimeFailure::PluginFailure {
@@ -329,7 +329,7 @@ async fn one_plan_runs_two_kernel_lanes_and_invokes_across_them() {
         report
             .recv_timeout(Duration::from_secs(1))
             .expect("the Plugin's typed client should invoke across lanes"),
-        "Echo: module-client"
+        "Echo: plugin-client"
     );
     let response = app
         .invoke::<Probe>(
