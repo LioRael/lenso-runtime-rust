@@ -10,3 +10,15 @@ release_always = false
 changelog_update = false
 git_tag_name = "{{ package }}-v{{ version }}"
 pr_labels = ["release"]
+# Keep this recovery release scoped to the portable SDK chain. The accumulated
+# Adapter and control-plane releases remain in PR #74 and are not authorized by
+# this delivery. Revert this temporary allowlist after SDK publication.
+release = false
+
+[[package]]
+name = "lenso-plugin-sdk-macros"
+release = true
+
+[[package]]
+name = "lenso-plugin-sdk"
+release = true
