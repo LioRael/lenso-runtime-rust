@@ -86,6 +86,15 @@ impl ProcessAdapter {
     }
 
     #[must_use]
+    pub fn with_shared_codec(mut self, codec: Rc<dyn JsonCapabilityCodec>) -> Self {
+        let capability = codec.capability_id().to_owned();
+        if self.codecs.insert(capability.clone(), codec).is_some() {
+            self.duplicate_codecs.insert(capability);
+        }
+        self
+    }
+
+    #[must_use]
     pub fn with_limits(mut self, limits: ProcessLimits) -> Self {
         self.limits = limits;
         self

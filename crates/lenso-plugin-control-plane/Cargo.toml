@@ -13,6 +13,7 @@ lenso-app-plan.workspace = true
 lenso-plugin-bundle = { version = "0.2.0", path = "../lenso-plugin-bundle" }
 lenso-kernel.workspace = true
 lenso-dylib-adapter = { version = "0.2.0", path = "../lenso-dylib-adapter" }
+lenso-process-adapter = { version = "0.1.0", path = "../lenso-process-adapter" }
 lenso-quickjs-adapter = { version = "0.2.0", path = "../lenso-quickjs-adapter" }
 lenso-runner = { version = "0.2.0", path = "../lenso-runner" }
 lenso-runtime-codec = { version = "0.2.0", path = "../lenso-runtime-codec" }
