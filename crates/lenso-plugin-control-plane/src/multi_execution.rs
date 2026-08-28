@@ -2,21 +2,24 @@ use std::{collections::BTreeSet, rc::Rc};
 
 use lenso_dylib_adapter::{DylibAdapter, DylibLimits, DylibVerifier};
 use lenso_kernel::ExecutionAdapterCatalog;
+use lenso_process_adapter::{ProcessAdapter, ProcessLimits};
 use lenso_quickjs_adapter::{QuickJsAdapter, QuickJsLimits};
 use lenso_runtime_codec::JsonCapabilityCodec;
 use lenso_wasm_component_adapter::{WasmComponentAdapter, WasmComponentLimits};
 
 use crate::{CatalogFactory, ControlPlaneError, ResolvedGeneration};
 
-/// Product Host Build factory that assembles the three dynamic in-process execution classes.
+/// Product Host Build factory that assembles supported dynamic execution classes.
 pub struct MultiExecutionCatalogFactory<B: CatalogFactory> {
     base: B,
     wasm_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
     quickjs_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
+    process_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
     dylib_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
     dylib_verifier: Option<Rc<dyn DylibVerifier>>,
     wasm_limits: WasmComponentLimits,
     quickjs_limits: QuickJsLimits,
+    process_limits: ProcessLimits,
     dylib_limits: DylibLimits,
 }
 
@@ -27,10 +30,12 @@ impl<B: CatalogFactory> MultiExecutionCatalogFactory<B> {
             base,
             wasm_codecs: Vec::new(),
             quickjs_codecs: Vec::new(),
+            process_codecs: Vec::new(),
             dylib_codecs: Vec::new(),
             dylib_verifier: None,
             wasm_limits: WasmComponentLimits::default(),
             quickjs_limits: QuickJsLimits::default(),
+            process_limits: ProcessLimits::default(),
             dylib_limits: DylibLimits::default(),
         }
     }
@@ -46,6 +51,20 @@ impl<B: CatalogFactory> MultiExecutionCatalogFactory<B> {
     #[must_use]
     pub fn with_quickjs_codec(mut self, codec: impl JsonCapabilityCodec) -> Self {
         self.quickjs_codecs.push(Rc::new(codec));
+        self
+    }
+
+    /// Registers a generated codec for trusted Process Instances.
+    #[must_use]
+    pub fn with_process_codec(mut self, codec: impl JsonCapabilityCodec) -> Self {
+        self.process_codecs.push(Rc::new(codec));
+        self
+    }
+
+    /// Applies product-owned limits for trusted Process Instances.
+    #[must_use]
+    pub fn with_process_limits(mut self, limits: ProcessLimits) -> Self {
+        self.process_limits = limits;
         self
     }
 
@@ -84,6 +103,7 @@ impl<B: CatalogFactory> std::fmt::Debug for MultiExecutionCatalogFactory<B> {
             .debug_struct("MultiExecutionCatalogFactory")
             .field("wasm_codecs", &self.wasm_codecs.len())
             .field("quickjs_codecs", &self.quickjs_codecs.len())
+            .field("process_codecs", &self.process_codecs.len())
             .field("dylib_codecs", &self.dylib_codecs.len())
             .field("has_dylib_verifier", &self.dylib_verifier.is_some())
             .finish_non_exhaustive()
@@ -115,6 +135,14 @@ impl<B: CatalogFactory> CatalogFactory for MultiExecutionCatalogFactory<B> {
                 QuickJsAdapter::new(generation.artifacts.clone())
                     .with_limits(self.quickjs_limits.clone()),
                 QuickJsAdapter::with_shared_codec,
+            );
+            catalog = catalog.with_adapter(adapter).map_err(catalog_error)?;
+        }
+        if selected.contains(lenso_process_adapter::EXECUTION_CLASS) {
+            let adapter = self.process_codecs.iter().cloned().fold(
+                ProcessAdapter::new(generation.artifacts.clone())
+                    .with_limits(self.process_limits.clone()),
+                ProcessAdapter::with_shared_codec,
             );
             catalog = catalog.with_adapter(adapter).map_err(catalog_error)?;
         }

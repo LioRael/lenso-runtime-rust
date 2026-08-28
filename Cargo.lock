@@ -728,6 +728,7 @@ dependencies = [
  "lenso-kernel",
  "lenso-native-adapter",
  "lenso-plugin-bundle",
+ "lenso-process-adapter",
  "lenso-quickjs-adapter",
  "lenso-runner",
  "lenso-runtime-codec",
@@ -737,6 +738,30 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "lenso-process-adapter"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "hex",
+ "lenso-app-plan",
+ "lenso-kernel",
+ "lenso-process-sdk",
+ "lenso-runtime-codec",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "lenso-process-sdk"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
