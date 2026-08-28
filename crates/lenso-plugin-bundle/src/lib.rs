@@ -1,6 +1,7 @@
 //! Immutable Plugin Release manifests, source materialization, and Bundle verification.
 
 mod model;
+mod selection;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -10,9 +11,10 @@ use std::{
 
 use lenso_app_plan::{
     CapabilityEndpointPlan, CapabilityOperationKind, CapabilityRequirementPlan, ExecutionClassId,
-    authoring::PluginDescriptor,
+    authoring::{PluginContract, PluginDescriptor, PluginImplementation},
 };
 pub use model::*;
+pub use selection::*;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -48,6 +50,27 @@ pub struct SourceProcessPluginBuild {
     pub output: PathBuf,
 }
 
+/// Source-only input for one V3 Plugin Release containing multiple implementations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourcePluginReleaseBuild {
+    pub contract: PluginContract,
+    pub implementations: Vec<SourcePluginImplementation>,
+    pub output: PathBuf,
+}
+
+/// One already-built implementation Artifact admitted to a V3 Plugin Release.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourcePluginImplementation {
+    pub id: String,
+    pub host_targets: Vec<String>,
+    pub artifact: PathBuf,
+    pub bundle_path: String,
+    pub media_type: String,
+    pub target: String,
+    pub entrypoint: String,
+    pub execution_class: ExecutionClassId,
+}
+
 #[derive(Clone, Debug)]
 struct SourceManifestDocument {
     value: PluginManifestV2,
@@ -55,7 +78,45 @@ struct SourceManifestDocument {
     digest: String,
 }
 
+#[derive(Clone, Debug)]
+struct ManifestDocument {
+    value: PluginManifest,
+    digest: String,
+}
+
+impl ManifestDocument {
+    fn parse(input: &[u8]) -> Result<Self, BundleError> {
+        let value = strict_json::<Value>(input)?;
+        let schema_version = value
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| BundleError::InvalidManifest("schema_version is required".to_owned()))?;
+        let value = match schema_version {
+            2 => PluginManifest::V2(
+                serde_json::from_value(value)
+                    .map_err(|error| BundleError::InvalidManifest(error.to_string()))?,
+            ),
+            3 => PluginManifest::V3(
+                serde_json::from_value(value)
+                    .map_err(|error| BundleError::InvalidManifest(error.to_string()))?,
+            ),
+            _ => return invalid_manifest("unsupported schema version"),
+        };
+        validate_manifest(&value)?;
+        let canonical = match &value {
+            PluginManifest::V2(value) => serde_json::to_vec(value),
+            PluginManifest::V3(value) => serde_json::to_vec(value),
+        }
+        .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+        Ok(Self {
+            value,
+            digest: sha256_digest(&canonical),
+        })
+    }
+}
+
 impl SourceManifestDocument {
+    #[cfg(test)]
     fn parse(input: &[u8]) -> Result<Self, BundleError> {
         let value = strict_json::<PluginManifestV2>(input)?;
         Self::from_value(value)
@@ -283,6 +344,72 @@ pub fn build_source_process_plugin_bundle(
     verify_bundle_directory(&build.output)
 }
 
+/// Materializes a V3 Plugin Bundle from one contract and built implementation Artifacts.
+pub fn build_source_plugin_release_bundle(
+    build: &SourcePluginReleaseBuild,
+) -> Result<VerifiedBundle, BundleError> {
+    if build.output.exists() {
+        return invalid_bundle(format!(
+            "output `{}` already exists",
+            build.output.display()
+        ));
+    }
+    let mut files = Vec::with_capacity(build.implementations.len());
+    let mut implementations = Vec::with_capacity(build.implementations.len());
+    for source in &build.implementations {
+        let bytes = read_regular_file(&source.artifact, "Plugin implementation Artifact")?;
+        let digest = sha256_digest(&bytes);
+        let artifact = PluginArtifactV2 {
+            path: source.bundle_path.clone(),
+            digest: digest.clone(),
+            size: u64::try_from(bytes.len())
+                .map_err(|_| BundleError::InvalidBundle("Artifact size exceeds u64".to_owned()))?,
+            media_type: source.media_type.clone(),
+            target: source.target.clone(),
+        };
+        implementations.push(PluginImplementationV3 {
+            id: source.id.clone(),
+            host_targets: source.host_targets.clone(),
+            artifact,
+            runtime: PluginImplementation::new(
+                build.contract.plugin_id(),
+                digest,
+                &source.entrypoint,
+                source.execution_class.clone(),
+            ),
+        });
+        files.push((source, bytes));
+    }
+    implementations.sort_by(|left, right| left.id.cmp(&right.id));
+    let manifest = PluginManifestV3 {
+        schema_version: 3,
+        contract: build.contract.clone(),
+        implementations,
+    };
+    validate_v3_manifest(&manifest)?;
+    let bytes = serde_json::to_vec(&manifest)
+        .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+
+    let output_parent = build.output.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(output_parent).map_err(io_error)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".lenso-plugin-")
+        .tempdir_in(output_parent)
+        .map_err(io_error)?;
+    for (source, artifact) in files {
+        write_bundle_file(staging.path(), &source.bundle_path, &artifact)?;
+        if source.media_type == "application/vnd.lenso.process" {
+            preserve_executable_permissions(
+                &source.artifact,
+                &staging.path().join(&source.bundle_path),
+            )?;
+        }
+    }
+    fs::write(staging.path().join(MANIFEST_FILE), bytes).map_err(io_error)?;
+    fs::rename(staging.path(), &build.output).map_err(io_error)?;
+    verify_bundle_directory(&build.output)
+}
+
 /// Verifies an already materialized directory as an exact immutable Bundle closure.
 pub fn verify_bundle_directory(root: &Path) -> Result<VerifiedBundle, BundleError> {
     let manifest_path = root.join(MANIFEST_FILE);
@@ -290,7 +417,87 @@ pub fn verify_bundle_directory(root: &Path) -> Result<VerifiedBundle, BundleErro
     let mut files = BTreeMap::new();
     collect_bundle_files(root, root, &mut files)?;
     files.remove(MANIFEST_FILE);
-    verify_source_bundle_files(&SourceManifestDocument::parse(&manifest_bytes)?, &files)
+    verify_manifest_bundle_files(&ManifestDocument::parse(&manifest_bytes)?, &files)
+}
+
+/// Strictly reads either supported Plugin Manifest version from a verified Bundle.
+pub fn read_bundle_manifest(root: &Path) -> Result<PluginManifest, BundleError> {
+    verify_bundle_directory(root)?;
+    let bytes = read_regular_file(&root.join(MANIFEST_FILE), "Plugin Manifest")?;
+    Ok(ManifestDocument::parse(&bytes)?.value)
+}
+
+fn verify_manifest_bundle_files(
+    manifest: &ManifestDocument,
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<VerifiedBundle, BundleError> {
+    match &manifest.value {
+        PluginManifest::V2(value) => verify_source_bundle_files(
+            &SourceManifestDocument {
+                value: value.clone(),
+                bytes: Vec::new(),
+                digest: manifest.digest.clone(),
+            },
+            files,
+        ),
+        PluginManifest::V3(value) => verify_v3_bundle_files(value, &manifest.digest, files),
+    }
+}
+
+fn verify_v3_bundle_files(
+    manifest: &PluginManifestV3,
+    manifest_digest: &str,
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<VerifiedBundle, BundleError> {
+    if files.len() != manifest.implementations.len() {
+        return invalid_bundle("V3 Bundle closure does not equal its implementation Artifacts");
+    }
+    let mut artifact_digests = Vec::with_capacity(manifest.implementations.len());
+    for implementation in &manifest.implementations {
+        let artifact = &implementation.artifact;
+        let Some(bytes) = files.get(&artifact.path) else {
+            return invalid_bundle(format!("V3 Bundle is missing `{}`", artifact.path));
+        };
+        if artifact.size != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+            || artifact.digest != sha256_digest(bytes)
+        {
+            return Err(BundleError::DigestMismatch(artifact.path.clone()));
+        }
+        if implementation.runtime.runtime_package_revision() != artifact.digest {
+            return invalid_manifest("implementation revision must equal its Artifact digest");
+        }
+        let descriptor = manifest.contract.resolve(&implementation.runtime);
+        if artifact.media_type == "application/wasm" {
+            let encoded = extract_plugin_descriptor(bytes)?;
+            let derived = portable_plugin_descriptor(
+                manifest.contract.plugin_id(),
+                manifest.contract.release_version(),
+                manifest.contract.root_slot(),
+                &artifact.digest,
+                &encoded,
+                implementation.runtime.execution_class().as_str(),
+            )?;
+            let derived = serde_json::from_value::<PluginDescriptor>(derived)
+                .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+            if derived.contract() != manifest.contract
+                || derived.implementation() != implementation.runtime
+            {
+                return invalid_bundle(
+                    "Wasm source descriptor does not match its V3 Contract and implementation",
+                );
+            }
+        } else if descriptor.provided_capabilities().is_empty() {
+            return invalid_manifest("implementation Contract must provide a Capability");
+        }
+        artifact_digests.push(artifact.digest.clone());
+    }
+    Ok(VerifiedBundle {
+        plugin_id: manifest.contract.plugin_id().to_owned(),
+        release_version: manifest.contract.release_version().to_owned(),
+        manifest_digest: manifest_digest.to_owned(),
+        artifact_digests,
+        product_metadata_digests: Vec::new(),
+    })
 }
 
 fn verify_source_bundle_files(
@@ -476,6 +683,70 @@ fn validate_source_manifest(manifest: &PluginManifestV2) -> Result<(), BundleErr
         return invalid_manifest("V2 Plugin entry descriptor must be an object");
     }
     Ok(())
+}
+
+fn validate_manifest(manifest: &PluginManifest) -> Result<(), BundleError> {
+    match manifest {
+        PluginManifest::V2(value) => validate_source_manifest(value),
+        PluginManifest::V3(value) => validate_v3_manifest(value),
+    }
+}
+
+fn validate_v3_manifest(manifest: &PluginManifestV3) -> Result<(), BundleError> {
+    if manifest.schema_version != 3 {
+        return invalid_manifest("unsupported schema version");
+    }
+    if manifest.contract.plugin_id().is_empty()
+        || semver::Version::parse(manifest.contract.release_version()).is_err()
+        || manifest.contract.root_slot().is_empty()
+        || manifest.contract.provided_capabilities().is_empty()
+        || manifest.implementations.is_empty()
+    {
+        return invalid_manifest("V3 Contract or implementation set is invalid");
+    }
+    let mut ids = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    for implementation in &manifest.implementations {
+        if implementation.id.trim().is_empty() || !ids.insert(&implementation.id) {
+            return invalid_manifest("V3 implementation ids must be non-empty and unique");
+        }
+        if implementation.host_targets.is_empty()
+            || implementation
+                .host_targets
+                .iter()
+                .any(|target| target.trim().is_empty())
+        {
+            return invalid_manifest("V3 implementation host targets must be non-empty");
+        }
+        validate_artifact(&implementation.artifact)?;
+        if !paths.insert(&implementation.artifact.path) {
+            return invalid_manifest("V3 implementation Artifact paths must be unique");
+        }
+        if implementation.runtime.runtime_package_id() != manifest.contract.plugin_id()
+            || implementation.runtime.runtime_package_revision() != implementation.artifact.digest
+            || implementation.runtime.entrypoint().is_empty()
+        {
+            return invalid_manifest("V3 implementation does not close Plugin authority");
+        }
+    }
+    Ok(())
+}
+
+fn validate_artifact(artifact: &PluginArtifactV2) -> Result<(), BundleError> {
+    validate_relative_path(&artifact.path)?;
+    digest_component(&artifact.digest)?;
+    if artifact.size == 0 {
+        return invalid_manifest("Artifact size must be non-zero");
+    }
+    match artifact.media_type.as_str() {
+        "application/wasm" if artifact.target == "wasm32-unknown-unknown" => Ok(()),
+        "application/vnd.lenso.process" | "application/javascript"
+            if !artifact.target.trim().is_empty() =>
+        {
+            Ok(())
+        }
+        _ => invalid_manifest("Artifact media type and target are not supported"),
+    }
 }
 
 /// Validates publisher-owned Manifest semantics independently of Host policy.
@@ -835,6 +1106,74 @@ root-slot = "tools"
         assert_eq!(
             document.value.entry.descriptor["execution_class"],
             "lenso.process@1"
+        );
+    }
+
+    #[test]
+    fn v3_release_selects_one_implementation_by_host_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let process = std::env::current_exe().unwrap();
+        let script = root.path().join("plugin.js");
+        fs::write(
+            &script,
+            b"export function invoke(request) { return request; }",
+        )
+        .unwrap();
+        let output = root.path().join("example.multi.lenso-plugin");
+        let contract = PluginContract::new("example.multi", "1.0.0", "tools").with_capability(
+            CapabilityEndpointPlan::new("example.echo@1", "1.0.0", ["echo"]),
+        );
+        build_source_plugin_release_bundle(&SourcePluginReleaseBuild {
+            contract,
+            implementations: vec![
+                SourcePluginImplementation {
+                    id: "bun".to_owned(),
+                    host_targets: vec!["test-host".to_owned()],
+                    artifact: process,
+                    bundle_path: "implementations/bun/plugin".to_owned(),
+                    media_type: "application/vnd.lenso.process".to_owned(),
+                    target: "test-host".to_owned(),
+                    entrypoint: "plugin".to_owned(),
+                    execution_class: ExecutionClassId::new("lenso.process@1"),
+                },
+                SourcePluginImplementation {
+                    id: "quickjs".to_owned(),
+                    host_targets: vec!["*".to_owned()],
+                    artifact: script,
+                    bundle_path: "implementations/quickjs/plugin.js".to_owned(),
+                    media_type: "application/javascript".to_owned(),
+                    target: "javascript-es2023".to_owned(),
+                    entrypoint: "plugin.js".to_owned(),
+                    execution_class: ExecutionClassId::new("lenso.quickjs@1"),
+                },
+            ],
+            output: output.clone(),
+        })
+        .unwrap();
+
+        let manifest = read_bundle_manifest(&output).unwrap();
+        let selected = resolve_implementation(
+            &manifest,
+            &ImplementationPolicy {
+                host_target: "test-host".to_owned(),
+                execution_classes: vec![
+                    ExecutionClassId::new("lenso.quickjs@1"),
+                    ExecutionClassId::new("lenso.process@1"),
+                ],
+            },
+        )
+        .unwrap();
+        assert_eq!(selected.implementation_id, "quickjs");
+        assert_eq!(
+            selected.descriptor.execution_class().as_str(),
+            "lenso.quickjs@1"
+        );
+        assert_eq!(
+            selected.descriptor.contract(),
+            match manifest {
+                PluginManifest::V3(value) => value.contract,
+                PluginManifest::V2(_) => panic!("expected V3 manifest"),
+            }
         );
     }
 }
