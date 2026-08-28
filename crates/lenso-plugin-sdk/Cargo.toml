@@ -6,6 +6,7 @@ license.workspace = true
 publish = true
 repository.workspace = true
 description = "Target-independent Rust authoring SDK for portable Lenso Plugins."
+readme = "README.md"
 
 [dependencies]
 lenso-plugin-sdk-macros = { version = "0.1.0", path = "../lenso-plugin-sdk-macros" }
