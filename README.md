@@ -12,6 +12,25 @@ retain their relevant Git history.
 `lenso-test` provides a deterministic `TestApp` that boots an immutable Plan
 through the real Kernel and native Adapter for Plugin integration tests.
 
+## Embed a Host
+
+Enable the `host` feature on the framework facade when building a product Host:
+
+```toml
+lenso = { version = "0.5", features = ["host"] }
+```
+
+`lenso::host::HostBuilder` accepts the product's App identity, exact
+`GenerationRuntime`, and durable `ControlStateStore`. It opens, recovers, or
+replaces a suspended Controller and returns a running Host with fenced routes,
+transitions, inspection, and exact suspend/shutdown handshakes. Product code
+continues to own App resolution, Plugin policy, Profile semantics, and the
+recovery authority supplied to `recover`.
+
+The Controller is lane-local and uses `spawn_local`; start it inside the same
+Tokio `LocalSet` that owns the product Host. Kernel semantics remain below this
+facade and product loops remain above it.
+
 ## Validation
 
 ```sh
