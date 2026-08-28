@@ -1,0 +1,18 @@
+[package]
+name = "portable-agent-tool-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "portable-agent-tool-fixture"
+
+[dependencies]
+lenso-plugin-sdk = { path = "../../.." }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+
+[workspace]
