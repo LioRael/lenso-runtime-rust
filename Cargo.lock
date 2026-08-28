@@ -740,6 +740,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-process-adapter"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "hex",
+ "lenso-app-plan",
+ "lenso-kernel",
+ "lenso-process-sdk",
+ "lenso-runtime-codec",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "lenso-process-sdk"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lenso-quickjs-adapter"
 version = "0.2.0"
 dependencies = [

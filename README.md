@@ -73,6 +73,21 @@ entrypoints, and unadmitted Artifacts fail before Plugin activation.
 Event support remains fail-closed. The Adapters do not emulate Stream or Event
 semantics through unbounded arrays, callbacks, or hidden runtime negotiation.
 
+## Trusted Process Plugins
+
+`lenso-process-adapter` executes one precompiled child process per Plugin
+Instance through bounded framed stdio. `lenso-process-sdk` owns the guest wire,
+so business code implements typed handlers rather than protocol messages. The
+first execution class, `lenso.process@1`, supports request providers only and
+rejects Streams and Host imports before readiness. Cancellation retires the
+process and never replays a request.
+
+Process Plugins are trusted code, not a hostile-code sandbox. The Adapter
+starts with an empty environment and no inherited secret configuration, but a
+native executable retains ambient operating-system authority until a reviewed
+platform sandbox enforces narrower grants. Use the Wasm Component Adapter for
+untrusted third-party code.
+
 ## Releases
 
 Published crates use release PRs and crates.io Trusted Publishing through
