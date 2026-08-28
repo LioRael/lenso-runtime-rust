@@ -33,7 +33,7 @@ inventory = "0.3"
 lenso-app-plan = { version = "0.3.0", git = "https://github.com/LioRael/lenso", rev = "cd35675a191d815b690c8889756dfe859a0e4d7b" }
 lenso-kernel = { version = "0.2.0", git = "https://github.com/LioRael/lenso", rev = "cd35675a191d815b690c8889756dfe859a0e4d7b" }
 lenso-runtime-conformance = { version = "0.2.0", git = "https://github.com/LioRael/lenso", rev = "cd35675a191d815b690c8889756dfe859a0e4d7b" }
-lenso-plugin-authoring = { version = "0.1.1", git = "https://github.com/LioRael/lenso-protocols", rev = "9769bc5dc828fd9111da6d28a4ecd5f1bb198ab4" }
+lenso-plugin-authoring = { version = "0.1.1", git = "https://github.com/LioRael/lenso-protocols", rev = "9d2774c767fd64a6cc63a5ac04360e9cb92816da" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
