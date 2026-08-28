@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-browser-driver"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "futures",
  "lenso-app-plan",
