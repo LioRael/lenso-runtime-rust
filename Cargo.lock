@@ -696,7 +696,7 @@ dependencies = [
 [[package]]
 name = "lenso-plugin-authoring"
 version = "0.1.1"
-source = "git+https://github.com/LioRael/lenso-protocols?rev=9769bc5dc828fd9111da6d28a4ecd5f1bb198ab4#9769bc5dc828fd9111da6d28a4ecd5f1bb198ab4"
+source = "git+https://github.com/LioRael/lenso-protocols?rev=9d2774c767fd64a6cc63a5ac04360e9cb92816da#9d2774c767fd64a6cc63a5ac04360e9cb92816da"
 
 [[package]]
 name = "lenso-plugin-bundle"
