@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lenso_app_plan::PluginInstancePlan;
-use lenso_runtime_codec::{ArtifactCatalog, ArtifactHandle};
+use lenso_runtime_codec::{ArtifactCatalog, ArtifactHandle, InstanceResourceCatalog};
 
 use crate::sha256_digest;
 use crate::{
     AppGenerationSpec, CanonicalDocument, ControlPlaneError, EffectiveHostGrantSet,
     HostBuildManifest, HostExecutionPolicy, ResolvedArtifact, ResolvedArtifactSet,
-    StatefulRuntimeIdentity,
+    ResolvedInstanceResources, StatefulRuntimeIdentity,
 };
 
 /// Exact output used to stage one immutable App Generation.
@@ -18,6 +18,8 @@ pub struct ResolvedGeneration {
     pub grants: CanonicalDocument<EffectiveHostGrantSet>,
     pub spec: CanonicalDocument<AppGenerationSpec>,
     pub artifacts: ArtifactCatalog,
+    /// Exact supporting files selected for each Plugin Instance.
+    pub resources: InstanceResourceCatalog,
     /// Exact stateful Instance identities used by Transition compatibility checks.
     pub stateful_instances: BTreeMap<String, StatefulRuntimeIdentity>,
 }
@@ -42,6 +44,7 @@ pub struct PlanGenerationInput<'a> {
     pub host_build: &'a CanonicalDocument<HostBuildManifest>,
     pub policy: &'a CanonicalDocument<HostExecutionPolicy>,
     pub artifacts: Vec<PlanArtifact>,
+    pub resources: InstanceResourceCatalog,
 }
 
 /// Closes an already resolved App Plan into one executable Generation.
@@ -99,14 +102,16 @@ pub fn resolve_plan_generation(
     resolved_artifacts.sort_by(|left, right| {
         (&left.plugin_id, &left.artifact_id).cmp(&(&right.plugin_id, &right.artifact_id))
     });
+    let instance_resources = resolve_instance_resources(&input.resources, &plan_instances)?;
 
     let artifact_set = CanonicalDocument::from_value(
         "lenso-artifacts.lock.json",
         ResolvedArtifactSet {
-            schema_version: 2,
+            schema_version: 3,
             resolution_authority_digest: input.authority_digest.to_owned(),
             host_execution_policy_digest: input.policy.digest().to_owned(),
             artifacts: resolved_artifacts,
+            instance_resources,
         },
     )?;
     let grants = CanonicalDocument::from_value(
@@ -137,8 +142,32 @@ pub fn resolve_plan_generation(
         grants,
         spec,
         artifacts: artifact_catalog,
+        resources: input.resources,
         stateful_instances: BTreeMap::new(),
     })
+}
+
+fn resolve_instance_resources(
+    catalog: &InstanceResourceCatalog,
+    plan_instances: &BTreeSet<&str>,
+) -> Result<Vec<ResolvedInstanceResources>, ControlPlaneError> {
+    catalog
+        .iter()
+        .map(|(instance_key, resources)| {
+            if !plan_instances.contains(instance_key) {
+                return Err(failed(format!(
+                    "resources select unknown Plugin Instance `{instance_key}`"
+                )));
+            }
+            Ok(ResolvedInstanceResources {
+                instance_key: instance_key.to_owned(),
+                digest: resources.digest().to_owned(),
+                file_count: u64::try_from(resources.file_count())
+                    .map_err(|_| failed("resource file count exceeds u64"))?,
+                total_size: resources.total_size(),
+            })
+        })
+        .collect()
 }
 
 fn failed(detail: impl Into<String>) -> ControlPlaneError {

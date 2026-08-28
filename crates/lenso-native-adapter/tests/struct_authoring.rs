@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use lenso_app_plan::authoring::HostSlot;
-use lenso_native_adapter::{Lifecycle, NativePluginRegistry, plugin, provides};
+use lenso_native_adapter::{InstanceResources, Lifecycle, NativePluginRegistry, plugin, provides};
 use lenso_plugin_authoring::{
     BoundCapabilityClient, CapabilityClient, CapabilityClientMany, ManyPort,
 };
@@ -94,6 +94,8 @@ fn validate(configuration: &ExampleConfig) -> Result<(), lenso_native_adapter::R
 struct ExamplePlugin {
     #[config]
     config: ExampleConfig,
+    #[resources]
+    resources: InstanceResources,
     echoes: ManyPort<echo::EchoClient>,
 }
 

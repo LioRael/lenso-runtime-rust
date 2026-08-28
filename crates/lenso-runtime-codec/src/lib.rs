@@ -6,6 +6,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Arc,
 };
 
 use lenso_app_plan::{
@@ -20,6 +21,145 @@ use lenso_kernel::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+/// Immutable, content-addressed files owned by one Plugin Instance Generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstanceResources {
+    digest: String,
+    total_size: u64,
+    files: BTreeMap<String, Arc<[u8]>>,
+}
+
+impl Default for InstanceResources {
+    fn default() -> Self {
+        Self::from_files([]).expect("the empty resource snapshot is valid")
+    }
+}
+
+impl InstanceResources {
+    /// Builds one deterministic snapshot from normalized relative paths and owned bytes.
+    pub fn from_files(
+        files: impl IntoIterator<Item = (String, Vec<u8>)>,
+    ) -> Result<Self, RuntimeFailure> {
+        let mut indexed = BTreeMap::<String, Arc<[u8]>>::new();
+        let mut total_size = 0_u64;
+        for (path, bytes) in files {
+            validate_resource_path(&path)?;
+            total_size = total_size
+                .checked_add(
+                    u64::try_from(bytes.len())
+                        .map_err(|_| invalid_resources("resource file is too large"))?,
+                )
+                .ok_or_else(|| invalid_resources("resource snapshot size overflow"))?;
+            if indexed.insert(path.clone(), Arc::from(bytes)).is_some() {
+                return Err(invalid_resources(format!(
+                    "duplicate Plugin resource path `{path}`"
+                )));
+            }
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(b"lenso.instance-resources@1\0");
+        for (path, bytes) in &indexed {
+            hasher.update(
+                u64::try_from(path.len())
+                    .expect("path length fits u64")
+                    .to_be_bytes(),
+            );
+            hasher.update(path.as_bytes());
+            hasher.update(
+                u64::try_from(bytes.len())
+                    .expect("content length fits u64")
+                    .to_be_bytes(),
+            );
+            hasher.update(bytes.as_ref());
+        }
+        Ok(Self {
+            digest: format!("sha256:{}", hex::encode(hasher.finalize())),
+            total_size,
+            files: indexed,
+        })
+    }
+
+    /// Returns the deterministic identity of every path and byte in this snapshot.
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    /// Returns the number of snapshotted files.
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Returns the aggregate byte size.
+    pub const fn total_size(&self) -> u64 {
+        self.total_size
+    }
+
+    /// Lists normalized paths in deterministic order.
+    pub fn paths(&self) -> impl Iterator<Item = &str> {
+        self.files.keys().map(String::as_str)
+    }
+
+    /// Reads one immutable resource without consulting the live filesystem.
+    pub fn read(&self, path: &str) -> Result<&[u8], RuntimeFailure> {
+        validate_resource_path(path)?;
+        self.files
+            .get(path)
+            .map(AsRef::as_ref)
+            .ok_or_else(|| invalid_resources(format!("Plugin resource `{path}` was not found")))
+    }
+
+    /// Reads one immutable UTF-8 resource.
+    pub fn read_text(&self, path: &str) -> Result<&str, RuntimeFailure> {
+        std::str::from_utf8(self.read(path)?)
+            .map_err(|_| invalid_resources(format!("Plugin resource `{path}` is not UTF-8")))
+    }
+}
+
+/// Immutable Instance-to-resource-snapshot mapping injected by the Generation Supervisor.
+#[derive(Clone, Debug, Default)]
+pub struct InstanceResourceCatalog {
+    snapshots: BTreeMap<String, InstanceResources>,
+    empty: InstanceResources,
+}
+
+impl InstanceResourceCatalog {
+    /// Creates an empty catalog.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds one exact Instance snapshot and rejects duplicate authority.
+    pub fn with_resources(
+        mut self,
+        instance_key: impl Into<String>,
+        resources: InstanceResources,
+    ) -> Result<Self, RuntimeFailure> {
+        let instance_key = instance_key.into();
+        if self
+            .snapshots
+            .insert(instance_key.clone(), resources)
+            .is_some()
+        {
+            return Err(invalid_resources(format!(
+                "duplicate resource authority for Instance `{instance_key}`"
+            )));
+        }
+        Ok(self)
+    }
+
+    /// Returns the selected snapshot or an immutable empty snapshot.
+    pub fn for_instance(&self, instance_key: &str) -> &InstanceResources {
+        self.snapshots.get(instance_key).unwrap_or(&self.empty)
+    }
+
+    /// Iterates selected Instance snapshots in deterministic order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &InstanceResources)> {
+        self.snapshots
+            .iter()
+            .map(|(instance, resources)| (instance.as_str(), resources))
+    }
+}
 
 /// Digest-verified, read-only execution input selected before Adapter preparation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1362,6 +1502,27 @@ fn invalid_artifact(path: &Path, error: impl std::fmt::Display) -> RuntimeFailur
     }
 }
 
+fn validate_resource_path(path: &str) -> Result<(), RuntimeFailure> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains(['\\', '\0'])
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
+    {
+        return Err(invalid_resources(format!(
+            "invalid Plugin resource path `{path}`"
+        )));
+    }
+    Ok(())
+}
+
+fn invalid_resources(detail: impl Into<String>) -> RuntimeFailure {
+    RuntimeFailure::InvalidResolvedPlan {
+        detail: detail.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -1377,5 +1538,39 @@ mod tests {
         file.as_file_mut().set_len(0).unwrap();
         file.write_all(b"other").unwrap();
         assert!(handle.read_verified().is_err());
+    }
+
+    #[test]
+    fn instance_resources_are_order_independent_and_immutable() {
+        let left = InstanceResources::from_files([
+            ("prompts/system.md".to_owned(), b"Build carefully.".to_vec()),
+            ("rules.toml".to_owned(), b"turns = 4\n".to_vec()),
+        ])
+        .unwrap();
+        let right = InstanceResources::from_files([
+            ("rules.toml".to_owned(), b"turns = 4\n".to_vec()),
+            ("prompts/system.md".to_owned(), b"Build carefully.".to_vec()),
+        ])
+        .unwrap();
+
+        assert_eq!(left.digest(), right.digest());
+        assert_eq!(
+            left.read_text("prompts/system.md").unwrap(),
+            "Build carefully."
+        );
+        assert_eq!(left.file_count(), 2);
+        assert_eq!(left.total_size(), 26);
+    }
+
+    #[test]
+    fn instance_resources_reject_escaping_and_duplicate_paths() {
+        assert!(InstanceResources::from_files([("../secret".to_owned(), Vec::new())]).is_err());
+        assert!(
+            InstanceResources::from_files([
+                ("rules.toml".to_owned(), Vec::new()),
+                ("rules.toml".to_owned(), Vec::new()),
+            ])
+            .is_err()
+        );
     }
 }

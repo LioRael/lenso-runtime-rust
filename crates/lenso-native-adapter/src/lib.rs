@@ -13,6 +13,7 @@ use lenso_app_plan::{
 use lenso_kernel::{ActivateContext, DeactivateContext, PrepareContext};
 pub use lenso_kernel::{CancellationToken, RuntimeFailure};
 pub use lenso_native_adapter_macros::{PluginConfig, plugin, provides};
+pub use lenso_runtime_codec::InstanceResources;
 pub use managed_tasks::{ManagedTasks, ManagedTasksError};
 
 /// Optional convention-based lifecycle hooks for a struct-level Plugin.
@@ -49,6 +50,7 @@ pub mod __private {
         NativeRequestEndpoint, NativeRequestFuture, NativeStreamEndpoint, NativeStreamSession,
         PluginFuture, PluginLifecycle, PrepareContext,
     };
+    pub use lenso_runtime_codec::InstanceResources;
     pub use serde_json;
 }
 
@@ -212,14 +214,19 @@ pub struct NativePluginFactoryContext<'a> {
     instance_key: &'a str,
     entrypoint: &'a str,
     configuration: &'a str,
+    resources: &'a InstanceResources,
 }
 
 impl<'a> NativePluginFactoryContext<'a> {
-    fn from_plan(instance: &'a lenso_app_plan::PluginInstancePlan) -> Self {
+    fn from_plan(
+        instance: &'a lenso_app_plan::PluginInstancePlan,
+        resources: &'a InstanceResources,
+    ) -> Self {
         Self {
             instance_key: instance.instance_key(),
             entrypoint: instance.entrypoint(),
             configuration: instance.configuration(),
+            resources,
         }
     }
 
@@ -237,12 +244,18 @@ impl<'a> NativePluginFactoryContext<'a> {
     pub const fn configuration(self) -> &'a str {
         self.configuration
     }
+
+    /// Returns immutable supporting files snapshotted for this Generation.
+    pub const fn resources(self) -> &'a InstanceResources {
+        self.resources
+    }
 }
 
 /// Statically linked native Plugin factories available to an App binary.
 #[derive(Debug, Default)]
 pub struct NativePluginRegistry {
     factories: Vec<Rc<dyn NativePluginFactory>>,
+    resources: lenso_runtime_codec::InstanceResourceCatalog,
 }
 
 type NativeInstances = BTreeMap<String, NativePluginInstance>;
@@ -282,6 +295,16 @@ impl NativePluginRegistry {
         );
         self.factories
             .sort_by_key(|factory| factory.factory_identity());
+        self
+    }
+
+    /// Injects exact Generation-bound supporting files for selected Instances.
+    #[must_use]
+    pub fn with_resources(
+        mut self,
+        resources: lenso_runtime_codec::InstanceResourceCatalog,
+    ) -> Self {
+        self.resources = resources;
         self
     }
 
@@ -345,8 +368,10 @@ impl NativePluginRegistry {
                     ));
                 }
             };
-            let generation =
-                factory.instantiate(NativePluginFactoryContext::from_plan(expected))?;
+            let generation = factory.instantiate(NativePluginFactoryContext::from_plan(
+                expected,
+                self.resources.for_instance(expected.instance_key()),
+            ))?;
             generations.insert(
                 expected.instance_key().to_owned(),
                 PreparedNativePlugin::with_endpoint_set_lifecycle(
@@ -414,7 +439,10 @@ impl NativeExecutionAdapter for NativePluginRegistry {
                 ));
             }
         };
-        let generation = factory.instantiate(NativePluginFactoryContext::from_plan(expected))?;
+        let generation = factory.instantiate(NativePluginFactoryContext::from_plan(
+            expected,
+            self.resources.for_instance(expected.instance_key()),
+        ))?;
         Ok(PreparedNativePlugin::with_endpoint_set_lifecycle(
             generation.endpoints.clone(),
             generation.lifecycle(),

@@ -1109,15 +1109,17 @@ fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
     let mut config = None;
     let mut ports = Vec::new();
     let mut tasks = Vec::new();
+    let mut resources = None;
     let mut initializers = Vec::new();
     for field in &mut fields.named {
         let name = field.ident.as_ref().expect("named fields have identifiers");
         let is_config = take_marker(&mut field.attrs, "config");
         let is_tasks = take_marker(&mut field.attrs, "tasks");
-        if is_config && is_tasks {
+        let is_resources = take_marker(&mut field.attrs, "resources");
+        if usize::from(is_config) + usize::from(is_tasks) + usize::from(is_resources) > 1 {
             return Err(syn::Error::new_spanned(
                 field,
-                "a Plugin field cannot be both `#[config]` and `#[tasks]`",
+                "a Plugin field can have only one of `#[config]`, `#[tasks]`, or `#[resources]`",
             ));
         }
         if is_config {
@@ -1143,6 +1145,20 @@ fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
             }
             tasks.push(name.clone());
             initializers.push(quote!(#name: ::core::default::Default::default()));
+        } else if is_resources {
+            if !is_named_type(&field.ty, "InstanceResources") {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    "a `#[resources]` field must have type `InstanceResources`",
+                ));
+            }
+            if resources.replace(name.clone()).is_some() {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "a Plugin has at most one `#[resources]` field",
+                ));
+            }
+            initializers.push(quote!(#name: context.resources().clone()));
         } else if let Some((client, cardinality)) = port_client(&field.ty)? {
             ports.push((name.clone(), client, cardinality));
             initializers.push(quote!(#name: ::core::default::Default::default()));
