@@ -111,6 +111,15 @@ Authentication and streaming are intentionally not part of Remote V1; products
 can inject a product-owned HTTP client for proxy, default headers, or mTLS and
 should terminate authorization policy in their deployment layer.
 
+## Portable Plugin authoring
+
+`lenso-plugin-sdk` keeps execution targets out of Plugin business code. A Rust
+Plugin implements `RequestPlugin`, or a product-facing helper such as
+`AgentTool`, once and calls one export macro. The SDK lowers that declaration to
+a Wasm Component when Cargo targets `wasm32`, and to the framed Process protocol
+for native binaries. WIT bindings, runtime descriptors, and stdio framing are
+SDK-owned implementation details rather than files in each Plugin project.
+
 ## Releases
 
 Published crates use release PRs and crates.io Trusted Publishing through

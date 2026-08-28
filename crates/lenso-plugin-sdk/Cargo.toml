@@ -1,0 +1,23 @@
+[package]
+name = "lenso-plugin-sdk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+description = "Target-independent Rust authoring SDK for portable Lenso Plugins."
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+lenso-guest-sdk = { version = "0.2.0", path = "../lenso-guest-sdk" }
+wit-bindgen = "0.60"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+lenso-process-sdk = { version = "0.1.0", path = "../lenso-process-sdk" }
+
+[lints]
+workspace = true

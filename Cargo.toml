@@ -9,6 +9,7 @@ members = [
     "crates/lenso-native-adapter-macros",
     "crates/lenso-plugin-bundle",
     "crates/lenso-plugin-control-plane",
+    "crates/lenso-plugin-sdk",
     "crates/lenso-process-adapter",
     "crates/lenso-process-sdk",
     "crates/lenso-quickjs-adapter",
@@ -39,6 +40,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
+schemars = "1"
 tokio = { version = "1.52", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 
