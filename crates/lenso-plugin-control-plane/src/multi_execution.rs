@@ -20,6 +20,7 @@ pub struct MultiExecutionCatalogFactory<B: CatalogFactory> {
     remote_http_client: Option<reqwest::blocking::Client>,
     dylib_codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
     dylib_verifier: Option<Rc<dyn DylibVerifier>>,
+    deferred_execution_classes: BTreeSet<String>,
     wasm_limits: WasmComponentLimits,
     quickjs_limits: QuickJsLimits,
     process_limits: ProcessLimits,
@@ -39,6 +40,7 @@ impl<B: CatalogFactory> MultiExecutionCatalogFactory<B> {
             remote_http_client: None,
             dylib_codecs: Vec::new(),
             dylib_verifier: None,
+            deferred_execution_classes: BTreeSet::new(),
             wasm_limits: WasmComponentLimits::default(),
             quickjs_limits: QuickJsLimits::default(),
             process_limits: ProcessLimits::default(),
@@ -110,6 +112,14 @@ impl<B: CatalogFactory> MultiExecutionCatalogFactory<B> {
         self
     }
 
+    /// Defers one product-specific execution class to an outer Catalog factory.
+    #[must_use]
+    pub fn with_deferred_execution_class(mut self, execution_class: impl Into<String>) -> Self {
+        self.deferred_execution_classes
+            .insert(execution_class.into());
+        self
+    }
+
     /// Applies product-owned limits for all three execution classes.
     #[must_use]
     pub fn with_limits(
@@ -136,6 +146,10 @@ impl<B: CatalogFactory> std::fmt::Debug for MultiExecutionCatalogFactory<B> {
             .field("has_remote_http_client", &self.remote_http_client.is_some())
             .field("dylib_codecs", &self.dylib_codecs.len())
             .field("has_dylib_verifier", &self.dylib_verifier.is_some())
+            .field(
+                "deferred_execution_classes",
+                &self.deferred_execution_classes,
+            )
             .finish_non_exhaustive()
     }
 }
@@ -207,6 +221,7 @@ impl<B: CatalogFactory> CatalogFactory for MultiExecutionCatalogFactory<B> {
             if !available
                 .iter()
                 .any(|available| available.as_str() == execution_class)
+                && !self.deferred_execution_classes.contains(execution_class)
             {
                 return Err(ControlPlaneError::HostFailure {
                     detail: format!(
@@ -222,5 +237,33 @@ impl<B: CatalogFactory> CatalogFactory for MultiExecutionCatalogFactory<B> {
 fn catalog_error(error: impl std::fmt::Display) -> ControlPlaneError {
     ControlPlaneError::HostFailure {
         detail: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct EmptyFactory;
+
+    impl CatalogFactory for EmptyFactory {
+        fn catalog(
+            &self,
+            _generation: &ResolvedGeneration,
+        ) -> Result<ExecutionAdapterCatalog, ControlPlaneError> {
+            unreachable!("this test only verifies deferred class registration")
+        }
+    }
+
+    #[test]
+    fn product_hosts_can_defer_an_external_execution_class() {
+        let factory = MultiExecutionCatalogFactory::new(EmptyFactory)
+            .with_deferred_execution_class("example.external@1");
+        assert!(
+            factory
+                .deferred_execution_classes
+                .contains("example.external@1")
+        );
     }
 }
