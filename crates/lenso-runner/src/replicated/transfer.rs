@@ -8,7 +8,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
     task::{Context, Poll},
     time::Instant,
@@ -212,6 +212,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn invoke_cross_lane<C>(
     provider_lane: LaneRoute,
     epoch: Instant,
@@ -271,22 +272,25 @@ where
             });
         });
 
-        let send = provider_lane.send(command);
-        tokio::pin!(send);
         let cancelled = cancellation.cancelled();
         tokio::pin!(cancelled);
         let result = if let Some(deadline) = deadline {
             let sleep = tokio::time::sleep_until((epoch + deadline).into());
             tokio::pin!(sleep);
-            tokio::select! {
-                result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
-                () = &mut cancelled => {
-                    cancellation_guard.cancel();
-                    return Err(RuntimeFailure::Cancelled { request_id });
-                }
-                () = &mut sleep => {
-                    cancellation_guard.cancel();
-                    return Err(RuntimeFailure::DeadlineExceeded { request_id });
+            if let Err(error) = provider_lane.try_send(command) {
+                let command = error.into_inner();
+                let send = provider_lane.send(command);
+                tokio::pin!(send);
+                tokio::select! {
+                    result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
+                    () = &mut cancelled => {
+                        cancellation_guard.cancel();
+                        return Err(RuntimeFailure::Cancelled { request_id });
+                    }
+                    () = &mut sleep => {
+                        cancellation_guard.cancel();
+                        return Err(RuntimeFailure::DeadlineExceeded { request_id });
+                    }
                 }
             }
             tokio::select! {
@@ -302,11 +306,15 @@ where
                 }
             }
         } else {
-            tokio::select! {
-                result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
-                () = &mut cancelled => {
-                    cancellation_guard.cancel();
-                    return Err(RuntimeFailure::Cancelled { request_id });
+            if let Err(error) = provider_lane.try_send(command) {
+                let send = provider_lane.send(error.into_inner());
+                tokio::pin!(send);
+                tokio::select! {
+                    result = &mut send => result.map_err(|_| lane_unavailable::<C>())?,
+                    () = &mut cancelled => {
+                        cancellation_guard.cancel();
+                        return Err(RuntimeFailure::Cancelled { request_id });
+                    }
                 }
             }
             tokio::select! {
@@ -375,9 +383,13 @@ impl TransferredInvocationContext {
 #[derive(Debug)]
 pub(super) struct TransferredCancellation {
     // A transferred invocation has exactly one provider-side waiter.
-    cancelled: AtomicBool,
+    state: AtomicU8,
     waker: AtomicWaker,
 }
+
+const TRANSFER_PENDING: u8 = 0;
+const TRANSFER_CANCELLED: u8 = 1;
+const TRANSFER_ACCEPTED: u8 = 2;
 
 /// Ensures dropping a caller-side transfer future wakes its provider-side cancellation waiter.
 #[derive(Debug)]
@@ -418,17 +430,36 @@ impl Drop for TransferredCancellationGuard {
 impl TransferredCancellation {
     fn new(cancelled: bool) -> Self {
         Self {
-            cancelled: AtomicBool::new(cancelled),
+            state: AtomicU8::new(if cancelled {
+                TRANSFER_CANCELLED
+            } else {
+                TRANSFER_PENDING
+            }),
             waker: AtomicWaker::new(),
         }
     }
 
     pub(super) fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.state.load(Ordering::Acquire) == TRANSFER_CANCELLED
     }
 
     pub(super) fn cancel(&self) {
-        if !self.cancelled.swap(true, Ordering::AcqRel) {
+        if self.state.swap(TRANSFER_CANCELLED, Ordering::AcqRel) != TRANSFER_CANCELLED {
+            self.waker.wake();
+        }
+    }
+
+    pub(super) fn accept(&self) {
+        if self
+            .state
+            .compare_exchange(
+                TRANSFER_PENDING,
+                TRANSFER_ACCEPTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
             self.waker.wake();
         }
     }
@@ -436,10 +467,36 @@ impl TransferredCancellation {
     pub(super) fn cancelled(&self) -> TransferredCancellationFuture<'_> {
         TransferredCancellationFuture { cancellation: self }
     }
+
+    pub(super) fn settled(&self) -> TransferredSettlementFuture<'_> {
+        TransferredSettlementFuture { cancellation: self }
+    }
 }
 
 pub(super) struct TransferredCancellationFuture<'a> {
     cancellation: &'a TransferredCancellation,
+}
+
+pub(super) struct TransferredSettlementFuture<'a> {
+    cancellation: &'a TransferredCancellation,
+}
+
+impl Future for TransferredSettlementFuture<'_> {
+    type Output = bool;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let state = self.cancellation.state.load(Ordering::Acquire);
+        if state != TRANSFER_PENDING {
+            return Poll::Ready(state == TRANSFER_CANCELLED);
+        }
+        self.cancellation.waker.register(context.waker());
+        let state = self.cancellation.state.load(Ordering::Acquire);
+        if state == TRANSFER_PENDING {
+            Poll::Pending
+        } else {
+            Poll::Ready(state == TRANSFER_CANCELLED)
+        }
+    }
 }
 
 impl Future for TransferredCancellationFuture<'_> {
@@ -484,5 +541,20 @@ mod tests {
         });
 
         assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transferred_acceptance_settles_without_cancellation() {
+        let cancellation = Arc::new(TransferredCancellation::new(false));
+        let accepter = Arc::clone(&cancellation);
+
+        let cancelled = tokio::join!(cancellation.settled(), async move {
+            tokio::task::yield_now().await;
+            accepter.accept();
+        })
+        .0;
+
+        assert!(!cancelled);
+        assert!(!cancellation.is_cancelled());
     }
 }

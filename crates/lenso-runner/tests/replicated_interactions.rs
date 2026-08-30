@@ -1,4 +1,15 @@
-use std::{any::Any, cell::RefCell, collections::VecDeque, rc::Rc, sync::mpsc, time::Duration};
+use std::{
+    any::Any,
+    cell::RefCell,
+    collections::VecDeque,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
 
 use futures::future::{LocalBoxFuture, ready};
 use lenso_app_plan::{
@@ -48,7 +59,10 @@ impl EventCapability for TestEvent {
 }
 
 #[derive(Debug)]
-struct EchoStreamEndpoint;
+struct EchoStreamEndpoint {
+    abandoned_cancelled: Arc<AtomicBool>,
+    dropped_cancelled: Arc<AtomicBool>,
+}
 
 impl NativeStreamEndpoint for EchoStreamEndpoint {
     fn capability_id(&self) -> &'static str {
@@ -90,6 +104,8 @@ impl NativeStreamEndpoint for EchoStreamEndpoint {
         let session: Box<dyn NativeStreamSession> = Box::new(EchoStreamSession {
             prefix: *request,
             pending: Rc::new(RefCell::new(VecDeque::new())),
+            abandoned_cancelled: Arc::clone(&self.abandoned_cancelled),
+            dropped_cancelled: Arc::clone(&self.dropped_cancelled),
         });
         if slow {
             return Box::pin(async move {
@@ -105,6 +121,8 @@ impl NativeStreamEndpoint for EchoStreamEndpoint {
 struct EchoStreamSession {
     prefix: String,
     pending: Rc<RefCell<VecDeque<NativeStreamItem>>>,
+    abandoned_cancelled: Arc<AtomicBool>,
+    dropped_cancelled: Arc<AtomicBool>,
 }
 
 impl NativeStreamSession for EchoStreamSession {
@@ -142,6 +160,11 @@ impl NativeStreamSession for EchoStreamSession {
     }
 
     fn cancel(&self) {
+        if self.prefix == "abandon" {
+            self.abandoned_cancelled.store(true, Ordering::Release);
+        } else if self.prefix == "drop-success" {
+            self.dropped_cancelled.store(true, Ordering::Release);
+        }
         self.pending.borrow_mut().clear();
     }
 }
@@ -190,6 +213,8 @@ impl NativeEventEndpoint for ReportingEventEndpoint {
 #[derive(Debug)]
 struct ConsumerFactory {
     reported: mpsc::Sender<ConsumerOutcome>,
+    abandoned_cancelled: Arc<AtomicBool>,
+    dropped_cancelled: Arc<AtomicBool>,
 }
 
 impl NativePluginFactory for ConsumerFactory {
@@ -205,6 +230,8 @@ impl NativePluginFactory for ConsumerFactory {
             Vec::new(),
             ConsumerLifecycle {
                 reported: self.reported.clone(),
+                abandoned_cancelled: Arc::clone(&self.abandoned_cancelled),
+                dropped_cancelled: Arc::clone(&self.dropped_cancelled),
             },
         ))
     }
@@ -213,6 +240,8 @@ impl NativePluginFactory for ConsumerFactory {
 #[derive(Debug)]
 struct ConsumerLifecycle {
     reported: mpsc::Sender<ConsumerOutcome>,
+    abandoned_cancelled: Arc<AtomicBool>,
+    dropped_cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -229,6 +258,8 @@ impl PluginLifecycle for ConsumerLifecycle {
         let stream = context.dependencies().one_stream::<TestStream>();
         let events = context.dependencies().many_event::<TestEvent>();
         let reported = self.reported.clone();
+        let abandoned_cancelled = Arc::clone(&self.abandoned_cancelled);
+        let dropped_cancelled = Arc::clone(&self.dropped_cancelled);
         Box::pin(async move {
             let stream = stream?;
             let session = stream
@@ -273,6 +304,27 @@ impl PluginLifecycle for ConsumerLifecycle {
                 }
             );
             let cancelled = matches!(failure, RuntimeFailure::Cancelled { .. });
+            let mut abandoned = Box::pin(stream.open(STREAM_OPERATION, "abandon".to_owned()));
+            assert!(futures::poll!(&mut abandoned).is_pending());
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            drop(abandoned);
+            wait_for_stream_cleanup(&abandoned_cancelled, "abandoned open").await?;
+            let dropped = stream
+                .open(STREAM_OPERATION, "drop-success".to_owned())
+                .await?
+                .map_err(|error| RuntimeFailure::PluginFailure {
+                    detail: format!("unexpected stream Domain Error: {error}"),
+                })?;
+            drop(dropped);
+            wait_for_stream_cleanup(&dropped_cancelled, "dropped guest handle").await?;
+            let replacement = stream
+                .open(STREAM_OPERATION, "after-drop".to_owned())
+                .await?
+                .map_err(|error| RuntimeFailure::PluginFailure {
+                    detail: format!("unexpected stream Domain Error: {error}"),
+                })?;
+            drop(replacement);
+            tokio::time::sleep(Duration::from_millis(25)).await;
             let admissions = events?
                 .publish(EVENT_OPERATION, "event-value".to_owned())
                 .await
@@ -291,8 +343,26 @@ impl PluginLifecycle for ConsumerLifecycle {
     }
 }
 
+async fn wait_for_stream_cleanup(
+    cleaned: &AtomicBool,
+    scenario: &str,
+) -> Result<(), RuntimeFailure> {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !cleaned.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| RuntimeFailure::PluginFailure {
+        detail: format!("cross-lane provider did not clean up the {scenario}"),
+    })
+}
+
 #[derive(Debug)]
-struct StreamProviderFactory;
+struct StreamProviderFactory {
+    abandoned_cancelled: Arc<AtomicBool>,
+    dropped_cancelled: Arc<AtomicBool>,
+}
 
 impl NativePluginFactory for StreamProviderFactory {
     fn package_id(&self) -> &'static str {
@@ -304,7 +374,10 @@ impl NativePluginFactory for StreamProviderFactory {
         _context: NativePluginFactoryContext<'_>,
     ) -> Result<NativePluginInstance, RuntimeFailure> {
         Ok(NativePluginInstance::with_stream_endpoints(
-            vec![Rc::new(EchoStreamEndpoint)],
+            vec![Rc::new(EchoStreamEndpoint {
+                abandoned_cancelled: Arc::clone(&self.abandoned_cancelled),
+                dropped_cancelled: Arc::clone(&self.dropped_cancelled),
+            })],
             NoopPluginLifecycle,
         ))
     }
@@ -417,15 +490,26 @@ fn cross_lane_stream_and_event_require_registered_send_transfers() {
 async fn plugin_lifecycle_preserves_cross_lane_stream_protocol_and_event_fanout() {
     let (reported_outcome, outcome) = mpsc::channel();
     let (reported_event, events) = mpsc::channel();
+    let abandoned_cancelled = Arc::new(AtomicBool::new(false));
+    let dropped_cancelled = Arc::new(AtomicBool::new(false));
+    let consumer_abandoned_cancelled = Arc::clone(&abandoned_cancelled);
+    let consumer_dropped_cancelled = Arc::clone(&dropped_cancelled);
+    let provider_abandoned_cancelled = Arc::clone(&abandoned_cancelled);
+    let provider_dropped_cancelled = Arc::clone(&dropped_cancelled);
     let app = ReplicatedNativeApp::start_with_transfer_catalog(
         interaction_plan(),
         move |lane| {
             let registry = match lane.as_str() {
                 "frontend" => NativePluginRegistry::new().with_factory(ConsumerFactory {
                     reported: reported_outcome.clone(),
+                    abandoned_cancelled: Arc::clone(&consumer_abandoned_cancelled),
+                    dropped_cancelled: Arc::clone(&consumer_dropped_cancelled),
                 }),
                 "workers" => NativePluginRegistry::new()
-                    .with_factory(StreamProviderFactory)
+                    .with_factory(StreamProviderFactory {
+                        abandoned_cancelled: Arc::clone(&provider_abandoned_cancelled),
+                        dropped_cancelled: Arc::clone(&provider_dropped_cancelled),
+                    })
                     .with_factory(EventProviderFactory {
                         reported: reported_event.clone(),
                     }),
@@ -458,6 +542,14 @@ async fn plugin_lifecycle_preserves_cross_lane_stream_protocol_and_event_fanout(
         ("event-provider-a".to_owned(), "event-value".to_owned())
     );
     assert!(events.try_recv().is_err());
+    assert!(
+        abandoned_cancelled.load(Ordering::Acquire),
+        "dropping an admitted stream open must cancel and remove its provider session"
+    );
+    assert!(
+        dropped_cancelled.load(Ordering::Acquire),
+        "dropping a successful guest stream handle must cancel its provider session"
+    );
 
     app.shutdown(Duration::from_secs(1))
         .await

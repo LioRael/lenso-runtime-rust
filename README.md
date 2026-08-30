@@ -128,7 +128,13 @@ The service implements `GET /lenso/v1/ready`, `POST /lenso/v1/invoke`, and
 `POST /lenso/v1/cancel`. HTTPS is mandatory outside loopback development.
 Authentication and streaming are intentionally not part of Remote V1; products
 can inject a product-owned HTTP client for proxy, default headers, or mTLS and
-should terminate authorization policy in their deployment layer.
+should terminate authorization policy in their deployment layer. The built-in
+client rejects redirects; an injected client deliberately transfers redirect
+policy to the product Host. Each Remote Generation uses bounded invoke/cancel
+queues and fixed worker counts. Shutdown abandons queued work immediately,
+prioritizes cancellation for at most four dispatched requests, and may still
+wait for the remaining configured request timeout when a provider ignores that
+cancellation.
 
 ## Portable Plugin authoring
 

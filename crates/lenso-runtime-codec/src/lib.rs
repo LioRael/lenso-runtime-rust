@@ -3,7 +3,8 @@
 use std::{
     any::Any,
     collections::BTreeMap,
-    fs,
+    env, fs,
+    io::Write as _,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -162,22 +163,80 @@ impl InstanceResourceCatalog {
 }
 
 /// Digest-verified, read-only execution input selected before Adapter preparation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactHandle {
+#[derive(Debug)]
+struct ArtifactBacking {
     path: PathBuf,
+    _directory: tempfile::TempDir,
+}
+
+/// One immutable content snapshot captured during Artifact admission.
+#[derive(Clone)]
+pub struct ArtifactHandle {
+    source_path: PathBuf,
+    backing: Arc<ArtifactBacking>,
     digest: String,
     size: u64,
 }
 
+impl std::fmt::Debug for ArtifactHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ArtifactHandle")
+            .field("source_path", &self.source_path)
+            .field("path", &self.backing.path)
+            .field("digest", &self.digest)
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ArtifactHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.source_path == other.source_path
+            && self.digest == other.digest
+            && self.size == other.size
+    }
+}
+
+impl Eq for ArtifactHandle {}
+
 impl ArtifactHandle {
-    /// Verifies one regular file against its canonical SHA-256 digest and size.
+    /// Verifies one regular file and snapshots it in a process-private directory selected by the
+    /// Host's system-temporary policy, independently of the source path. Strict isolation or
+    /// path-based execution on a no-exec temporary filesystem should use
+    /// [`Self::open_with_staging_root`] with a Host-owned executable root.
     pub fn open(
         path: impl Into<PathBuf>,
         expected_digest: &str,
         expected_size: u64,
     ) -> Result<Self, RuntimeFailure> {
+        Self::open_inner(path.into(), expected_digest, expected_size, None)
+    }
+
+    /// Verifies one Artifact and places its private stable copy under an explicit Host-owned root.
+    /// Process-capable Hosts should select a root on a filesystem that permits execution.
+    pub fn open_with_staging_root(
+        path: impl Into<PathBuf>,
+        expected_digest: &str,
+        expected_size: u64,
+        staging_root: impl AsRef<Path>,
+    ) -> Result<Self, RuntimeFailure> {
+        Self::open_inner(
+            path.into(),
+            expected_digest,
+            expected_size,
+            Some(staging_root.as_ref()),
+        )
+    }
+
+    fn open_inner(
+        path: PathBuf,
+        expected_digest: &str,
+        expected_size: u64,
+        staging_root: Option<&Path>,
+    ) -> Result<Self, RuntimeFailure> {
         validate_digest(expected_digest)?;
-        let path = path.into();
+        let path = absolute_path(path)?;
         let metadata =
             fs::symlink_metadata(&path).map_err(|error| invalid_artifact(&path, error))?;
         if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
@@ -194,23 +253,44 @@ impl ArtifactHandle {
                 ),
             });
         }
-        let bytes = fs::read(&path).map_err(|error| invalid_artifact(&path, error))?;
-        let actual_digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+        let mut source = fs::File::open(&path).map_err(|error| invalid_artifact(&path, error))?;
+        let opened_metadata = source
+            .metadata()
+            .map_err(|error| invalid_artifact(&path, error))?;
+        if !opened_metadata.is_file() || opened_metadata.len() != expected_size {
+            return Err(RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("Artifact `{}` changed during admission", path.display()),
+            });
+        }
+        let (backing, actual_digest, actual_size) =
+            materialize_stable_artifact(&path, &mut source, &opened_metadata, staging_root)?;
+        if actual_size != expected_size {
+            return Err(RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("Artifact `{}` changed during admission", path.display()),
+            });
+        }
         if actual_digest != expected_digest {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!("Artifact `{}` digest mismatch", path.display()),
             });
         }
         Ok(Self {
-            path,
+            source_path: path,
+            backing: Arc::new(backing),
             digest: actual_digest,
-            size: metadata.len(),
+            size: opened_metadata.len(),
         })
     }
 
-    /// Returns the verified machine-local path. It is never serialized into a Plan.
+    /// Returns the private stable copy containing the bytes admitted by this Handle.
+    /// It is never serialized into a Plan.
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.backing.path
+    }
+
+    /// Returns the original machine-local selection path for relative resource policy.
+    pub fn source_path(&self) -> &Path {
+        &self.source_path
     }
 
     /// Returns the verified content identity.
@@ -223,11 +303,114 @@ impl ArtifactHandle {
         self.size
     }
 
-    /// Reads the bytes again and fails if they changed since admission.
+    /// Returns the exact bytes captured during admission.
     pub fn read_verified(&self) -> Result<Vec<u8>, RuntimeFailure> {
-        let verified = Self::open(&self.path, &self.digest, self.size)?;
-        fs::read(verified.path).map_err(|error| invalid_artifact(&self.path, error))
+        let bytes = fs::read(&self.backing.path)
+            .map_err(|error| invalid_artifact(&self.backing.path, error))?;
+        let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+        if size != self.size || digest != self.digest {
+            return Err(RuntimeFailure::InvalidResolvedPlan {
+                detail: format!(
+                    "stable Artifact `{}` changed after admission",
+                    self.backing.path.display()
+                ),
+            });
+        }
+        Ok(bytes)
     }
+}
+
+fn absolute_path(path: PathBuf) -> Result<PathBuf, RuntimeFailure> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    env::current_dir()
+        .map(|current| current.join(path))
+        .map_err(|error| invalid_artifact(Path::new("."), error))
+}
+
+fn materialize_stable_artifact(
+    source_path: &Path,
+    source: &mut fs::File,
+    source_metadata: &fs::Metadata,
+    staging_root: Option<&Path>,
+) -> Result<(ArtifactBacking, String, u64), RuntimeFailure> {
+    let directory = stable_artifact_directory(source_path, staging_root)?;
+    let file_name = source_path
+        .file_name()
+        .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+            detail: format!("Artifact `{}` has no filename", source_path.display()),
+        })?;
+    let stable_path = directory.path().join(file_name);
+    let mut stable = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&stable_path)
+        .map_err(|error| invalid_artifact(source_path, error))?;
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = std::io::Read::read(source, &mut buffer)
+            .map_err(|error| invalid_artifact(source_path, error))?;
+        if read == 0 {
+            break;
+        }
+        size = size
+            .checked_add(u64::try_from(read).expect("buffer length fits u64"))
+            .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("Artifact `{}` size overflow", source_path.display()),
+            })?;
+        hasher.update(&buffer[..read]);
+        stable
+            .write_all(&buffer[..read])
+            .map_err(|error| invalid_artifact(source_path, error))?;
+    }
+    set_stable_permissions(&stable_path, source_metadata)
+        .map_err(|error| invalid_artifact(source_path, error))?;
+    Ok((
+        ArtifactBacking {
+            path: stable_path,
+            _directory: directory,
+        },
+        format!("sha256:{}", hex::encode(hasher.finalize())),
+        size,
+    ))
+}
+
+fn stable_artifact_directory(
+    source_path: &Path,
+    staging_root: Option<&Path>,
+) -> Result<tempfile::TempDir, RuntimeFailure> {
+    let builder = || {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("lenso-artifact-");
+        builder
+    };
+    if let Some(root) = staging_root {
+        return builder()
+            .tempdir_in(root)
+            .map_err(|error| invalid_artifact(source_path, error));
+    }
+    builder()
+        .tempdir()
+        .map_err(|error| invalid_artifact(source_path, error))
+}
+
+#[cfg(unix)]
+fn set_stable_permissions(path: &Path, metadata: &fs::Metadata) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mode = metadata.permissions().mode() & 0o555;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_stable_permissions(path: &Path, metadata: &fs::Metadata) -> std::io::Result<()> {
+    let mut permissions = metadata.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path, permissions)
 }
 
 /// Immutable Instance-to-Artifact mapping injected by the Generation Supervisor.
@@ -1530,14 +1713,99 @@ mod tests {
     use super::*;
 
     #[test]
-    fn artifact_handle_rejects_digest_drift() {
+    fn artifact_handle_keeps_the_admitted_bytes_after_source_drift() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"first").unwrap();
         let digest = format!("sha256:{}", hex::encode(Sha256::digest(b"first")));
         let handle = ArtifactHandle::open(file.path(), &digest, 5).unwrap();
         file.as_file_mut().set_len(0).unwrap();
         file.write_all(b"other").unwrap();
-        assert!(handle.read_verified().is_err());
+        assert_eq!(handle.read_verified().unwrap(), b"first");
+        assert_ne!(handle.path(), file.path());
+        assert_eq!(fs::read(handle.path()).unwrap(), b"first");
+    }
+
+    #[test]
+    fn artifact_snapshot_survives_source_parent_rename_and_replacement() {
+        let workspace = tempfile::tempdir().unwrap();
+        let selected = workspace.path().join("selected");
+        fs::create_dir(&selected).unwrap();
+        let source = selected.join("plugin");
+        fs::write(&source, b"admitted").unwrap();
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(b"admitted")));
+
+        let handle = ArtifactHandle::open(&source, &digest, 8).unwrap();
+        assert!(!handle.path().starts_with(&selected));
+        fs::rename(&selected, workspace.path().join("replaced")).unwrap();
+        fs::create_dir(&selected).unwrap();
+        fs::write(selected.join("plugin"), b"attacker").unwrap();
+
+        assert_eq!(fs::read(handle.path()).unwrap(), b"admitted");
+        assert_eq!(handle.read_verified().unwrap(), b"admitted");
+    }
+
+    #[test]
+    fn artifact_admission_streams_large_content_into_one_stable_snapshot() {
+        let bytes = vec![0x5a; 4 * 1024 * 1024 + 17];
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+
+        let handle = ArtifactHandle::open(file.path(), &digest, bytes.len() as u64).unwrap();
+
+        assert_eq!(handle.read_verified().unwrap(), bytes);
+    }
+
+    /// Reproducible evidence command:
+    /// `cargo test --release -p lenso-runtime-codec artifact_admission_streaming_benchmark -- --ignored --nocapture`
+    #[test]
+    #[ignore = "large Artifact admission benchmark; run explicitly"]
+    fn artifact_admission_streaming_benchmark() {
+        const BLOCK_BYTES: usize = 64 * 1024;
+        let block = vec![0x5a; BLOCK_BYTES];
+        for mebibytes in [4_usize, 64, 256] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("artifact");
+            let mut source = fs::File::create(&path).unwrap();
+            let mut hasher = Sha256::new();
+            let blocks = mebibytes * 1024 * 1024 / BLOCK_BYTES;
+            for _ in 0..blocks {
+                source.write_all(&block).unwrap();
+                hasher.update(&block);
+            }
+            drop(source);
+            let size = u64::try_from(mebibytes * 1024 * 1024).unwrap();
+            let digest = format!("sha256:{}", hex::encode(hasher.finalize()));
+
+            let started = std::time::Instant::now();
+            let handle = ArtifactHandle::open(&path, &digest, size).unwrap();
+            let elapsed = started.elapsed();
+
+            assert_eq!(handle.size(), size);
+            println!(
+                "{{\"mebibytes\":{mebibytes},\"elapsed_ms\":{:.3},\"mib_per_second\":{:.3}}}",
+                elapsed.as_secs_f64() * 1_000.0,
+                f64::from(u32::try_from(mebibytes).unwrap()) / elapsed.as_secs_f64()
+            );
+            drop(handle);
+        }
+    }
+
+    #[test]
+    fn artifact_admission_honors_an_explicit_host_staging_root() {
+        let source = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let path = source.path().join("plugin");
+        fs::write(&path, b"artifact").unwrap();
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(b"artifact")));
+
+        let handle =
+            ArtifactHandle::open_with_staging_root(&path, &digest, 8, staging.path()).unwrap();
+
+        assert_eq!(
+            handle.path().parent().unwrap().parent().unwrap(),
+            staging.path()
+        );
     }
 
     #[test]

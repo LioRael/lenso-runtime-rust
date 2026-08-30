@@ -14,7 +14,7 @@ lenso-kernel.workspace = true
 lenso-runtime-codec = { version = "0.2.0", path = "../lenso-runtime-codec" }
 reqwest.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 uuid.workspace = true
 
 [dev-dependencies]

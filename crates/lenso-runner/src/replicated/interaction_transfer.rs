@@ -367,6 +367,17 @@ where
                 let result = match result {
                     Ok(Ok(stream)) if !transferred_cancellation.is_cancelled() => {
                         lane.insert_stream::<C>(session_id, stream);
+                        let cleanup_lane = lane.clone();
+                        let settlement = Arc::clone(&transferred_cancellation);
+                        tokio::task::spawn_local(async move {
+                            if !settlement.settled().await {
+                                settlement.cancelled().await;
+                            }
+                            if let Ok(stream) = cleanup_lane.stream::<C>(session_id) {
+                                stream.cancel();
+                            }
+                            cleanup_lane.remove_stream::<C>(session_id);
+                        });
                         Ok(Ok(()))
                     }
                     Ok(Ok(stream)) => {
@@ -457,6 +468,7 @@ where
 {
     match result? {
         Ok(()) => {
+            cancellation.accept();
             cancellation_guard.disarm();
             Ok(Ok(Box::new(CrossLaneStreamSession::<C> {
                 provider_lane,
@@ -474,7 +486,6 @@ enum StreamAction<C: StreamCapability> {
     Send(C::Message),
     Receive,
     CloseSend,
-    Cancel,
 }
 
 enum StreamActionResult<C: StreamCapability> {
@@ -515,11 +526,6 @@ where
                     StreamAction::Receive => stream.receive().await.map(StreamActionResult::Event),
                     StreamAction::CloseSend => {
                         stream.close_send().await.map(|()| StreamActionResult::Unit)
-                    }
-                    StreamAction::Cancel => {
-                        stream.cancel();
-                        lane.remove_stream::<C>(session_id);
-                        Ok(StreamActionResult::Unit)
                     }
                 };
                 let should_retire = matches!(
@@ -634,14 +640,6 @@ where
             return;
         }
         self.cancellation.cancel();
-        let cleanup = dispatch_stream_action::<C>(
-            self.provider_lane.clone(),
-            self.session_id,
-            StreamAction::Cancel,
-        );
-        tokio::task::spawn_local(async move {
-            let _ = cleanup.await;
-        });
     }
 }
 
