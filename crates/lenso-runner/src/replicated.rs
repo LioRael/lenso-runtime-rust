@@ -12,7 +12,7 @@ use std::{
 
 use cpu_time::ThreadTime;
 use futures::{channel::oneshot, future::Either};
-use lenso_app_plan::{CapabilityBinding, ExecutionLaneId, ResolvedAppPlan};
+use lenso_app_plan::{ExecutionLaneId, ResolvedAppPlan};
 use lenso_kernel::{
     CancellationToken, EventCapability, ExecutionAdapterCatalog, NativeApp, NativeEventHandle,
     NativeRequestHandle, NativeStream, NativeStreamHandle, RequestCapability, RuntimeDiagnostics,
@@ -116,7 +116,17 @@ impl LaneCancellationToken {
 type LaneTask = Box<dyn FnOnce(LaneRuntime) + Send + 'static>;
 type LaneSender = mpsc::Sender<LaneTask>;
 type LaneRoute = mpsc::WeakSender<LaneTask>;
-type CrossLaneDiagnostics = (Arc<LaneDiagnosticsState>, ExecutionLaneId, String);
+type CrossLaneDiagnostics = (Arc<LaneDiagnosticsState>, ExecutionLaneId, Arc<str>);
+type RequestRouteIndex = BTreeMap<String, BTreeMap<String, PlannedRequestRoute>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PlannedRequestRoute {
+    caller_instance: Arc<str>,
+    provider_instance: Arc<str>,
+    consumer_lane: ExecutionLaneId,
+    provider_lane: ExecutionLaneId,
+    providers: usize,
+}
 
 struct LaneShutdown {
     timeout: Duration,
@@ -298,7 +308,7 @@ impl From<CrossLaneRequestCatalog> for CrossLaneTransferCatalog {
 
 /// One native App executed as a fixed set of Plan-declared single-owner Kernel lanes.
 pub struct ReplicatedNativeApp {
-    plan: Arc<ResolvedAppPlan>,
+    request_routes: Arc<RequestRouteIndex>,
     lanes: BTreeMap<ExecutionLaneId, LaneHandle>,
     diagnostics: Arc<LaneDiagnosticsState>,
     terminal: Arc<ReplicatedTerminalState>,
@@ -314,7 +324,7 @@ struct ReplicatedLaneRoute {
 /// Cloneable invocation target for one complete replicated App Generation.
 #[derive(Clone)]
 pub struct ReplicatedAppRoute {
-    plan: Arc<ResolvedAppPlan>,
+    request_routes: Arc<RequestRouteIndex>,
     lanes: BTreeMap<ExecutionLaneId, ReplicatedLaneRoute>,
     diagnostics: Arc<LaneDiagnosticsState>,
     terminal: Arc<ReplicatedTerminalState>,
@@ -428,6 +438,7 @@ impl ReplicatedNativeApp {
                 detail: error.to_string(),
             })?;
         transfers.validate_plan(&plan)?;
+        let request_routes = Arc::new(index_request_routes(&plan));
         let plan = Arc::new(plan);
         let adapters = Arc::new(adapters);
         let diagnostics = Arc::new(LaneDiagnosticsState::new(Arc::clone(&plan)));
@@ -572,7 +583,7 @@ impl ReplicatedNativeApp {
         }
 
         Ok(Self {
-            plan,
+            request_routes,
             lanes,
             diagnostics,
             terminal,
@@ -608,7 +619,7 @@ impl ReplicatedNativeApp {
     /// Projects a cloneable route which remains pinned by its Generation Lease.
     pub fn route(&self) -> ReplicatedAppRoute {
         ReplicatedAppRoute {
-            plan: Arc::clone(&self.plan),
+            request_routes: Arc::clone(&self.request_routes),
             lanes: self
                 .lanes
                 .iter()
@@ -662,39 +673,23 @@ impl ReplicatedAppRoute {
     fn resolve_request_lane<C: RequestCapability>(
         &self,
         caller_instance: &str,
-    ) -> Result<(&ReplicatedLaneRoute, Option<CrossLaneDiagnostics>), RuntimeFailure> {
-        let binding = singular_binding::<C>(&self.plan, caller_instance)?;
-        let consumer = self.plan.plugin_instance(caller_instance).ok_or_else(|| {
-            RuntimeFailure::InvalidResolvedPlan {
-                detail: format!("binding consumer `{caller_instance}` is absent from the Plan"),
-            }
-        })?;
-        let provider = self
-            .plan
-            .plugin_instance(binding.provider_instance())
-            .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
-                detail: format!(
-                    "binding provider `{}` is absent from the Plan",
-                    binding.provider_instance()
-                ),
-            })?;
+    ) -> Result<(&ReplicatedLaneRoute, Arc<str>, Option<CrossLaneDiagnostics>), RuntimeFailure>
+    {
+        let route = resolve_planned_request_route(&self.request_routes, caller_instance, C::ID)?;
         let lane =
             self.lanes
-                .get(provider.execution_lane())
+                .get(&route.provider_lane)
                 .ok_or_else(|| RuntimeFailure::Internal {
-                    detail: format!(
-                        "Execution Lane `{}` is unavailable",
-                        provider.execution_lane()
-                    ),
+                    detail: format!("Execution Lane `{}` is unavailable", route.provider_lane),
                 })?;
-        let diagnostics = (consumer.execution_lane() != provider.execution_lane()).then(|| {
+        let diagnostics = (route.consumer_lane != route.provider_lane).then(|| {
             (
                 Arc::clone(&self.diagnostics),
-                consumer.execution_lane().clone(),
-                binding.provider_instance().to_owned(),
+                route.consumer_lane.clone(),
+                Arc::clone(&route.provider_instance),
             )
         });
-        Ok((lane, diagnostics))
+        Ok((lane, Arc::clone(&route.caller_instance), diagnostics))
     }
 
     /// Invokes one generated request Capability on its Plan-placed provider lane.
@@ -737,8 +732,8 @@ impl ReplicatedAppRoute {
         self.ensure_running()?;
         // An invocation entering through the Runner can start on the resolved provider owner.
         // Calls originating inside a Plugin still use the projected cross-lane transfer endpoint.
-        let (lane, cross_lane_diagnostics) = self.resolve_request_lane::<C>(caller_instance)?;
-        let caller_instance = caller_instance.to_owned();
+        let (lane, caller_instance, cross_lane_diagnostics) =
+            self.resolve_request_lane::<C>(caller_instance)?;
         let operation = operation.to_owned();
         let deadline = options
             .timeout
@@ -928,25 +923,48 @@ fn stop_lanes(lanes: BTreeMap<ExecutionLaneId, LaneHandle>) {
     }
 }
 
-fn singular_binding<'a, C: RequestCapability>(
-    plan: &'a ResolvedAppPlan,
-    caller_instance: &str,
-) -> Result<&'a CapabilityBinding, RuntimeFailure> {
-    let mut bindings = plan.capability_bindings().iter().filter(|binding| {
-        binding.consumer_instance() == caller_instance && binding.capability_id() == C::ID
-    });
-    let Some(binding) = bindings.next() else {
-        return Err(RuntimeFailure::Unavailable { capability: C::ID });
-    };
-    let providers = 1 + bindings.count();
-    if providers == 1 {
-        Ok(binding)
-    } else {
-        Err(RuntimeFailure::AmbiguousBinding {
-            capability: C::ID,
-            providers,
-        })
+fn index_request_routes(plan: &ResolvedAppPlan) -> RequestRouteIndex {
+    let mut routes = RequestRouteIndex::new();
+    for binding in plan.capability_bindings() {
+        let consumer = plan
+            .plugin_instance(binding.consumer_instance())
+            .expect("validated binding consumer should exist");
+        let provider = plan
+            .plugin_instance(binding.provider_instance())
+            .expect("validated binding provider should exist");
+        let capabilities = routes
+            .entry(binding.consumer_instance().to_owned())
+            .or_default();
+        let route = capabilities
+            .entry(binding.capability_id().to_owned())
+            .or_insert_with(|| PlannedRequestRoute {
+                caller_instance: Arc::from(binding.consumer_instance()),
+                provider_instance: Arc::from(binding.provider_instance()),
+                consumer_lane: consumer.execution_lane().clone(),
+                provider_lane: provider.execution_lane().clone(),
+                providers: 0,
+            });
+        route.providers += 1;
     }
+    routes
+}
+
+fn resolve_planned_request_route<'a>(
+    routes: &'a RequestRouteIndex,
+    caller_instance: &str,
+    capability: &'static str,
+) -> Result<&'a PlannedRequestRoute, RuntimeFailure> {
+    let route = routes
+        .get(caller_instance)
+        .and_then(|capabilities| capabilities.get(capability))
+        .ok_or(RuntimeFailure::Unavailable { capability })?;
+    if route.providers != 1 {
+        return Err(RuntimeFailure::AmbiguousBinding {
+            capability,
+            providers: route.providers,
+        });
+    }
+    Ok(route)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1093,10 +1111,173 @@ async fn monitor_lane_failure(
 mod tests {
     use std::time::Duration;
 
-    use lenso_app_plan::{AppComposition, ExecutionLaneId, ExecutionLanePlan};
-    use lenso_kernel::ExecutionAdapterCatalog;
+    use lenso_app_plan::{
+        AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
+        ExecutionLaneId, ExecutionLanePlan, PluginInstancePlan,
+    };
+    use lenso_kernel::{ExecutionAdapterCatalog, RuntimeFailure};
 
-    use super::{ReplicatedNativeApp, ReplicatedRunnerError};
+    use super::{
+        PlannedRequestRoute, ReplicatedNativeApp, ReplicatedRunnerError, RequestRouteIndex,
+        index_request_routes, resolve_planned_request_route,
+    };
+
+    const ROUTE_CAPABILITY: &str = "test.route@1";
+    const ROUTE_VERSION: &str = "1.0.0";
+
+    #[test]
+    fn request_route_index_preserves_missing_single_and_ambiguous_semantics() {
+        let plan = AppComposition::new(
+            vec![
+                PluginInstancePlan::new("single-consumer", "fixture.consumer").with_requirement(
+                    CapabilityRequirementPlan::one(ROUTE_CAPABILITY, ROUTE_VERSION),
+                ),
+                PluginInstancePlan::new("many-consumer", "fixture.consumer").with_requirement(
+                    CapabilityRequirementPlan::many(ROUTE_CAPABILITY, ROUTE_VERSION),
+                ),
+                PluginInstancePlan::new("provider-a", "fixture.provider").with_capability(
+                    CapabilityEndpointPlan::new(ROUTE_CAPABILITY, ROUTE_VERSION, ["route"]),
+                ),
+                PluginInstancePlan::new("provider-b", "fixture.provider").with_capability(
+                    CapabilityEndpointPlan::new(ROUTE_CAPABILITY, ROUTE_VERSION, ["route"]),
+                ),
+            ],
+            vec![
+                CapabilityBinding::new(
+                    "single-consumer",
+                    ROUTE_CAPABILITY,
+                    ROUTE_VERSION,
+                    "provider-a",
+                ),
+                CapabilityBinding::new(
+                    "many-consumer",
+                    ROUTE_CAPABILITY,
+                    ROUTE_VERSION,
+                    "provider-a",
+                ),
+                CapabilityBinding::new(
+                    "many-consumer",
+                    ROUTE_CAPABILITY,
+                    ROUTE_VERSION,
+                    "provider-b",
+                ),
+            ],
+        )
+        .resolve()
+        .expect("route fixture should resolve");
+        let routes = index_request_routes(&plan);
+
+        assert_eq!(
+            resolve_planned_request_route(&routes, "missing", ROUTE_CAPABILITY),
+            Err(RuntimeFailure::Unavailable {
+                capability: ROUTE_CAPABILITY
+            })
+        );
+        let single = resolve_planned_request_route(&routes, "single-consumer", ROUTE_CAPABILITY)
+            .expect("the singular binding should resolve");
+        assert_eq!(single.providers, 1);
+        assert_eq!(&*single.provider_instance, "provider-a");
+        assert_eq!(
+            resolve_planned_request_route(&routes, "many-consumer", ROUTE_CAPABILITY),
+            Err(RuntimeFailure::AmbiguousBinding {
+                capability: ROUTE_CAPABILITY,
+                providers: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn large_request_route_index_is_self_contained_after_plan_resolution() {
+        const BINDINGS: usize = 512;
+        let mut instances = Vec::with_capacity(BINDINGS + 1);
+        let mut bindings = Vec::with_capacity(BINDINGS);
+        instances.push(
+            PluginInstancePlan::new("provider", "fixture.provider").with_capability(
+                CapabilityEndpointPlan::new(ROUTE_CAPABILITY, ROUTE_VERSION, ["route"]),
+            ),
+        );
+        for index in 0..BINDINGS {
+            let consumer = format!("consumer-{index}");
+            instances.push(
+                PluginInstancePlan::new(&consumer, "fixture.consumer").with_requirement(
+                    CapabilityRequirementPlan::one(ROUTE_CAPABILITY, ROUTE_VERSION),
+                ),
+            );
+            bindings.push(CapabilityBinding::new(
+                consumer,
+                ROUTE_CAPABILITY,
+                ROUTE_VERSION,
+                "provider",
+            ));
+        }
+        let routes = index_request_routes(
+            &AppComposition::new(instances, bindings)
+                .resolve()
+                .expect("large route fixture should resolve"),
+        );
+
+        assert_eq!(routes.len(), BINDINGS);
+        for index in 0..BINDINGS {
+            let route = resolve_planned_request_route(
+                &routes,
+                &format!("consumer-{index}"),
+                ROUTE_CAPABILITY,
+            )
+            .expect("every indexed route should remain available");
+            assert_eq!(&*route.provider_instance, "provider");
+            assert_eq!(route.providers, 1);
+        }
+    }
+
+    /// Reproducible evidence command:
+    /// `cargo test --release -p lenso-runner indexed_route_lookup_benchmark -- --ignored --nocapture`
+    #[test]
+    #[ignore = "route-index microbenchmark; run explicitly when changing replicated routing"]
+    fn indexed_route_lookup_benchmark() {
+        const LOOKUPS: usize = 5_000_000;
+
+        fn routes(bindings: usize) -> RequestRouteIndex {
+            (0..bindings)
+                .map(|index| {
+                    (
+                        format!("consumer-{index}"),
+                        [(
+                            ROUTE_CAPABILITY.to_owned(),
+                            PlannedRequestRoute {
+                                caller_instance: format!("consumer-{index}").into(),
+                                provider_instance: "provider".into(),
+                                consumer_lane: ExecutionLaneId::new("frontend"),
+                                provider_lane: ExecutionLaneId::new("workers"),
+                                providers: 1,
+                            },
+                        )]
+                        .into_iter()
+                        .collect(),
+                    )
+                })
+                .collect()
+        }
+
+        fn nanoseconds_per_lookup(routes: &RequestRouteIndex, caller: &str) -> f64 {
+            let started = std::time::Instant::now();
+            for _ in 0..LOOKUPS {
+                let route = resolve_planned_request_route(routes, caller, ROUTE_CAPABILITY)
+                    .expect("indexed benchmark route should resolve");
+                std::hint::black_box(route);
+            }
+            started.elapsed().as_secs_f64() * 1_000_000_000.0
+                / f64::from(u32::try_from(LOOKUPS).expect("lookup count fits u32"))
+        }
+
+        let small = routes(1);
+        let large = routes(8_192);
+        let small_ns = nanoseconds_per_lookup(&small, "consumer-0");
+        let large_ns = nanoseconds_per_lookup(&large, "consumer-8191");
+        println!(
+            "{{\"lookups\":{LOOKUPS},\"small_bindings\":1,\"large_bindings\":8192,\"small_ns_per_lookup\":{small_ns:.3},\"large_ns_per_lookup\":{large_ns:.3},\"large_to_small_ratio\":{:.3}}}",
+            large_ns / small_ns,
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn one_lane_panic_makes_the_replicated_app_terminal_and_stops_its_peers() {

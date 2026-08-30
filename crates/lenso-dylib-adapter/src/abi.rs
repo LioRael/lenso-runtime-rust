@@ -103,6 +103,7 @@ struct AllocatorState {
 }
 
 pub(crate) struct LoadedDylib {
+    _artifact: ArtifactHandle,
     root: LensoPluginV1,
     allocator: Box<AllocatorState>,
     limits: DylibLimits,
@@ -123,11 +124,10 @@ impl std::fmt::Debug for LoadedDylib {
 
 impl LoadedDylib {
     pub(crate) fn load(
-        artifact: &ArtifactHandle,
+        artifact: ArtifactHandle,
         capabilities: &[CapabilityAbiDescriptor],
         limits: DylibLimits,
     ) -> Result<Self, RuntimeFailure> {
-        artifact.read_verified()?;
         let mut allocator = Box::<AllocatorState>::default();
         let host = LensoHostV1 {
             abi_version: ABI_VERSION,
@@ -179,6 +179,7 @@ impl LoadedDylib {
         // TLS, descendant threads, and foreign runtimes make safe unload unprovable.
         std::mem::forget(library);
         Ok(Self {
+            _artifact: artifact,
             root,
             allocator,
             limits,
@@ -445,6 +446,26 @@ fn plugin_failure<T>(detail: impl Into<String>) -> Result<T, RuntimeFailure> {
 }
 
 fn bounded(mut detail: String) -> String {
-    detail.truncate(1024);
+    const MAX_DETAIL: usize = 1024;
+    if detail.len() > MAX_DETAIL {
+        let mut boundary = MAX_DETAIL;
+        while !detail.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        detail.truncate(boundary);
+    }
     detail
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded;
+
+    #[test]
+    fn bounded_failure_preserves_utf8() {
+        let detail = bounded("界".repeat(400));
+
+        assert_eq!(detail.len(), 1023);
+        assert_eq!(detail.chars().count(), 341);
+    }
 }

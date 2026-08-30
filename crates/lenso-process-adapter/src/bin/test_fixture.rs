@@ -18,6 +18,9 @@ impl ProcessPlugin for Echo {
 
     fn invoke(&self, capability: &str, operation: &str, request: Value) -> ProcessOutcome {
         if capability == "example.echo@1" && operation == "echo" {
+            if request.get("unicode_failure") == Some(&Value::Bool(true)) {
+                return ProcessOutcome::Failure("界".repeat(200));
+            }
             if let Some(milliseconds) = request.get("sleep_ms").and_then(Value::as_u64) {
                 std::thread::sleep(std::time::Duration::from_millis(milliseconds));
             }

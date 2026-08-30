@@ -83,13 +83,17 @@ fn versioned_c_abi_uses_host_owned_buffers_and_exact_trust() {
         .join(digest.strip_prefix("sha256:").unwrap());
     std::fs::rename(&compiled, &content_path).unwrap();
     let artifact = ArtifactHandle::open(&content_path, &digest, bytes.len() as u64).unwrap();
+    let stable_path = artifact.path().to_path_buf();
     let artifacts = ArtifactCatalog::new()
         .with_artifact("plugin", artifact)
         .unwrap();
     let adapter =
         DylibAdapter::new(artifacts, ExplicitDigestTrust::new([digest])).with_codec(EchoCodec);
+    std::fs::write(&content_path, b"source drift after admission").unwrap();
     let plan = plan();
     let generation = adapter.recreate(&plan, "plugin").unwrap();
+    drop(adapter);
+    assert!(stable_path.exists());
     let endpoint = generation.endpoints()[0].clone();
 
     let context = InvocationContext::new(1, None, CancellationToken::new());
@@ -107,6 +111,10 @@ fn versioned_c_abi_uses_host_owned_buffers_and_exact_trust() {
         panic!("dylib fail did not return a Domain Error");
     };
     assert_eq!(*error.downcast::<String>().unwrap(), "declared");
+
+    drop(endpoint);
+    drop(generation);
+    assert!(!stable_path.exists());
 }
 
 fn plan() -> ResolvedAppPlan {

@@ -6,6 +6,7 @@ mod selection;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
+    io::Read as _,
     path::{Component, Path, PathBuf},
 };
 
@@ -27,6 +28,36 @@ pub const PLUGIN_DESCRIPTOR_SECTION: &str = "lenso.plugin-descriptor.v1";
 
 /// Maximum accepted source-derived descriptor size.
 pub const MAX_PLUGIN_DESCRIPTOR_BYTES: usize = 64 * 1024;
+
+/// Host-owned resource bounds for verifying an untrusted materialized Bundle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BundleVerificationLimits {
+    pub max_manifest_bytes: u64,
+    pub max_file_bytes: u64,
+    pub max_total_bytes: u64,
+    pub max_file_count: usize,
+    pub max_entry_count: usize,
+    pub max_directory_depth: usize,
+}
+
+impl Default for BundleVerificationLimits {
+    fn default() -> Self {
+        Self {
+            max_manifest_bytes: 1024 * 1024,
+            max_file_bytes: 256 * 1024 * 1024,
+            max_total_bytes: 512 * 1024 * 1024,
+            max_file_count: 128,
+            max_entry_count: 256,
+            max_directory_depth: 32,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BundleFileSummary {
+    size: u64,
+    digest: String,
+}
 
 /// Source-only input for one generated V2 Plugin Bundle.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -412,24 +443,71 @@ pub fn build_source_plugin_release_bundle(
 
 /// Verifies an already materialized directory as an exact immutable Bundle closure.
 pub fn verify_bundle_directory(root: &Path) -> Result<VerifiedBundle, BundleError> {
+    verify_bundle_directory_with_limits(root, &BundleVerificationLimits::default())
+}
+
+/// Verifies one Bundle with explicit Host-owned resource bounds.
+pub fn verify_bundle_directory_with_limits(
+    root: &Path,
+    limits: &BundleVerificationLimits,
+) -> Result<VerifiedBundle, BundleError> {
+    verify_bundle_document_with_limits(root, limits).map(|(verified, _)| verified)
+}
+
+fn verify_bundle_document_with_limits(
+    root: &Path,
+    limits: &BundleVerificationLimits,
+) -> Result<(VerifiedBundle, ManifestDocument), BundleError> {
+    verify_bundle_document_with_limits_after_manifest_read(root, limits, || {})
+}
+
+fn verify_bundle_document_with_limits_after_manifest_read(
+    root: &Path,
+    limits: &BundleVerificationLimits,
+    after_manifest_read: impl FnOnce(),
+) -> Result<(VerifiedBundle, ManifestDocument), BundleError> {
+    validate_verification_limits(limits)?;
     let manifest_path = root.join(MANIFEST_FILE);
-    let manifest_bytes = read_regular_file(&manifest_path, "Plugin Manifest")?;
+    let manifest_bytes =
+        read_regular_file_bounded(&manifest_path, "Plugin Manifest", limits.max_manifest_bytes)?;
+    after_manifest_read();
     let mut files = BTreeMap::new();
-    collect_bundle_files(root, root, &mut files)?;
-    files.remove(MANIFEST_FILE);
-    verify_manifest_bundle_files(&ManifestDocument::parse(&manifest_bytes)?, &files)
+    let mut total_size = 0_u64;
+    let mut entry_count = 0_usize;
+    collect_bundle_files(
+        root,
+        root,
+        0,
+        limits,
+        &mut entry_count,
+        &mut total_size,
+        &mut files,
+    )?;
+    let manifest_summary = files
+        .remove(MANIFEST_FILE)
+        .ok_or_else(|| BundleError::InvalidBundle("Bundle is missing its Manifest".to_owned()))?;
+    if manifest_summary.size != u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX)
+        || manifest_summary.digest != sha256_digest(&manifest_bytes)
+    {
+        return invalid_bundle("Plugin Manifest changed during Bundle verification");
+    }
+    let manifest = ManifestDocument::parse(&manifest_bytes)?;
+    let verified = verify_manifest_bundle_files(root, &manifest, &files, limits)?;
+    Ok((verified, manifest))
 }
 
 /// Strictly reads either supported Plugin Manifest version from a verified Bundle.
 pub fn read_bundle_manifest(root: &Path) -> Result<PluginManifest, BundleError> {
-    verify_bundle_directory(root)?;
-    let bytes = read_regular_file(&root.join(MANIFEST_FILE), "Plugin Manifest")?;
-    Ok(ManifestDocument::parse(&bytes)?.value)
+    let (_, manifest) =
+        verify_bundle_document_with_limits(root, &BundleVerificationLimits::default())?;
+    Ok(manifest.value)
 }
 
 fn verify_manifest_bundle_files(
+    root: &Path,
     manifest: &ManifestDocument,
-    files: &BTreeMap<String, Vec<u8>>,
+    files: &BTreeMap<String, BundleFileSummary>,
+    limits: &BundleVerificationLimits,
 ) -> Result<VerifiedBundle, BundleError> {
     match &manifest.value {
         PluginManifest::V2(value) => verify_source_bundle_files(
@@ -438,16 +516,22 @@ fn verify_manifest_bundle_files(
                 bytes: Vec::new(),
                 digest: manifest.digest.clone(),
             },
+            root,
             files,
+            limits,
         ),
-        PluginManifest::V3(value) => verify_v3_bundle_files(value, &manifest.digest, files),
+        PluginManifest::V3(value) => {
+            verify_v3_bundle_files(root, value, &manifest.digest, files, limits)
+        }
     }
 }
 
 fn verify_v3_bundle_files(
+    root: &Path,
     manifest: &PluginManifestV3,
     manifest_digest: &str,
-    files: &BTreeMap<String, Vec<u8>>,
+    files: &BTreeMap<String, BundleFileSummary>,
+    limits: &BundleVerificationLimits,
 ) -> Result<VerifiedBundle, BundleError> {
     if files.len() != manifest.implementations.len() {
         return invalid_bundle("V3 Bundle closure does not equal its implementation Artifacts");
@@ -455,12 +539,10 @@ fn verify_v3_bundle_files(
     let mut artifact_digests = Vec::with_capacity(manifest.implementations.len());
     for implementation in &manifest.implementations {
         let artifact = &implementation.artifact;
-        let Some(bytes) = files.get(&artifact.path) else {
+        let Some(summary) = files.get(&artifact.path) else {
             return invalid_bundle(format!("V3 Bundle is missing `{}`", artifact.path));
         };
-        if artifact.size != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            || artifact.digest != sha256_digest(bytes)
-        {
+        if artifact.size != summary.size || artifact.digest != summary.digest {
             return Err(BundleError::DigestMismatch(artifact.path.clone()));
         }
         if implementation.runtime.runtime_package_revision() != artifact.digest {
@@ -468,7 +550,8 @@ fn verify_v3_bundle_files(
         }
         let descriptor = manifest.contract.resolve(&implementation.runtime);
         if artifact.media_type == "application/wasm" {
-            let encoded = extract_plugin_descriptor(bytes)?;
+            let bytes = read_verified_bundle_artifact(root, artifact, limits)?;
+            let encoded = extract_plugin_descriptor(&bytes)?;
             let derived = portable_plugin_descriptor(
                 manifest.contract.plugin_id(),
                 manifest.contract.release_version(),
@@ -502,22 +585,23 @@ fn verify_v3_bundle_files(
 
 fn verify_source_bundle_files(
     manifest: &SourceManifestDocument,
-    files: &BTreeMap<String, Vec<u8>>,
+    root: &Path,
+    files: &BTreeMap<String, BundleFileSummary>,
+    limits: &BundleVerificationLimits,
 ) -> Result<VerifiedBundle, BundleError> {
     let artifact = &manifest.value.artifact;
     if files.len() != 1 {
         return invalid_bundle("V2 Bundle must contain exactly one Artifact");
     }
-    let Some(bytes) = files.get(&artifact.path) else {
+    let Some(summary) = files.get(&artifact.path) else {
         return invalid_bundle("V2 Bundle does not contain its declared Artifact");
     };
-    if artifact.size != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-        || artifact.digest != sha256_digest(bytes)
-    {
+    if artifact.size != summary.size || artifact.digest != summary.digest {
         return Err(BundleError::DigestMismatch(artifact.path.clone()));
     }
     if artifact.media_type == "application/wasm" {
-        let runtime_descriptor = extract_plugin_descriptor(bytes)?;
+        let bytes = read_verified_bundle_artifact(root, artifact, limits)?;
+        let runtime_descriptor = extract_plugin_descriptor(&bytes)?;
         let descriptor = portable_plugin_descriptor(
             &manifest.value.plugin_id,
             &manifest.value.release_version,
@@ -905,6 +989,74 @@ fn read_regular_file(path: &Path, kind: &str) -> Result<Vec<u8>, BundleError> {
     fs::read(path).map_err(io_error)
 }
 
+fn validate_verification_limits(limits: &BundleVerificationLimits) -> Result<(), BundleError> {
+    if limits.max_manifest_bytes == 0
+        || limits.max_file_bytes == 0
+        || limits.max_total_bytes == 0
+        || limits.max_file_count == 0
+        || limits.max_entry_count == 0
+        || limits.max_directory_depth == 0
+        || limits.max_file_count > limits.max_entry_count
+        || limits.max_manifest_bytes > limits.max_file_bytes
+        || limits.max_file_bytes > limits.max_total_bytes
+    {
+        return invalid_bundle("Bundle verification limits are invalid");
+    }
+    Ok(())
+}
+
+fn read_regular_file_bounded(path: &Path, kind: &str, limit: u64) -> Result<Vec<u8>, BundleError> {
+    read_regular_file_bounded_after_inspection(path, kind, limit, || {})
+}
+
+fn read_regular_file_bounded_after_inspection(
+    path: &Path,
+    kind: &str,
+    limit: u64,
+    after_inspection: impl FnOnce(),
+) -> Result<Vec<u8>, BundleError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| BundleError::Io(format!("failed to inspect {kind}: {error}")))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return invalid_bundle(format!("{kind} is not a regular file"));
+    }
+    if metadata.len() > limit {
+        return invalid_bundle(format!("{kind} exceeds the configured size limit"));
+    }
+    after_inspection();
+    let file = fs::File::open(path).map_err(io_error)?;
+    let opened = file.metadata().map_err(io_error)?;
+    if !opened.is_file() || !same_file_identity(&metadata, &opened) {
+        return invalid_bundle(format!("{kind} changed during bounded read"));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return invalid_bundle(format!("{kind} exceeds the configured size limit"));
+    }
+    Ok(bytes)
+}
+
+fn read_verified_bundle_artifact(
+    root: &Path,
+    artifact: &PluginArtifactV2,
+    limits: &BundleVerificationLimits,
+) -> Result<Vec<u8>, BundleError> {
+    let bytes = read_regular_file_bounded(
+        &root.join(&artifact.path),
+        "Plugin Artifact",
+        limits.max_file_bytes,
+    )?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != artifact.size
+        || sha256_digest(&bytes) != artifact.digest
+    {
+        return Err(BundleError::DigestMismatch(artifact.path.clone()));
+    }
+    Ok(bytes)
+}
+
 fn write_bundle_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), BundleError> {
     let path = root.join(relative);
     if let Some(parent) = path.parent() {
@@ -933,25 +1085,42 @@ fn preserve_executable_permissions(_: &Path, _: &Path) -> Result<(), BundleError
 fn collect_bundle_files(
     root: &Path,
     directory: &Path,
-    files: &mut BTreeMap<String, Vec<u8>>,
+    depth: usize,
+    limits: &BundleVerificationLimits,
+    entry_count: &mut usize,
+    total_size: &mut u64,
+    files: &mut BTreeMap<String, BundleFileSummary>,
 ) -> Result<(), BundleError> {
+    if depth > limits.max_directory_depth {
+        return invalid_bundle("Bundle directory depth exceeds the configured limit");
+    }
     let metadata = fs::symlink_metadata(directory).map_err(io_error)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return invalid_bundle("Bundle root contains a non-regular directory");
     }
-    let mut entries = fs::read_dir(directory)
-        .map_err(io_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(io_error)?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
+    for entry in fs::read_dir(directory).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        *entry_count = entry_count
+            .checked_add(1)
+            .ok_or_else(|| BundleError::InvalidBundle("Bundle entry count overflow".to_owned()))?;
+        if *entry_count > limits.max_entry_count {
+            return invalid_bundle("Bundle entry count exceeds the configured limit");
+        }
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
         if metadata.file_type().is_symlink() {
             return invalid_bundle("Bundle contains a symbolic link");
         }
         if metadata.is_dir() {
-            collect_bundle_files(root, &path, files)?;
+            collect_bundle_files(
+                root,
+                &path,
+                depth + 1,
+                limits,
+                entry_count,
+                total_size,
+                files,
+            )?;
             continue;
         }
         if !metadata.is_file() {
@@ -964,9 +1133,70 @@ fn collect_bundle_files(
             .ok_or_else(|| BundleError::InvalidBundle("Bundle path is not UTF-8".to_owned()))?
             .replace(std::path::MAIN_SEPARATOR, "/");
         validate_relative_path(&relative)?;
-        files.insert(relative, fs::read(path).map_err(io_error)?);
+        if files.len() >= limits.max_file_count {
+            return invalid_bundle("Bundle file count exceeds the configured limit");
+        }
+        let summary = summarize_bundle_file(&path, &metadata, limits.max_file_bytes)?;
+        *total_size = total_size
+            .checked_add(summary.size)
+            .ok_or_else(|| BundleError::InvalidBundle("Bundle total size overflow".to_owned()))?;
+        if *total_size > limits.max_total_bytes {
+            return invalid_bundle("Bundle total size exceeds the configured limit");
+        }
+        files.insert(relative, summary);
     }
     Ok(())
+}
+
+fn summarize_bundle_file(
+    path: &Path,
+    metadata: &fs::Metadata,
+    max_file_bytes: u64,
+) -> Result<BundleFileSummary, BundleError> {
+    if metadata.len() > max_file_bytes {
+        return invalid_bundle("Bundle file exceeds the configured size limit");
+    }
+    let mut file = fs::File::open(path).map_err(io_error)?;
+    let opened = file.metadata().map_err(io_error)?;
+    if !opened.is_file() || !same_file_identity(metadata, &opened) || opened.len() > max_file_bytes
+    {
+        return invalid_bundle("Bundle file changed during verification");
+    }
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(io_error)?;
+        if read == 0 {
+            break;
+        }
+        size = size
+            .checked_add(u64::try_from(read).expect("buffer length fits u64"))
+            .ok_or_else(|| BundleError::InvalidBundle("Bundle file size overflow".to_owned()))?;
+        if size > max_file_bytes {
+            return invalid_bundle("Bundle file exceeds the configured size limit");
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if size != opened.len() {
+        return invalid_bundle("Bundle file changed during verification");
+    }
+    Ok(BundleFileSummary {
+        size,
+        digest: format!("sha256:{}", hex::encode(hasher.finalize())),
+    })
+}
+
+#[cfg(unix)]
+fn same_file_identity(inspected: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    inspected.dev() == opened.dev() && inspected.ino() == opened.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file_identity(_: &fs::Metadata, _: &fs::Metadata) -> bool {
+    true
 }
 
 fn invalid_manifest<T>(detail: impl Into<String>) -> Result<T, BundleError> {
@@ -986,6 +1216,28 @@ mod tests {
     use std::borrow::Cow;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_reader_rejects_a_symlink_swap_between_inspection_and_open() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("selected");
+        let replacement = directory.path().join("replacement");
+        fs::write(&selected, b"selected").unwrap();
+        fs::write(&replacement, b"selected").unwrap();
+
+        let result = read_regular_file_bounded_after_inspection(&selected, "test file", 64, || {
+            fs::remove_file(&selected).unwrap();
+            symlink(&replacement, &selected).unwrap();
+        });
+
+        assert!(matches!(
+            result,
+            Err(BundleError::InvalidBundle(detail)) if detail.contains("changed during bounded read")
+        ));
+    }
 
     fn wasm_with_descriptors(descriptors: &[&[u8]]) -> Vec<u8> {
         let mut module = wasm_encoder::Module::new();
@@ -1107,6 +1359,50 @@ root-slot = "tools"
             document.value.entry.descriptor["execution_class"],
             "lenso.process@1"
         );
+
+        let bounded = BundleVerificationLimits {
+            max_manifest_bytes: 16 * 1024,
+            max_file_bytes: 16 * 1024,
+            max_total_bytes: 32 * 1024,
+            ..BundleVerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_bundle_directory_with_limits(&output, &bounded),
+            Err(BundleError::InvalidBundle(detail)) if detail.contains("size limit")
+        ));
+
+        let file_count_bounded = BundleVerificationLimits {
+            max_file_count: 1,
+            ..BundleVerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_bundle_directory_with_limits(&output, &file_count_bounded),
+            Err(BundleError::InvalidBundle(detail)) if detail.contains("file count")
+        ));
+
+        for index in 0..64 {
+            fs::create_dir(output.join(format!("empty-directory-{index}"))).unwrap();
+        }
+        let entry_count_bounded = BundleVerificationLimits {
+            max_file_count: 2,
+            max_entry_count: 4,
+            ..BundleVerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_bundle_directory_with_limits(&output, &entry_count_bounded),
+            Err(BundleError::InvalidBundle(detail)) if detail.contains("entry count")
+        ));
+
+        let manifest_path = output.join(MANIFEST_FILE);
+        let drift = verify_bundle_document_with_limits_after_manifest_read(
+            &output,
+            &BundleVerificationLimits::default(),
+            || fs::write(&manifest_path, br#"{"schema_version":2}"#).unwrap(),
+        );
+        assert!(matches!(
+            drift,
+            Err(BundleError::InvalidBundle(detail)) if detail.contains("Manifest changed")
+        ));
     }
 
     #[test]

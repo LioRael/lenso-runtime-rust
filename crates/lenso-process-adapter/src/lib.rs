@@ -6,7 +6,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
     io::{self, BufRead as _, BufReader, BufWriter, Write as _},
     process::{Child, ChildStdin, Command, Stdio},
     rc::Rc,
@@ -26,8 +25,8 @@ use lenso_kernel::{
 };
 use lenso_process_sdk::PROTOCOL_VERSION;
 use lenso_runtime_codec::{
-    ArtifactCatalog, JsonCapabilityCodec, JsonInvocationOutcome, JsonRequestTransport,
-    codecs_for_instance, json_request_endpoints, prepare_request_app,
+    ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonInvocationOutcome,
+    JsonRequestTransport, codecs_for_instance, json_request_endpoints, prepare_request_app,
     validate_json_plugin_descriptor,
 };
 use serde::{Deserialize, Serialize};
@@ -125,10 +124,9 @@ impl ProcessAdapter {
                 self.duplicate_codecs
             ));
         }
-        let artifact = self.artifacts.require(instance.instance_key())?;
-        artifact.read_verified()?;
+        let artifact = self.artifacts.require(instance.instance_key())?.clone();
         let codecs = codecs_for_instance(instance, &self.codecs)?;
-        let generation = ProcessGeneration::start(artifact.path(), instance, self.limits.clone())?;
+        let generation = ProcessGeneration::start(artifact, instance, self.limits.clone())?;
         let endpoints = json_request_endpoints(generation.clone(), codecs);
         Ok(PreparedNativePlugin::with_endpoints(
             endpoints,
@@ -192,6 +190,10 @@ enum HostFrame<'a> {
         operation: &'a str,
         request: Value,
     },
+    #[expect(
+        dead_code,
+        reason = "retained for process wire compatibility; abandonment retires the generation"
+    )]
     Cancel {
         id: u64,
     },
@@ -220,6 +222,7 @@ type Pending = Arc<Mutex<BTreeMap<u64, futures::channel::oneshot::Sender<Process
 type ProcessResult = Result<JsonInvocationOutcome, RuntimeFailure>;
 
 struct ProcessGeneration {
+    _artifact: ArtifactHandle,
     writer: Arc<Mutex<BufWriter<ChildStdin>>>,
     child: Arc<Mutex<Option<Child>>>,
     reader: Mutex<Option<thread::JoinHandle<()>>>,
@@ -243,16 +246,17 @@ impl std::fmt::Debug for ProcessGeneration {
 impl ProcessGeneration {
     #[allow(clippy::too_many_lines)]
     fn start(
-        executable: &std::path::Path,
+        artifact: ArtifactHandle,
         instance: &PluginInstancePlan,
         limits: ProcessLimits,
     ) -> Result<Rc<Self>, RuntimeFailure> {
-        let executable = absolute_executable(executable)?;
+        let executable = artifact.path().to_path_buf();
         let mut command = Command::new(&executable);
         command
             .env_clear()
             .current_dir(
-                executable
+                artifact
+                    .source_path()
                     .parent()
                     .unwrap_or_else(|| std::path::Path::new(".")),
             )
@@ -262,7 +266,14 @@ impl ProcessGeneration {
         let mut child = command
             .spawn()
             .map_err(|error| RuntimeFailure::PluginFailure {
-                detail: format!("failed to start Process Plugin: {error}"),
+                detail: if error.kind() == io::ErrorKind::PermissionDenied {
+                    format!(
+                        "failed to start Process Plugin from the stable Artifact path: {error}; \
+                         configure an executable Host Artifact staging root"
+                    )
+                } else {
+                    format!("failed to start Process Plugin: {error}")
+                },
             })?;
         let stdin = child.stdin.take().ok_or_else(|| RuntimeFailure::Internal {
             detail: "Process Plugin stdin was not piped".to_owned(),
@@ -376,6 +387,7 @@ impl ProcessGeneration {
         validate_json_plugin_descriptor(instance, &encoded)?;
 
         Ok(Rc::new(Self {
+            _artifact: artifact,
             writer,
             child: Arc::new(Mutex::new(Some(child))),
             reader: Mutex::new(Some(reader)),
@@ -417,17 +429,63 @@ impl ProcessGeneration {
         }
         retire_pending(&self.pending, &self.failed, "Process Plugin stopped");
     }
+
+    fn abort(&self) {
+        if self.stopped.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.failed.store(true, Ordering::Release);
+        if let Some(mut child) = self.child.lock().expect("process child").take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(reader) = self.reader.lock().expect("process reader").take() {
+            let _ = reader.join();
+        }
+        retire_pending(
+            &self.pending,
+            &self.failed,
+            "Process Plugin invocation was abandoned",
+        );
+    }
 }
 
-fn absolute_executable(path: &std::path::Path) -> Result<std::path::PathBuf, RuntimeFailure> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
+struct PendingInvocationGuard {
+    generation: Rc<ProcessGeneration>,
+    id: u64,
+    armed: bool,
+}
+
+impl PendingInvocationGuard {
+    fn new(generation: Rc<ProcessGeneration>, id: u64) -> Self {
+        Self {
+            generation,
+            id,
+            armed: true,
+        }
     }
-    env::current_dir()
-        .map(|current| current.join(path))
-        .map_err(|error| RuntimeFailure::PluginFailure {
-            detail: format!("failed to resolve Process Plugin path: {error}"),
-        })
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingInvocationGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let was_pending = self
+            .generation
+            .pending
+            .lock()
+            .expect("pending")
+            .remove(&self.id)
+            .is_some();
+        if was_pending {
+            self.generation.abort();
+        }
+    }
 }
 
 impl JsonRequestTransport for ProcessGeneration {
@@ -476,18 +534,18 @@ impl JsonRequestTransport for ProcessGeneration {
                 self.pending.lock().expect("pending").remove(&id);
                 return Err(error);
             }
+            let mut pending_guard = PendingInvocationGuard::new(self.clone(), id);
             let cancellation = context.cancellation();
             let mut response = receiver.fuse();
             let mut cancelled = cancellation.cancelled().fuse();
             select! {
-                outcome = response => outcome.unwrap_or_else(|_| Err(RuntimeFailure::PluginFailure {
-                    detail: "Process Plugin response channel closed".to_owned(),
-                })),
+                outcome = response => {
+                    pending_guard.disarm();
+                    outcome.unwrap_or_else(|_| Err(RuntimeFailure::PluginFailure {
+                        detail: "Process Plugin response channel closed".to_owned(),
+                    }))
+                },
                 () = cancelled => {
-                    self.pending.lock().expect("pending").remove(&id);
-                    let _ = self.send(&HostFrame::Cancel { id });
-                    self.failed.store(true, Ordering::Release);
-                    self.stop();
                     Err(RuntimeFailure::Cancelled { request_id: context.request_id() })
                 }
             }
@@ -559,7 +617,11 @@ fn retire_pending(pending: &Pending, failed: &AtomicBool, detail: &str) {
 fn bounded(mut detail: String) -> String {
     const MAX_DETAIL: usize = 512;
     if detail.len() > MAX_DETAIL {
-        detail.truncate(MAX_DETAIL);
+        let mut boundary = MAX_DETAIL;
+        while !detail.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        detail.truncate(boundary);
     }
     detail
 }

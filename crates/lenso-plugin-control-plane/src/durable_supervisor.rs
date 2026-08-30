@@ -231,12 +231,23 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
         state = store.compare_and_swap(&app_id, state.revision, state)?;
 
         let mut slots = BTreeMap::new();
+        macro_rules! recover_or_cleanup {
+            ($result:expr) => {
+                match $result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        shutdown_recovered_slots(&mut runtime, slots, &state).await;
+                        return Err(error);
+                    }
+                }
+            };
+        }
         let mut failed_active: Option<(String, bool)> = None;
         let mut next = state.clone();
         for record in &mut next.generations {
             match record.lifecycle {
                 ControlLifecycle::Active | ControlLifecycle::Standby => {
-                    let generation =
+                    let generation = recover_or_cleanup!(
                         generations
                             .get(&record.generation_spec_digest)
                             .ok_or_else(|| ControlPlaneError::TransitionRejected {
@@ -244,20 +255,26 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
                                     "recovery lacks exact Generation `{}` authority",
                                     record.generation_spec_digest
                                 ),
-                            })?;
+                            })
+                    );
                     if generation.spec.digest() != record.generation_spec_digest
                         || generation.spec.value().app_id != app_id
                     {
-                        return rejected("recovery Generation authority digest or App mismatch");
+                        recover_or_cleanup!(rejected::<()>(
+                            "recovery Generation authority digest or App mismatch"
+                        ));
                     }
                     if record.lifecycle == ControlLifecycle::Standby
-                        && deadline(record)? <= now_unix_nanos
+                        && recover_or_cleanup!(deadline(record)) <= now_unix_nanos
                     {
                         record.lifecycle = ControlLifecycle::Retired;
                         record.retirement_reason = Some(RetirementReason::RollbackWindowExpired);
                         continue;
                     }
-                    let timeout = parse_nanos(&record.ready_timeout_nanos, "ready timeout")?;
+                    let timeout = recover_or_cleanup!(parse_nanos(
+                        &record.ready_timeout_nanos,
+                        "ready timeout"
+                    ));
                     match runtime.stage(generation, timeout).await {
                         Ok(handle) => {
                             slots.insert(
@@ -287,6 +304,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
                                 next.active_generation_spec_digest = None;
                             }
                             if matches!(error, ControlPlaneError::TransitionRejected { .. }) {
+                                shutdown_recovered_slots(&mut runtime, slots, &state).await;
                                 return Err(error);
                             }
                         }
@@ -311,13 +329,14 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             standby.lifecycle = ControlLifecycle::Active;
             standby.activation_direction = ActivationDirection::Rollback;
             next.active_generation_spec_digest = Some(standby.generation_spec_digest.clone());
-            next.routing_epoch = next.routing_epoch.checked_add(1).ok_or_else(|| {
-                ControlPlaneError::TransitionRejected {
-                    detail: "Routing Epoch exhausted".to_owned(),
-                }
-            })?;
+            next.routing_epoch =
+                recover_or_cleanup!(next.routing_epoch.checked_add(1).ok_or_else(|| {
+                    ControlPlaneError::TransitionRejected {
+                        detail: "Routing Epoch exhausted".to_owned(),
+                    }
+                }));
         }
-        next = store.compare_and_swap(&app_id, state.revision, next)?;
+        next = recover_or_cleanup!(store.compare_and_swap(&app_id, state.revision, next));
         Ok(Self {
             app_id,
             runtime,
@@ -461,41 +480,54 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
                 return Err(error);
             }
         };
-        self.mark_record(&candidate_digest, |record| {
+        if let Err(error) = self.mark_record(&candidate_digest, |record| {
             record.lifecycle = ControlLifecycle::Ready;
-        })?;
+        }) {
+            let _ = self.runtime.shutdown(handle, drain_timeout).await;
+            return Err(error);
+        }
 
         let previous_digest = edge.from_generation_spec_digest.clone();
-        let mut next = self.state.clone();
-        next.routing_epoch = next.routing_epoch.checked_add(1).ok_or_else(|| {
-            ControlPlaneError::TransitionRejected {
-                detail: "Routing Epoch exhausted".to_owned(),
-            }
-        })?;
-        next.active_generation_spec_digest = Some(candidate_digest.clone());
-        update_record(&mut next, &candidate_digest, |record| {
-            record.lifecycle = ControlLifecycle::Active;
-        })?;
-        if edge.replacement_mode == ReplacementMode::Overlap {
-            let previous = previous_digest
-                .as_ref()
-                .expect("overlap edge requires predecessor");
-            update_record(&mut next, previous, |record| {
-                record.lifecycle = ControlLifecycle::Draining;
-                record.drain_deadline_unix_nanos = Some(drain_deadline.clone());
-                transition
-                    .digest()
-                    .clone_into(&mut record.transition_spec_digest);
-                record
-                    .rollback_deadline_unix_nanos
-                    .clone_from(&rollback_deadline);
-                record.automatic_rollback_on_generation_failure =
-                    edge.rollout_policy.automatic_rollback_on_generation_failure;
-                record
-                    .state_compatibility_receipt_digests
-                    .clone_from(&edge.state_compatibility_receipt_digests);
+        let next = (|| {
+            let mut next = self.state.clone();
+            next.routing_epoch = next.routing_epoch.checked_add(1).ok_or_else(|| {
+                ControlPlaneError::TransitionRejected {
+                    detail: "Routing Epoch exhausted".to_owned(),
+                }
             })?;
-        }
+            next.active_generation_spec_digest = Some(candidate_digest.clone());
+            update_record(&mut next, &candidate_digest, |record| {
+                record.lifecycle = ControlLifecycle::Active;
+            })?;
+            if edge.replacement_mode == ReplacementMode::Overlap {
+                let previous = previous_digest
+                    .as_ref()
+                    .expect("overlap edge requires predecessor");
+                update_record(&mut next, previous, |record| {
+                    record.lifecycle = ControlLifecycle::Draining;
+                    record.drain_deadline_unix_nanos = Some(drain_deadline.clone());
+                    transition
+                        .digest()
+                        .clone_into(&mut record.transition_spec_digest);
+                    record
+                        .rollback_deadline_unix_nanos
+                        .clone_from(&rollback_deadline);
+                    record.automatic_rollback_on_generation_failure =
+                        edge.rollout_policy.automatic_rollback_on_generation_failure;
+                    record
+                        .state_compatibility_receipt_digests
+                        .clone_from(&edge.state_compatibility_receipt_digests);
+                })?;
+            }
+            Ok(next)
+        })();
+        let next = match next {
+            Ok(next) => next,
+            Err(error) => {
+                let _ = self.runtime.shutdown(handle, drain_timeout).await;
+                return Err(error);
+            }
+        };
         if let Err(error) = self.commit(next) {
             let _ = self.runtime.shutdown(handle, drain_timeout).await;
             return Err(error);
@@ -1085,6 +1117,22 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
     }
 }
 
+async fn shutdown_recovered_slots<R: GenerationRuntime>(
+    runtime: &mut R,
+    slots: BTreeMap<String, LiveSlot<R::Handle>>,
+    state: &DurableControlState,
+) {
+    for (digest, slot) in slots {
+        let timeout = state
+            .generations
+            .iter()
+            .find(|record| record.generation_spec_digest == digest)
+            .and_then(|record| record.drain_timeout_nanos.parse::<u64>().ok())
+            .unwrap_or(0);
+        let _ = runtime.shutdown(slot.handle, timeout).await;
+    }
+}
+
 fn update_record(
     state: &mut DurableControlState,
     digest: &str,
@@ -1151,3 +1199,7 @@ fn rejected<T>(detail: impl Into<String>) -> Result<T, ControlPlaneError> {
         detail: detail.into(),
     })
 }
+
+#[cfg(test)]
+#[path = "durable_supervisor_tests.rs"]
+mod tests;

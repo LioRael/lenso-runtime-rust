@@ -1253,6 +1253,26 @@ fn exhausted<T>(detail: &str) -> Result<T, RuntimeFailure> {
 }
 
 fn bounded(mut detail: String) -> String {
-    detail.truncate(1024);
+    const MAX_DETAIL: usize = 1024;
+    if detail.len() > MAX_DETAIL {
+        let mut boundary = MAX_DETAIL;
+        while !detail.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        detail.truncate(boundary);
+    }
     detail
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded;
+
+    #[test]
+    fn bounded_failure_preserves_utf8() {
+        let detail = bounded("界".repeat(400));
+
+        assert_eq!(detail.len(), 1023);
+        assert_eq!(detail.chars().count(), 341);
+    }
 }

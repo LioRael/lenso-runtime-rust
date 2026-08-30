@@ -275,7 +275,7 @@ impl DylibGeneration {
         let worker = thread::Builder::new()
             .name("lenso-native-dylib".to_owned())
             .spawn(move || {
-                let loaded = match abi::LoadedDylib::load(&artifact, &capabilities, limits) {
+                let loaded = match abi::LoadedDylib::load(artifact, &capabilities, limits) {
                     Ok(loaded) => loaded,
                     Err(error) => {
                         let _ = ready.send(Err(error));
