@@ -11,7 +11,7 @@ description = "Generation-bound HTTP Execution Adapter for remote Lenso Plugins.
 futures.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
-lenso-runtime-codec = { version = "0.2.0", path = "../lenso-runtime-codec" }
+lenso-runtime-codec = { version = "0.2.1", path = "../lenso-runtime-codec" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
