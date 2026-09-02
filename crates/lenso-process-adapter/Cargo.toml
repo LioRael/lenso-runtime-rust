@@ -14,14 +14,14 @@ test-fixture = []
 futures.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
-lenso-process-sdk = { path = "../lenso-process-sdk" }
-lenso-runtime-codec = { path = "../lenso-runtime-codec" }
+lenso-process-sdk = { version = "0.1.0", path = "../lenso-process-sdk" }
+lenso-runtime-codec = { version = "0.2.1", path = "../lenso-runtime-codec" }
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
-lenso-process-sdk = { path = "../lenso-process-sdk" }
+lenso-process-sdk = { version = "0.1.0", path = "../lenso-process-sdk" }
 sha2.workspace = true
 tempfile = "3"
 
