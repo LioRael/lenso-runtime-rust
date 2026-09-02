@@ -1,4 +1,4 @@
-use std::{any::Any, process::Command, time::Duration};
+use std::{any::Any, process::Command, sync::OnceLock, time::Duration};
 
 use futures::FutureExt;
 use lenso_app_plan::{
@@ -27,32 +27,75 @@ use lenso_wasm_component_adapter::{EXECUTION_CLASS, WasmComponentAdapter, WasmCo
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+static RUST_GUEST: OnceLock<Vec<u8>> = OnceLock::new();
+static RUST_HOST_IMPORT_GUEST: OnceLock<Vec<u8>> = OnceLock::new();
+static RUST_STREAM_GUEST: OnceLock<Vec<u8>> = OnceLock::new();
+static FIXTURE_TARGET: OnceLock<tempfile::TempDir> = OnceLock::new();
+
+fn fixture_target() -> &'static std::path::Path {
+    FIXTURE_TARGET
+        .get_or_init(|| tempfile::tempdir().unwrap())
+        .path()
+}
+
+fn wasm_fixture(
+    slot: &'static OnceLock<Vec<u8>>,
+    manifest: &'static str,
+    artifact: &'static str,
+) -> &'static [u8] {
+    slot.get_or_init(|| {
+        let status = Command::new(env!("CARGO"))
+            .args([
+                "build",
+                "--locked",
+                "--release",
+                "--target",
+                "wasm32-unknown-unknown",
+                "--manifest-path",
+                manifest,
+                "--target-dir",
+            ])
+            .arg(fixture_target())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::read(
+            fixture_target()
+                .join("wasm32-unknown-unknown/release")
+                .join(artifact),
+        )
+        .unwrap()
+    })
+}
+
+fn rust_guest() -> &'static [u8] {
+    wasm_fixture(
+        &RUST_GUEST,
+        "tests/fixtures/rust-guest/Cargo.toml",
+        "lenso_wasm_test_guest.wasm",
+    )
+}
+
+fn rust_host_import_guest() -> &'static [u8] {
+    wasm_fixture(
+        &RUST_HOST_IMPORT_GUEST,
+        "tests/fixtures/rust-host-import-guest/Cargo.toml",
+        "lenso_wasm_host_import_test_guest.wasm",
+    )
+}
+
+fn rust_stream_guest() -> &'static [u8] {
+    wasm_fixture(
+        &RUST_STREAM_GUEST,
+        "tests/fixtures/rust-stream-guest/Cargo.toml",
+        "lenso_wasm_stream_test_guest.wasm",
+    )
+}
+
 #[test]
 fn source_descriptor_survives_component_encoding_without_execution() {
-    let fixture_target = tempfile::tempdir().unwrap();
-    let status = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "--locked",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--manifest-path",
-            "tests/fixtures/rust-guest/Cargo.toml",
-            "--target-dir",
-        ])
-        .arg(fixture_target.path())
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let core = std::fs::read(
-        fixture_target
-            .path()
-            .join("wasm32-unknown-unknown/release/lenso_wasm_test_guest.wasm"),
-    )
-    .unwrap();
     let component = wit_component::ComponentEncoder::default()
-        .module(&core)
+        .module(rust_guest())
         .unwrap()
         .validate(true)
         .encode()
@@ -67,27 +110,12 @@ fn source_descriptor_survives_component_encoding_without_execution() {
 #[test]
 fn source_bundle_builds_one_v2_entry_without_a_manifest_template() {
     let fixture_target = tempfile::tempdir().unwrap();
-    let status = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "--locked",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--manifest-path",
-            "tests/fixtures/rust-guest/Cargo.toml",
-            "--target-dir",
-        ])
-        .arg(fixture_target.path())
-        .status()
-        .unwrap();
-    assert!(status.success());
+    let wasm_module = fixture_target.path().join("lenso_wasm_test_guest.wasm");
+    std::fs::write(&wasm_module, rust_guest()).unwrap();
     let bundle_root = fixture_target.path().join("bundle");
     let built = build_source_plugin_bundle(&SourcePluginBuild {
         package_manifest: "tests/fixtures/rust-guest/Cargo.toml".into(),
-        wasm_module: fixture_target
-            .path()
-            .join("wasm32-unknown-unknown/release/lenso_wasm_test_guest.wasm"),
+        wasm_module,
         output: bundle_root.clone(),
     })
     .unwrap();
@@ -390,30 +418,8 @@ impl JsonCapabilityCodec for ChatCodec {
 
 #[test]
 fn real_component_import_invokes_only_the_plan_bound_host_capability() {
-    let fixture_target = tempfile::tempdir().unwrap();
-    let status = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "--locked",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--manifest-path",
-            "tests/fixtures/rust-host-import-guest/Cargo.toml",
-            "--target-dir",
-        ])
-        .arg(fixture_target.path())
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let core = std::fs::read(
-        fixture_target
-            .path()
-            .join("wasm32-unknown-unknown/release/lenso_wasm_host_import_test_guest.wasm"),
-    )
-    .unwrap();
     let component = wit_component::ComponentEncoder::default()
-        .module(&core)
+        .module(rust_host_import_guest())
         .unwrap()
         .validate(true)
         .encode()
@@ -460,30 +466,8 @@ fn real_component_import_invokes_only_the_plan_bound_host_capability() {
 
 #[test]
 fn real_component_stream_preserves_messages_half_close_terminal_and_open_error() {
-    let fixture_target = tempfile::tempdir().unwrap();
-    let status = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "--locked",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--manifest-path",
-            "tests/fixtures/rust-stream-guest/Cargo.toml",
-            "--target-dir",
-        ])
-        .arg(fixture_target.path())
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let core = std::fs::read(
-        fixture_target
-            .path()
-            .join("wasm32-unknown-unknown/release/lenso_wasm_stream_test_guest.wasm"),
-    )
-    .unwrap();
     let component = wit_component::ComponentEncoder::default()
-        .module(&core)
+        .module(rust_stream_guest())
         .unwrap()
         .validate(true)
         .encode()
@@ -537,30 +521,8 @@ fn real_component_stream_preserves_messages_half_close_terminal_and_open_error()
 
 #[test]
 fn real_component_runs_without_wasi_and_retires_on_trap_or_cancellation() {
-    let fixture_target = tempfile::tempdir().unwrap();
-    let status = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "--locked",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--manifest-path",
-            "tests/fixtures/rust-guest/Cargo.toml",
-            "--target-dir",
-        ])
-        .arg(fixture_target.path())
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let core = std::fs::read(
-        fixture_target
-            .path()
-            .join("wasm32-unknown-unknown/release/lenso_wasm_test_guest.wasm"),
-    )
-    .unwrap();
     let component = wit_component::ComponentEncoder::default()
-        .module(&core)
+        .module(rust_guest())
         .unwrap()
         .validate(true)
         .encode()
