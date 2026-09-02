@@ -1,6 +1,6 @@
 [package]
 name = "lenso-native-adapter"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -16,8 +16,8 @@ futures.workspace = true
 inventory.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
-lenso-native-adapter-macros = { version = "0.2.0", path = "../lenso-native-adapter-macros" }
-lenso-runtime-codec = { version = "0.2.0", path = "../lenso-runtime-codec" }
+lenso-native-adapter-macros = { version = "0.2.1", path = "../lenso-native-adapter-macros" }
+lenso-runtime-codec = { version = "0.2.1", path = "../lenso-runtime-codec" }
 serde_json.workspace = true
 
 [dev-dependencies]

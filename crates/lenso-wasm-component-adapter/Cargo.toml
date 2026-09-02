@@ -1,6 +1,6 @@
 [package]
 name = "lenso-wasm-component-adapter"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -11,13 +11,13 @@ description = "Wasmtime Component Model Execution Adapter for Lenso Plugin artif
 futures.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
-lenso-runtime-codec = { version = "0.2.0", path = "../lenso-runtime-codec" }
+lenso-runtime-codec = { version = "0.2.1", path = "../lenso-runtime-codec" }
 serde_json.workspace = true
 wasmtime = { version = "47.0.1", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 
 [dev-dependencies]
 hex.workspace = true
-lenso-plugin-bundle = { version = "0.2.0", path = "../lenso-plugin-bundle" }
+lenso-plugin-bundle = { version = "0.2.1", path = "../lenso-plugin-bundle" }
 lenso-runtime-conformance.workspace = true
 sha2.workspace = true
 tempfile = "3"

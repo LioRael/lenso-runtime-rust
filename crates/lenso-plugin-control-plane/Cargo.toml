@@ -1,6 +1,6 @@
 [package]
 name = "lenso-plugin-control-plane"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -10,15 +10,15 @@ description = "Dynamic Plugin admission, resolution, and App Generation supervis
 [dependencies]
 hex.workspace = true
 lenso-app-plan.workspace = true
-lenso-plugin-bundle = { version = "0.2.0", path = "../lenso-plugin-bundle" }
+lenso-plugin-bundle = { version = "0.2.1", path = "../lenso-plugin-bundle" }
 lenso-kernel.workspace = true
-lenso-dylib-adapter = { version = "0.2.0", path = "../lenso-dylib-adapter" }
+lenso-dylib-adapter = { version = "0.2.1", path = "../lenso-dylib-adapter" }
 lenso-process-adapter = { version = "0.1.0", path = "../lenso-process-adapter" }
-lenso-quickjs-adapter = { version = "0.2.0", path = "../lenso-quickjs-adapter" }
+lenso-quickjs-adapter = { version = "0.2.1", path = "../lenso-quickjs-adapter" }
 lenso-remote-adapter = { version = "0.1.0", path = "../lenso-remote-adapter" }
-lenso-runner = { version = "0.2.0", path = "../lenso-runner" }
-lenso-runtime-codec = { version = "0.2.0", path = "../lenso-runtime-codec" }
-lenso-wasm-component-adapter = { version = "0.2.0", path = "../lenso-wasm-component-adapter" }
+lenso-runner = { version = "0.2.1", path = "../lenso-runner" }
+lenso-runtime-codec = { version = "0.2.1", path = "../lenso-runtime-codec" }
+lenso-wasm-component-adapter = { version = "0.2.1", path = "../lenso-wasm-component-adapter" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,7 +28,7 @@ fs2 = "0.4"
 tokio.workspace = true
 
 [dev-dependencies]
-lenso-native-adapter = { version = "0.3.0", path = "../lenso-native-adapter" }
+lenso-native-adapter = { version = "0.3.1", path = "../lenso-native-adapter" }
 tempfile = "3"
 
 [lints]
