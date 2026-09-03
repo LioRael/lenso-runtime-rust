@@ -3,6 +3,8 @@
 # in through `publish = true` in their manifest.
 # Release PR branches therefore keep release-plz's default `release-plz-`
 # prefix so the release job can recognize their merged commits.
+# Recover an interrupted cohort through another reviewed `release-plz-*` PR;
+# dispatching the workflow on an unrelated main commit intentionally publishes nothing.
 # crates.io Trusted Publishing cannot create a package. Bootstrap a new crate
 # only after its release source passes `cargo publish --dry-run`; all later
 # versions remain on this Release PR and Trusted Publishing boundary.
