@@ -420,7 +420,7 @@ fn resolve_artifacts(
             .enumerate()
             .filter(|(_, item)| {
                 item.plugin_id == instance.package_id()
-                    && item.release_version == instance.package_revision()
+                    && item.artifact_digest == instance.package_revision()
                     && item.execution_class == instance.execution_class().as_str()
                     && item.target == distribution.lock.target
             })
@@ -500,8 +500,9 @@ fn resolve_artifacts(
     Ok(result)
 }
 
-fn artifact_identity(item: &BundleInventory) -> (&str, &str, u64, &str, &str, &str) {
+fn artifact_identity(item: &BundleInventory) -> (&str, &str, &str, u64, &str, &str, &str) {
     (
+        &item.release_version,
         &item.implementation_id,
         &item.artifact_digest,
         item.artifact_size,

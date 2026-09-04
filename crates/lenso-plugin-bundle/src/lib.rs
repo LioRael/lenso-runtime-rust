@@ -200,6 +200,8 @@ struct GuestRuntimeDescriptor {
     capabilities: Vec<GuestCapability>,
     #[serde(default)]
     required_capabilities: Vec<GuestRequirement>,
+    #[serde(default)]
+    configuration_schema: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -557,7 +559,6 @@ fn verify_v3_bundle_files(
         if implementation.runtime.runtime_package_revision() != artifact.digest {
             return invalid_manifest("implementation revision must equal its Artifact digest");
         }
-        let descriptor = manifest.contract.resolve(&implementation.runtime);
         if artifact.media_type == "application/wasm" {
             let bytes = read_verified_bundle_artifact(root, artifact, limits)?;
             let encoded = extract_plugin_descriptor(&bytes)?;
@@ -578,8 +579,6 @@ fn verify_v3_bundle_files(
                     "Wasm source descriptor does not match its V3 Contract and implementation",
                 );
             }
-        } else if descriptor.provided_capabilities().is_empty() {
-            return invalid_manifest("implementation Contract must provide a Capability");
         }
         artifact_digests.push(artifact.digest.clone());
     }
@@ -667,6 +666,9 @@ fn portable_plugin_descriptor(
         .with_runtime_package(plugin_id, artifact_digest)
         .with_entrypoint("plugin")
         .with_execution_class(ExecutionClassId::new(execution_class));
+    if let Some(configuration_schema) = runtime.configuration_schema {
+        descriptor = descriptor.with_configuration_schema(configuration_schema);
+    }
     for capability in runtime.capabilities {
         let mut endpoint = CapabilityEndpointPlan::new(
             capability.capability_id,
@@ -802,7 +804,6 @@ fn validate_v3_manifest(manifest: &PluginManifestV3) -> Result<(), BundleError> 
     if manifest.contract.plugin_id().is_empty()
         || semver::Version::parse(manifest.contract.release_version()).is_err()
         || manifest.contract.root_slot().is_empty()
-        || manifest.contract.provided_capabilities().is_empty()
         || manifest.implementations.is_empty()
     {
         return invalid_manifest("V3 Contract or implementation set is invalid");
@@ -1313,7 +1314,7 @@ mod tests {
 
     #[test]
     fn host_imports_v2_preserves_named_requirements_during_bundle_lowering() {
-        let encoded = br#"{"abi":"lenso.json-host-imports@2","capabilities":[],"required_capabilities":[{"requirement_id":"source","capability_id":"example.store@1","descriptor_version":"1.0.0","cardinality":"one"}]}"#;
+        let encoded = br#"{"abi":"lenso.json-host-imports@2","capabilities":[],"required_capabilities":[{"requirement_id":"source","capability_id":"example.store@1","descriptor_version":"1.0.0","cardinality":"one"}],"configuration_schema":{"type":"object","required":["prefix"]}}"#;
         let value = portable_plugin_descriptor(
             "example.copy",
             "1.0.0",
@@ -1329,6 +1330,10 @@ mod tests {
         assert_eq!(
             descriptor.required_capabilities()[0].requirement_id(),
             "source"
+        );
+        assert_eq!(
+            descriptor.configuration_schema().unwrap()["required"],
+            serde_json::json!(["prefix"])
         );
     }
 
@@ -1519,6 +1524,52 @@ root-slot = "tools"
                 PluginManifest::V3(value) => value.contract,
                 PluginManifest::V2(_) => panic!("expected V3 manifest"),
             }
+        );
+    }
+
+    #[test]
+    fn v3_release_accepts_a_providerless_lifecycle_implementation() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("plugin.js");
+        fs::write(&script, b"export default {};\n").unwrap();
+        let output = root.path().join("example.lifecycle.lenso-plugin");
+        let contract = PluginContract::new("example.lifecycle", "1.0.0", "workflows")
+            .with_authoring_version(2)
+            .with_requirement(
+                CapabilityRequirementPlan::one("example.store@1", "1.0.0")
+                    .with_requirement_id("store"),
+            );
+
+        let verified = build_source_plugin_release_bundle(&SourcePluginReleaseBuild {
+            contract,
+            implementations: vec![SourcePluginImplementation {
+                id: "bun".to_owned(),
+                host_targets: vec!["*".to_owned()],
+                artifact: script,
+                bundle_path: "implementations/bun/plugin.js".to_owned(),
+                media_type: "application/javascript".to_owned(),
+                target: "javascript-bun".to_owned(),
+                entrypoint: "plugin.js".to_owned(),
+                execution_class: ExecutionClassId::new("lenso.bun-process@1"),
+            }],
+            output: output.clone(),
+        })
+        .unwrap();
+
+        assert_eq!(verified, verify_bundle_directory(&output).unwrap());
+        let manifest = read_bundle_manifest(&output).unwrap();
+        let selected = resolve_implementation(
+            &manifest,
+            &ImplementationPolicy {
+                host_target: "test-host".to_owned(),
+                execution_classes: vec![ExecutionClassId::new("lenso.bun-process@1")],
+            },
+        )
+        .unwrap();
+        assert!(selected.descriptor.provided_capabilities().is_empty());
+        assert_eq!(
+            selected.descriptor.required_capabilities()[0].requirement_id(),
+            "store"
         );
     }
 }

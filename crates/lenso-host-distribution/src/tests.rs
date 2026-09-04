@@ -126,7 +126,7 @@ fn resolves_external_root_and_closes_instance_artifact() {
             PluginInstancePlan::new("plugin", "company.plugin")
                 .with_entrypoint("plugin.js")
                 .with_execution_class(ExecutionClassId::bun_child_process())
-                .with_package_revision("1.0.0"),
+                .with_package_revision(digest(artifact_bytes)),
         ],
         vec![],
     );
