@@ -406,13 +406,14 @@ fn guest_import_invokes_only_the_plan_bound_host_capability() {
     let source = br#"
         export function describe() {
           return JSON.stringify({
-            abi: "lenso.json-host-imports@1",
+            abi: "lenso.json-host-imports@2",
             capabilities: [{
               capability_id: "test.bridge@1",
               descriptor_version: "1.0.0",
               request_operations: ["bridge"]
             }],
             required_capabilities: [{
+              requirement_id: "~lenso.runtime.conformance.probe@1",
               capability_id: "lenso.runtime.conformance.probe@1",
               descriptor_version: "1.0.0",
               cardinality: "one"
@@ -482,13 +483,14 @@ fn guest_import_preserves_host_stream_messages_and_terminal_protocol() {
     let source = br#"
         export function describe() {
           return JSON.stringify({
-            abi: "lenso.json-host-imports@1",
+            abi: "lenso.json-host-imports@2",
             capabilities: [{
               capability_id: "test.bridge@1",
               descriptor_version: "1.0.0",
               request_operations: ["bridge"]
             }],
             required_capabilities: [{
+              requirement_id: "~lenso.runtime.conformance.stream-probe@1",
               capability_id: "lenso.runtime.conformance.stream-probe@1",
               descriptor_version: "1.0.0",
               cardinality: "one"

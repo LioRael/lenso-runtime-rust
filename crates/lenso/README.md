@@ -198,3 +198,34 @@ impl Worker {
 The field becomes active immediately before an optional `Lifecycle::activate` hook runs. Spawning
 before activation or during deactivation fails explicitly with `ManagedTasksError::Inactive`.
 Long-running work can obtain `tasks.cancellation()` and stop cooperatively with its generation.
+
+## Restartable Host stop
+
+With the `host` feature enabled, an application can stop accepting new routes,
+wait for outstanding route leases, and clean up its Generations while preserving
+durable restart intent:
+
+```rust,ignore
+let suspended = host.drain_and_suspend(Duration::from_secs(10)).await?;
+assert!(suspended.host_suspended);
+```
+
+The first request establishes one monotonic deadline for waiting and cleanup.
+Calls through cloned Controller clients join the same operation and receive the
+same result; dropping a waiter does not cancel stopping. The stop signal has its
+own bounded channel, ahead of queued inspection and mutation commands. An operation
+already executing in the Controller must return before that signal is handled;
+its elapsed time still consumes the original deadline.
+
+Every product operation must retain its route lease until its work completes.
+Suspension preserves the exact durable active Generation for `HostBuilder::recover`;
+`shutdown()` remains permanent retirement, and `suspend()` remains the immediate
+operation for a Host already known to have no outstanding leases.
+
+Cleanup failure, deadline expiry, or a failed durable write does not report clean
+suspension. The Controller exits instead of resuming a partially stopped graph.
+Deadline expiry is not process-termination proof: an external native execution
+owner must settle runtime and child processes before recovery. This API does not
+provide that OS owner or a TypeScript launcher. Blocking runtime code or synchronous
+Store I/O cannot be preempted by Tokio timers; the outer process owner must enforce
+the physical termination budget.

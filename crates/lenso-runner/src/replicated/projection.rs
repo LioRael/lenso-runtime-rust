@@ -82,14 +82,19 @@ fn clone_instance_identity(
     lane: &ExecutionLaneId,
     execution_class: ExecutionClassId,
 ) -> PluginInstancePlan {
-    PluginInstancePlan::new(source.instance_key(), source.package_id())
+    let proxy = PluginInstancePlan::new(source.instance_key(), source.package_id())
         .with_entrypoint(source.entrypoint())
         .with_configuration(source.configuration())
         .with_execution_class(execution_class)
         .with_execution_lane(lane.clone())
         .with_package_revision(source.package_revision())
         .with_restart_policy(source.restart_policy())
-        .with_criticality(source.criticality())
+        .with_criticality(source.criticality());
+    if source.authoring_version() == 2 {
+        proxy.with_authoring(source.authoring_version(), source.runtime_profile())
+    } else {
+        proxy
+    }
 }
 
 fn add_provider_proxy(
@@ -140,15 +145,76 @@ fn add_consumer_proxy(
     if instance
         .required_capabilities()
         .iter()
-        .all(|requirement| requirement.capability_id() != binding.capability_id())
+        .all(|requirement| requirement.requirement_id() != binding.requirement_id())
     {
         let requirement = source
             .required_capabilities()
             .iter()
-            .find(|requirement| requirement.capability_id() == binding.capability_id())
+            .find(|requirement| {
+                requirement.requirement_id() == binding.requirement_id()
+                    && requirement.capability_id() == binding.capability_id()
+            })
             .expect("validated consumer requirement should exist")
             .clone();
         *instance = instance.clone().with_requirement(requirement);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lenso_app_plan::{CapabilityEndpointPlan, CapabilityRequirementPlan};
+
+    use super::*;
+
+    #[test]
+    fn lane_projection_preserves_two_named_requirements_for_one_capability() {
+        let capability = "example.store@1";
+        let version = "1.0.0";
+        let endpoint =
+            || CapabilityEndpointPlan::new(capability, version, ["get"]).with_cross_lane_transfer();
+        let plan = AppComposition::new(
+            vec![
+                PluginInstancePlan::new("source-store", "example.store")
+                    .with_execution_lane(ExecutionLaneId::new("storage"))
+                    .with_capability(endpoint()),
+                PluginInstancePlan::new("destination-store", "example.store")
+                    .with_execution_lane(ExecutionLaneId::new("storage"))
+                    .with_capability(endpoint()),
+                PluginInstancePlan::new("copy", "example.copy")
+                    .with_authoring(2, lenso_app_plan::PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+                    .with_execution_lane(ExecutionLaneId::new("application"))
+                    .with_requirement(
+                        CapabilityRequirementPlan::one(capability, version)
+                            .with_requirement_id("source"),
+                    )
+                    .with_requirement(
+                        CapabilityRequirementPlan::one(capability, version)
+                            .with_requirement_id("destination"),
+                    ),
+            ],
+            vec![
+                CapabilityBinding::new("copy", capability, version, "source-store")
+                    .with_requirement_id("source"),
+                CapabilityBinding::new("copy", capability, version, "destination-store")
+                    .with_requirement_id("destination"),
+            ],
+        )
+        .with_execution_lanes(vec![
+            ExecutionLanePlan::new("storage"),
+            ExecutionLanePlan::new("application"),
+        ])
+        .resolve()
+        .unwrap();
+
+        let projected = project_lane(&plan, &ExecutionLaneId::new("storage")).unwrap();
+        let proxy = projected.plugin_instance("copy").unwrap();
+        let requirements = proxy
+            .required_capabilities()
+            .iter()
+            .map(lenso_app_plan::CapabilityRequirementPlan::requirement_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(requirements, ["destination", "source"]);
     }
 }
 
@@ -177,6 +243,12 @@ impl LaneProxyAdapter {
 }
 
 impl ExecutionAdapter for LaneProxyAdapter {
+    fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
+        (authoring_version == 1 && profile == LANE_PROXY_EXECUTION_CLASS)
+            || (authoring_version == 2
+                && profile == lenso_app_plan::PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+    }
+
     fn execution_class(&self) -> ExecutionClassId {
         ExecutionClassId::new(LANE_PROXY_EXECUTION_CLASS)
     }
@@ -292,6 +364,7 @@ impl ExecutionAdapter for LaneProxyAdapter {
                             binding.provider_instance(),
                             Rc::clone(endpoint),
                         )
+                        .with_requirement_id(binding.requirement_id())
                     })
             })
             .collect();
@@ -310,6 +383,7 @@ impl ExecutionAdapter for LaneProxyAdapter {
                             binding.provider_instance(),
                             Rc::clone(endpoint),
                         )
+                        .with_requirement_id(binding.requirement_id())
                     })
             })
             .collect();
@@ -328,6 +402,7 @@ impl ExecutionAdapter for LaneProxyAdapter {
                             binding.provider_instance(),
                             Rc::clone(endpoint),
                         )
+                        .with_requirement_id(binding.requirement_id())
                     })
             })
             .collect();

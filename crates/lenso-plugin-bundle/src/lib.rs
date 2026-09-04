@@ -12,6 +12,7 @@ use std::{
 
 use lenso_app_plan::{
     CapabilityEndpointPlan, CapabilityOperationKind, CapabilityRequirementPlan, ExecutionClassId,
+    PLUGIN_AUTHORING_V2_RUNTIME_PROFILE,
     authoring::{PluginContract, PluginDescriptor, PluginImplementation},
 };
 pub use model::*;
@@ -214,6 +215,8 @@ struct GuestCapability {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GuestRequirement {
+    #[serde(default)]
+    requirement_id: Option<String>,
     capability_id: String,
     descriptor_version: String,
     cardinality: String,
@@ -398,16 +401,22 @@ pub fn build_source_plugin_release_bundle(
             media_type: source.media_type.clone(),
             target: source.target.clone(),
         };
+        let runtime = PluginImplementation::new(
+            build.contract.plugin_id(),
+            digest,
+            &source.entrypoint,
+            source.execution_class.clone(),
+        );
+        let runtime = if build.contract.authoring_version() == 2 {
+            runtime.with_runtime_profile(PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        } else {
+            runtime
+        };
         implementations.push(PluginImplementationV3 {
             id: source.id.clone(),
             host_targets: source.host_targets.clone(),
             artifact,
-            runtime: PluginImplementation::new(
-                build.contract.plugin_id(),
-                digest,
-                &source.entrypoint,
-                source.execution_class.clone(),
-            ),
+            runtime,
         });
         files.push((source, bytes));
     }
@@ -648,6 +657,7 @@ fn portable_plugin_descriptor(
         "lenso.json-request@1",
         "lenso.json-interactions@1",
         "lenso.json-host-imports@1",
+        "lenso.json-host-imports@2",
     ]
     .contains(&runtime.abi.as_str())
     {
@@ -676,10 +686,19 @@ fn portable_plugin_descriptor(
         if requirement.cardinality != "one" {
             return invalid_manifest("unsupported guest Capability cardinality");
         }
-        descriptor = descriptor.with_requirement(CapabilityRequirementPlan::one(
-            requirement.capability_id,
-            requirement.descriptor_version,
-        ));
+        let requirement_id = match requirement.requirement_id {
+            Some(requirement_id) if !requirement_id.trim().is_empty() => requirement_id,
+            Some(_) => return invalid_manifest("guest requirement identity must not be empty"),
+            None if runtime.abi == "lenso.json-host-imports@1" => requirement.capability_id.clone(),
+            None => return invalid_manifest("guest requirement identity is missing"),
+        };
+        descriptor = descriptor.with_requirement(
+            CapabilityRequirementPlan::one(
+                requirement.capability_id,
+                requirement.descriptor_version,
+            )
+            .with_requirement_id(requirement_id),
+        );
     }
     serde_json::to_value(descriptor)
         .map_err(|error| BundleError::InvalidManifest(error.to_string()))
@@ -1293,6 +1312,27 @@ mod tests {
     }
 
     #[test]
+    fn host_imports_v2_preserves_named_requirements_during_bundle_lowering() {
+        let encoded = br#"{"abi":"lenso.json-host-imports@2","capabilities":[],"required_capabilities":[{"requirement_id":"source","capability_id":"example.store@1","descriptor_version":"1.0.0","cardinality":"one"}]}"#;
+        let value = portable_plugin_descriptor(
+            "example.copy",
+            "1.0.0",
+            "tools",
+            "sha256:artifact",
+            encoded,
+            "lenso.wasm-component@1",
+        )
+        .unwrap();
+        let descriptor: PluginDescriptor = serde_json::from_value(value).unwrap();
+
+        assert_eq!(descriptor.required_capabilities().len(), 1);
+        assert_eq!(
+            descriptor.required_capabilities()[0].requirement_id(),
+            "source"
+        );
+    }
+
+    #[test]
     fn strict_v2_manifest_rejects_duplicate_fields_and_path_escape() {
         assert!(
             SourceManifestDocument::parse(br#"{"schema_version":2,"schema_version":2}"#).is_err()
@@ -1416,9 +1456,13 @@ root-slot = "tools"
         )
         .unwrap();
         let output = root.path().join("example.multi.lenso-plugin");
-        let contract = PluginContract::new("example.multi", "1.0.0", "tools").with_capability(
-            CapabilityEndpointPlan::new("example.echo@1", "1.0.0", ["echo"]),
-        );
+        let contract = PluginContract::new("example.multi", "1.0.0", "tools")
+            .with_authoring_version(2)
+            .with_capability(CapabilityEndpointPlan::new(
+                "example.echo@1",
+                "1.0.0",
+                ["echo"],
+            ));
         build_source_plugin_release_bundle(&SourcePluginReleaseBuild {
             contract,
             implementations: vec![
@@ -1463,6 +1507,11 @@ root-slot = "tools"
         assert_eq!(
             selected.descriptor.execution_class().as_str(),
             "lenso.quickjs@1"
+        );
+        assert_eq!(selected.descriptor.authoring_version(), 2);
+        assert_eq!(
+            selected.descriptor.runtime_profile(),
+            PLUGIN_AUTHORING_V2_RUNTIME_PROFILE
         );
         assert_eq!(
             selected.descriptor.contract(),

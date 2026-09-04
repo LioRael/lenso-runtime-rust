@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 use crate::{
     AppGenerationTransitionSpec, CanonicalDocument, ControlPlaneError, ControlStateStore,
@@ -15,6 +16,7 @@ pub enum GenerationControllerEvent {
     Transitioned(DurableTransitionOutcome),
     Maintained(GenerationMaintenanceOutcome),
     Suspended,
+    SuspensionStarted,
     ShutdownStarted,
     Stopped,
 }
@@ -50,6 +52,8 @@ enum GenerationCommand<T: Clone + std::fmt::Debug> {
 pub struct GenerationControllerClient<T: Clone + std::fmt::Debug> {
     commands: mpsc::Sender<GenerationCommand<T>>,
     events: broadcast::Sender<GenerationControllerEvent>,
+    suspension: watch::Sender<Option<Instant>>,
+    suspension_result: watch::Receiver<Option<Result<DurableControlState, ControlPlaneError>>>,
 }
 
 impl<T: Clone + std::fmt::Debug> Clone for GenerationControllerClient<T> {
@@ -57,6 +61,8 @@ impl<T: Clone + std::fmt::Debug> Clone for GenerationControllerClient<T> {
         Self {
             commands: self.commands.clone(),
             events: self.events.clone(),
+            suspension: self.suspension.clone(),
+            suspension_result: self.suspension_result.clone(),
         }
     }
 }
@@ -145,6 +151,43 @@ impl<T: Clone + std::fmt::Debug> GenerationControllerClient<T> {
         response.await.map_err(|_| stopped())?
     }
 
+    /// Closes admission, waits for leases, stops execution, and persists restartable
+    /// intent within one monotonic budget. Repeated calls join the first operation;
+    /// dropping an awaiting caller does not cancel it. Errors do not prove process exit.
+    pub async fn drain_and_suspend(
+        &self,
+        timeout: Duration,
+    ) -> Result<DurableControlState, ControlPlaneError> {
+        let mut result = self.suspension_result.clone();
+        if let Some(outcome) = result.borrow().clone() {
+            return outcome;
+        }
+        if timeout.is_zero() {
+            return Err(ControlPlaneError::TransitionRejected {
+                detail: "Host suspension timeout must be nonzero".to_owned(),
+            });
+        }
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            ControlPlaneError::TransitionRejected {
+                detail: "Host suspension deadline exceeds monotonic clock range".to_owned(),
+            }
+        })?;
+        self.suspension.send_if_modified(|existing| {
+            if existing.is_some() {
+                false
+            } else {
+                *existing = Some(deadline);
+                true
+            }
+        });
+        loop {
+            if let Some(outcome) = result.borrow_and_update().clone() {
+                return outcome;
+            }
+            result.changed().await.map_err(|_| stopped())?;
+        }
+    }
+
     pub async fn shutdown(&self) -> Result<DurableControlState, ControlPlaneError> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -162,6 +205,8 @@ pub struct GenerationController<R: GenerationRuntime, S: ControlStateStore> {
     commands: mpsc::Receiver<GenerationCommand<R::Route>>,
     events: broadcast::Sender<GenerationControllerEvent>,
     maintenance_interval: Duration,
+    suspension: watch::Receiver<Option<Instant>>,
+    suspension_result: watch::Sender<Option<Result<DurableControlState, ControlPlaneError>>>,
 }
 
 impl<R: GenerationRuntime, S: ControlStateStore> GenerationController<R, S> {
@@ -176,14 +221,23 @@ impl<R: GenerationRuntime, S: ControlStateStore> GenerationController<R, S> {
         }
         let (commands, receiver) = mpsc::channel(64);
         let (events, _) = broadcast::channel(64);
+        let (suspension, suspension_requests) = watch::channel(None);
+        let (suspension_result, results) = watch::channel(None);
         Ok((
             Self {
                 supervisor,
                 commands: receiver,
                 events: events.clone(),
                 maintenance_interval,
+                suspension: suspension_requests,
+                suspension_result,
             },
-            GenerationControllerClient { commands, events },
+            GenerationControllerClient {
+                commands,
+                events,
+                suspension,
+                suspension_result: results,
+            },
         ))
     }
 
@@ -196,6 +250,24 @@ impl<R: GenerationRuntime, S: ControlStateStore> GenerationController<R, S> {
         loop {
             let step = tokio::select! {
                 biased;
+                Ok(()) = self.suspension.changed(), if !shutting_down => {
+                    let deadline = *self.suspension.borrow_and_update();
+                    if let Some(deadline) = deadline {
+                        self.commands.close();
+                        // Drop queued replies immediately. No further route or mutation
+                        // may be admitted while the preserved Generation drains.
+                        while self.commands.try_recv().is_ok() {}
+                        let _ = self.events.send(GenerationControllerEvent::SuspensionStarted);
+                        let outcome = self.supervisor.drain_and_suspend_host(deadline).await;
+                        if outcome.is_ok() {
+                            let _ = self.events.send(GenerationControllerEvent::Suspended);
+                        }
+                        self.suspension_result.send_replace(Some(outcome.clone()));
+                        let _ = self.events.send(GenerationControllerEvent::Stopped);
+                        return outcome;
+                    }
+                    Ok(None)
+                }
                 _ = interval.tick() => {
                     match now_unix_nanos() {
                         Ok(now) => match self.supervisor.maintain(now).await {

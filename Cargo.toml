@@ -5,6 +5,7 @@ members = [
     "crates/lenso-browser-driver",
     "crates/lenso-dylib-adapter",
     "crates/lenso-guest-sdk",
+    "crates/lenso-host-distribution",
     "crates/lenso-native-adapter",
     "crates/lenso-native-adapter-macros",
     "crates/lenso-plugin-bundle",
@@ -33,9 +34,9 @@ rust-version = "1.94"
 futures = "0.3"
 hex = "0.4"
 inventory = "0.3"
-lenso-app-plan = { version = "0.3.0" }
-lenso-kernel = { version = "0.2.0" }
-lenso-runtime-conformance = { version = "0.2.0" }
+lenso-app-plan = { version = "0.4.1" }
+lenso-kernel = { version = "0.3.2" }
+lenso-runtime-conformance = { version = "0.3.2" }
 lenso-plugin-authoring = { version = "0.1.1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

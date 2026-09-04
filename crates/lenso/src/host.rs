@@ -21,6 +21,8 @@ pub use lenso_plugin_control_plane::{
 
 const DEFAULT_MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 
+pub mod control;
+
 /// Configures one framework Host without assuming a product, Profile, or surface.
 #[derive(Debug)]
 pub struct HostBuilder<R, S> {
@@ -117,7 +119,8 @@ where
 
 /// A running Controller and its cloneable, fenced Host interface.
 ///
-/// The caller must finish with [`Self::suspend`] for process replacement or
+/// The caller must finish with [`Self::drain_and_suspend`] (or [`Self::suspend`]
+/// when already quiescent) for process replacement or
 /// [`Self::shutdown`] for terminal retirement.
 #[derive(Debug)]
 #[must_use = "a running Host must be suspended or shut down"]
@@ -166,6 +169,21 @@ where
     pub async fn suspend(&mut self) -> Result<DurableControlState, ControlPlaneError> {
         let expected = self.client.suspend().await?;
         self.join_consistent(expected).await
+    }
+
+    /// Fences new work and drains before a restartable suspension. The first
+    /// caller's budget is shared across lease drain and Generation cleanup.
+    /// This is not OS process-termination proof; an error requires outer ownership
+    /// handling before another Host can recover the durable state.
+    pub async fn drain_and_suspend(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<DurableControlState, ControlPlaneError> {
+        let result = self.client.drain_and_suspend(timeout).await;
+        match result {
+            Ok(expected) if self.task.is_some() => self.join_consistent(expected).await,
+            outcome => outcome,
+        }
     }
 
     /// Retires all Generations and stops this Host permanently.
@@ -252,6 +270,34 @@ mod tests {
 
                 let suspended = host.suspend().await.expect("Host should suspend");
                 assert!(suspended.host_suspended);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_suspend_rejects_zero_budget_and_replays_completed_handshake() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut host = HostBuilder::new(
+                    "example.app",
+                    EmptyRuntime,
+                    MemoryControlStateStore::default(),
+                )
+                .build()
+                .unwrap();
+                assert!(host.drain_and_suspend(Duration::ZERO).await.is_err());
+                assert!(!host.inspect().await.unwrap().host_suspended);
+                let state = host
+                    .drain_and_suspend(Duration::from_secs(1))
+                    .await
+                    .unwrap();
+                assert!(state.host_suspended);
+                assert_eq!(
+                    host.drain_and_suspend(Duration::from_secs(2))
+                        .await
+                        .unwrap(),
+                    state
+                );
             })
             .await;
     }

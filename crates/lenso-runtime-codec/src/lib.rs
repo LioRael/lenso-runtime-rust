@@ -725,6 +725,8 @@ pub const JSON_INTERACTIONS_ABI_V1: &str = "lenso.json-interactions@1";
 
 /// Stable Request, Stream, and Plan-bound host Capability import ABI.
 pub const JSON_HOST_IMPORTS_ABI_V1: &str = "lenso.json-host-imports@1";
+/// Stable Request, Stream, and named Plan-bound Host Capability import ABI.
+pub const JSON_HOST_IMPORTS_ABI_V2: &str = "lenso.json-host-imports@2";
 
 /// Exact guest declaration returned before an Adapter opens readiness.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -751,6 +753,7 @@ pub struct JsonCapabilityDescriptor {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JsonRequiredCapabilityDescriptor {
+    pub requirement_id: String,
     pub capability_id: String,
     pub descriptor_version: String,
     pub cardinality: CapabilityCardinality,
@@ -801,6 +804,7 @@ pub fn expected_json_plugin_descriptor(
         .required_capabilities()
         .iter()
         .map(|requirement| JsonRequiredCapabilityDescriptor {
+            requirement_id: requirement.requirement_id().to_owned(),
             capability_id: requirement.capability_id().to_owned(),
             descriptor_version: requirement.descriptor_version().to_owned(),
             cardinality: requirement.cardinality(),
@@ -809,7 +813,7 @@ pub fn expected_json_plugin_descriptor(
     sort_required_capabilities(&mut required_capabilities);
     Ok(JsonPluginDescriptor {
         abi: if !required_capabilities.is_empty() {
-            JSON_HOST_IMPORTS_ABI_V1
+            JSON_HOST_IMPORTS_ABI_V2
         } else if capabilities
             .iter()
             .any(|capability| !capability.stream_operations.is_empty())
@@ -851,11 +855,13 @@ pub fn validate_json_plugin_descriptor(
 fn sort_required_capabilities(requirements: &mut [JsonRequiredCapabilityDescriptor]) {
     requirements.sort_by(|left, right| {
         (
+            &left.requirement_id,
             &left.capability_id,
             &left.descriptor_version,
             cardinality_order(left.cardinality),
         )
             .cmp(&(
+                &right.requirement_id,
                 &right.capability_id,
                 &right.descriptor_version,
                 cardinality_order(right.cardinality),
@@ -909,6 +915,7 @@ pub enum JsonStreamFrame {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct JsonHostBindingDescriptor {
     pub binding_id: u32,
+    pub requirement_id: String,
     pub provider_instance: String,
     pub capability_id: String,
     pub descriptor_version: String,
@@ -952,10 +959,16 @@ impl JsonHostImports {
         let mut by_capability = BTreeMap::new();
         for codec in codecs {
             let capability = codec.capability_id().to_owned();
-            if by_capability.insert(capability.clone(), codec).is_some() {
-                return Err(RuntimeFailure::InvalidResolvedPlan {
-                    detail: format!("duplicate guest import codec for Capability `{capability}`"),
-                });
+            if let Some(existing) = by_capability.get(&capability) {
+                if !Rc::ptr_eq(existing, &codec) {
+                    return Err(RuntimeFailure::InvalidResolvedPlan {
+                        detail: format!(
+                            "conflicting guest import codecs for Capability `{capability}`"
+                        ),
+                    });
+                }
+            } else {
+                by_capability.insert(capability, codec);
             }
         }
         Ok(Self {
@@ -996,6 +1009,7 @@ impl JsonHostImports {
             bindings.push(JsonHostBinding {
                 descriptor: JsonHostBindingDescriptor {
                     binding_id,
+                    requirement_id: dependency.requirement_id().to_owned(),
                     provider_instance: dependency.provider_instance().to_owned(),
                     capability_id: dependency.capability_id().to_owned(),
                     descriptor_version: codec.descriptor_version().to_owned(),
@@ -1073,7 +1087,7 @@ impl JsonHostImports {
         Box::pin(async move {
             if self.streams.borrow().len() >= self.max_streams {
                 return Err(RuntimeFailure::ResourceExhausted {
-                    capability: "lenso.json-host-imports@1",
+                    capability: JSON_HOST_IMPORTS_ABI_V2,
                     operation: "stream-open".to_owned(),
                 });
             }
@@ -1095,7 +1109,7 @@ impl JsonHostImports {
                         stream_id
                             .checked_add(1)
                             .ok_or(RuntimeFailure::ResourceExhausted {
-                                capability: "lenso.json-host-imports@1",
+                                capability: JSON_HOST_IMPORTS_ABI_V2,
                                 operation: "stream-open".to_owned(),
                             })?;
                     self.next_stream_id.set(next);
@@ -1171,7 +1185,7 @@ impl JsonHostImports {
             .get(binding_id as usize)
             .cloned()
             .ok_or(RuntimeFailure::ProtocolViolation {
-                capability: JSON_HOST_IMPORTS_ABI_V1,
+                capability: JSON_HOST_IMPORTS_ABI_V2,
             })
     }
 
@@ -1205,7 +1219,7 @@ fn validate_host_binding(
 
 fn unknown_host_stream() -> RuntimeFailure {
     RuntimeFailure::ProtocolViolation {
-        capability: "lenso.json-host-imports@1",
+        capability: JSON_HOST_IMPORTS_ABI_V2,
     }
 }
 
@@ -1605,18 +1619,24 @@ pub fn prepare_request_app(
         let request_endpoint = endpoints.get(&key);
         let stream_endpoint = stream_endpoints.get(&key);
         if let Some(endpoint) = request_endpoint {
-            bindings.push(PreparedBinding::new(
-                binding.consumer_instance(),
-                binding.provider_instance(),
-                endpoint.clone(),
-            ));
+            bindings.push(
+                PreparedBinding::new(
+                    binding.consumer_instance(),
+                    binding.provider_instance(),
+                    endpoint.clone(),
+                )
+                .with_requirement_id(binding.requirement_id()),
+            );
         }
         if let Some(endpoint) = stream_endpoint {
-            stream_bindings.push(PreparedStreamBinding::new(
-                binding.consumer_instance(),
-                binding.provider_instance(),
-                endpoint.clone(),
-            ));
+            stream_bindings.push(
+                PreparedStreamBinding::new(
+                    binding.consumer_instance(),
+                    binding.provider_instance(),
+                    endpoint.clone(),
+                )
+                .with_requirement_id(binding.requirement_id()),
+            );
         }
         if request_endpoint.is_none()
             && stream_endpoint.is_none()

@@ -487,11 +487,14 @@ fn prepare_bindings(
                         binding.provider_instance()
                     ),
                 })?;
-            bindings.push(PreparedBinding::new(
-                binding.consumer_instance(),
-                binding.provider_instance(),
-                endpoint,
-            ));
+            bindings.push(
+                PreparedBinding::new(
+                    binding.consumer_instance(),
+                    binding.provider_instance(),
+                    endpoint,
+                )
+                .with_requirement_id(binding.requirement_id()),
+            );
         }
         if !descriptor.stream_operations().is_empty() {
             let endpoint = instances
@@ -511,11 +514,14 @@ fn prepare_bindings(
                         binding.provider_instance()
                     ),
                 })?;
-            stream_bindings.push(PreparedStreamBinding::new(
-                binding.consumer_instance(),
-                binding.provider_instance(),
-                endpoint,
-            ));
+            stream_bindings.push(
+                PreparedStreamBinding::new(
+                    binding.consumer_instance(),
+                    binding.provider_instance(),
+                    endpoint,
+                )
+                .with_requirement_id(binding.requirement_id()),
+            );
         }
         if !descriptor.event_operations().is_empty() {
             let endpoint = instances
@@ -535,11 +541,14 @@ fn prepare_bindings(
                         binding.provider_instance()
                     ),
                 })?;
-            event_bindings.push(PreparedEventBinding::new(
-                binding.consumer_instance(),
-                binding.provider_instance(),
-                endpoint,
-            ));
+            event_bindings.push(
+                PreparedEventBinding::new(
+                    binding.consumer_instance(),
+                    binding.provider_instance(),
+                    endpoint,
+                )
+                .with_requirement_id(binding.requirement_id()),
+            );
         }
     }
     Ok((bindings, stream_bindings, event_bindings))

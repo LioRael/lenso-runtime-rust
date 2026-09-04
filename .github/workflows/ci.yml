@@ -23,12 +23,20 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      - run: cargo clippy --locked --workspace --all-targets --features lenso/host,lenso-runner/process-owner -- -D warnings
+      - run: cargo test --locked --workspace --features lenso/host,lenso-runner/process-owner
       - name: Check browser Driver
         run: cargo check --locked -p lenso-browser-driver --all-targets --target wasm32-unknown-unknown
       - name: Check WASIp2 Driver
         run: cargo check --locked -p lenso-wasip2-driver --all-targets --target wasm32-wasip2
+
+  macos-process-owner:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p lenso-runner --features process-owner --test process_owner
 
   browser-host:
     runs-on: ubuntu-latest

@@ -1,6 +1,6 @@
 [package]
 name = "lenso-plugin-control-plane"
-version = "0.4.0"
+version = "0.4.1"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -16,7 +16,7 @@ lenso-dylib-adapter = { version = "0.2.1", path = "../lenso-dylib-adapter" }
 lenso-process-adapter = { version = "0.1.0", path = "../lenso-process-adapter" }
 lenso-quickjs-adapter = { version = "0.2.1", path = "../lenso-quickjs-adapter" }
 lenso-remote-adapter = { version = "0.1.0", path = "../lenso-remote-adapter" }
-lenso-runner = { version = "0.2.1", path = "../lenso-runner" }
+lenso-runner = { version = "0.2.2", path = "../lenso-runner" }
 lenso-runtime-codec = { version = "0.2.1", path = "../lenso-runtime-codec" }
 lenso-wasm-component-adapter = { version = "0.2.1", path = "../lenso-wasm-component-adapter" }
 reqwest.workspace = true

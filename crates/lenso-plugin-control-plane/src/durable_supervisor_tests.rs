@@ -13,6 +13,9 @@ use crate::{
     AppGenerationSpec, EffectiveHostGrantSet, ReplacementMode, ResolvedArtifactSet, RolloutPolicy,
 };
 
+#[path = "host_suspension_tests.rs"]
+mod suspension;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RuntimeEvent {
     Staged(String),
@@ -23,6 +26,7 @@ enum RuntimeEvent {
 struct RecordingRuntime {
     events: Rc<RefCell<Vec<RuntimeEvent>>>,
     shutdown_fails: bool,
+    shutdown_delay: std::time::Duration,
 }
 
 impl RecordingRuntime {
@@ -32,6 +36,7 @@ impl RecordingRuntime {
             Self {
                 events: Rc::clone(&events),
                 shutdown_fails,
+                shutdown_delay: std::time::Duration::ZERO,
             },
             events,
         )
@@ -63,7 +68,11 @@ impl GenerationRuntime for RecordingRuntime {
             .borrow_mut()
             .push(RuntimeEvent::Shutdown(handle, timeout));
         let fails = self.shutdown_fails;
+        let delay = self.shutdown_delay;
         async move {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
             if fails {
                 Err(ControlPlaneError::HostFailure {
                     detail: "injected shutdown failure".to_owned(),
