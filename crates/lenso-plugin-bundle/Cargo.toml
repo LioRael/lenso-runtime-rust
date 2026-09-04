@@ -1,6 +1,6 @@
 [package]
 name = "lenso-plugin-bundle"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -20,7 +20,7 @@ wit-component = "0.252"
 wasmparser = { version = "0.252", features = ["component-model"] }
 
 [dev-dependencies]
-lenso-guest-sdk = { version = "0.2.0", path = "../lenso-guest-sdk" }
+lenso-guest-sdk = { version = "0.3.0", path = "../lenso-guest-sdk" }
 wasm-encoder = "0.252"
 
 [lints]

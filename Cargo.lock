@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-browser-driver"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-dylib-adapter"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "hex",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-guest-sdk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1100,7 +1100,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-native-adapter"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "futures",
  "inventory",
@@ -1133,7 +1133,7 @@ checksum = "9ac3a849f34b5aac0470f5bfdc0e3a9dcd4804d495754001fe6b847b4cb67120"
 
 [[package]]
 name = "lenso-plugin-bundle"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "hex",
  "lenso-app-plan",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-plugin-sdk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "lenso-guest-sdk",
  "lenso-plugin-sdk-macros",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-process-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "hex",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-quickjs-adapter"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "hex",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-remote-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "hex",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-runtime-codec"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "futures",
  "hex",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-wasm-component-adapter"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "hex",
