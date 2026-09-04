@@ -1,4 +1,5 @@
 use std::{
+    any::{Any, TypeId},
     cell::{Cell, OnceCell},
     fmt,
     rc::Rc,
@@ -78,7 +79,51 @@ impl ConstructionContext {
 
 /// Future returned by one generated complete-object constructor.
 pub type ConstructionFuture<T> =
-    futures::future::LocalBoxFuture<'static, Result<T, RuntimeFailure>>;
+    futures::future::LocalBoxFuture<'static, Result<Rc<T>, RuntimeFailure>>;
+
+/// Type-erased future contributed by generated constructor glue.
+pub type ErasedConstructionFuture =
+    futures::future::LocalBoxFuture<'static, Result<Rc<dyn Any>, RuntimeFailure>>;
+/// Type-erased stop hook contributed by generated Plugin glue.
+pub type ErasedStop = fn(Rc<dyn Any>, LifecycleContext) -> PluginFuture;
+
+/// One link-time constructor and stop pair for a complete-object Plugin type.
+#[derive(Clone, Copy)]
+pub struct LinkedPluginConstruction {
+    plugin_type: fn() -> TypeId,
+    custom: bool,
+    construct: fn(ConstructionContext) -> ErasedConstructionFuture,
+    stop: Option<ErasedStop>,
+}
+
+impl LinkedPluginConstruction {
+    /// Creates generated link-time construction metadata.
+    #[doc(hidden)]
+    pub const fn new(
+        plugin_type: fn() -> TypeId,
+        custom: bool,
+        construct: fn(ConstructionContext) -> ErasedConstructionFuture,
+        stop: Option<ErasedStop>,
+    ) -> Self {
+        Self {
+            plugin_type,
+            custom,
+            construct,
+            stop,
+        }
+    }
+}
+
+impl fmt::Debug for LinkedPluginConstruction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LinkedPluginConstruction")
+            .field("custom", &self.custom)
+            .finish_non_exhaustive()
+    }
+}
+
+inventory::collect!(LinkedPluginConstruction);
 
 type Constructor<T> = Rc<dyn Fn(ConstructionContext) -> ConstructionFuture<T>>;
 type Stopper<T> = Rc<dyn Fn(Rc<T>, LifecycleContext) -> PluginFuture>;
@@ -96,9 +141,19 @@ impl<T> PluginObject<T> {
         }
     }
 
-    fn install(&self, value: T) -> Result<(), RuntimeFailure> {
+    /// Creates a provider handle around an already constructed legacy object.
+    pub fn from_value(value: Rc<T>) -> Self {
+        let object = Self::empty();
+        assert!(
+            object.value.set(value).is_ok(),
+            "a new Plugin object cell is empty"
+        );
+        object
+    }
+
+    fn install(&self, value: Rc<T>) -> Result<(), RuntimeFailure> {
         self.value
-            .set(Rc::new(value))
+            .set(value)
             .map_err(|_| RuntimeFailure::InvalidResolvedPlan {
                 detail: "Plugin object was constructed more than once".to_owned(),
             })
@@ -155,6 +210,66 @@ impl<T> CompleteObjectLifecycle<T> {
             construction_started: Cell::new(false),
             stop_attempted: Cell::new(false),
         }
+    }
+
+    /// Selects the unique generated constructor for this exact Plugin type.
+    pub fn linked(
+        object: PluginObject<T>,
+        configuration: impl Into<String>,
+    ) -> Result<Self, RuntimeFailure>
+    where
+        T: Any,
+    {
+        let mut defaults = Vec::new();
+        let mut customs = Vec::new();
+        for linked in inventory::iter::<LinkedPluginConstruction> {
+            if (linked.plugin_type)() == TypeId::of::<T>() {
+                if linked.custom {
+                    customs.push(linked);
+                } else {
+                    defaults.push(linked);
+                }
+            }
+        }
+        let selected = match (customs.as_slice(), defaults.as_slice()) {
+            ([custom], _) => *custom,
+            ([], [default]) => *default,
+            ([], []) => {
+                return Err(RuntimeFailure::InvalidResolvedPlan {
+                    detail: "Plugin type has no linked constructor".to_owned(),
+                });
+            }
+            (customs, _) if customs.len() > 1 => {
+                return Err(RuntimeFailure::InvalidResolvedPlan {
+                    detail: "Plugin type has multiple custom constructors".to_owned(),
+                });
+            }
+            _ => {
+                return Err(RuntimeFailure::InvalidResolvedPlan {
+                    detail: "Plugin type has multiple default constructors".to_owned(),
+                });
+            }
+        };
+        let constructor = selected.construct;
+        let lifecycle = Self::new(object, configuration, move |context| {
+            let erased = constructor(context);
+            Box::pin(async move {
+                erased
+                    .await?
+                    .downcast::<T>()
+                    .map_err(|_| RuntimeFailure::InvalidResolvedPlan {
+                        detail: "linked Plugin constructor returned the wrong type".to_owned(),
+                    })
+            })
+        });
+        Ok(if let Some(stop) = selected.stop {
+            lifecycle.with_stop(move |object, context| {
+                let object: Rc<dyn Any> = object;
+                stop(object, context)
+            })
+        } else {
+            lifecycle
+        })
     }
 
     /// Adds the generated stop hook for the same complete object.

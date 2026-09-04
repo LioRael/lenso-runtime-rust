@@ -1,10 +1,15 @@
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use lenso_app_plan::{PluginInstancePlan, ResolvedAppPlan, RestartPolicy};
 use lenso_kernel::{DeterministicDriver, Kernel, RuntimeDriver, RuntimeFailure, ShutdownOutcome};
 use lenso_native_adapter::{
-    CompleteObjectLifecycle, InstanceResources, NativePluginFactory, NativePluginFactoryContext,
-    NativePluginInstance, NativePluginRegistry, PluginObject,
+    CompleteObjectLifecycle, InstanceResources, LifecycleContext, NativePluginFactory,
+    NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry, PluginObject,
 };
 use lenso_runtime_codec::InstanceResourceCatalog;
 
@@ -266,9 +271,9 @@ impl NativePluginFactory for CompleteObjectFactory {
             move |context| {
                 *constructed.borrow_mut() += 1;
                 Box::pin(async move {
-                    Ok(NonClonePlugin {
+                    Ok(Rc::new(NonClonePlugin {
                         configuration: context.configuration().to_owned(),
-                    })
+                    }))
                 })
             },
         )
@@ -323,4 +328,109 @@ fn complete_object_profile_constructs_once_without_clone_and_stops_once() {
         ShutdownOutcome::Clean
     );
     assert_eq!(*stopped.borrow(), 1);
+}
+
+#[derive(Debug, serde::Deserialize, lenso_native_adapter::PluginConfig)]
+struct MacroConfig {
+    value: String,
+}
+
+#[derive(Debug)]
+struct NonDefaultResource(String);
+
+#[lenso_native_adapter::plugin]
+#[derive(Debug)]
+struct MacroConstructedPlugin {
+    #[config]
+    config: MacroConfig,
+    resource: NonDefaultResource,
+}
+
+static MACRO_STOPPED: AtomicUsize = AtomicUsize::new(0);
+
+#[lenso_native_adapter::plugin_impl]
+impl MacroConstructedPlugin {
+    #[create]
+    async fn create(
+        config: MacroConfig,
+        #[lifecycle] lifecycle: LifecycleContext,
+    ) -> Result<Self, &'static str> {
+        std::future::ready(()).await;
+        if lifecycle.cancellation().is_cancelled() {
+            return Err("construction was cancelled");
+        }
+        let resource = NonDefaultResource(config.value.clone());
+        Ok(Self { config, resource })
+    }
+
+    #[stop]
+    fn stop(&self, #[lifecycle] lifecycle: LifecycleContext) -> Result<(), &'static str> {
+        let remaining_budget = lifecycle.remaining_budget();
+        drop(lifecycle);
+        if remaining_budget.is_none() {
+            return Err("stop had no Host budget");
+        }
+        assert_eq!(self.config.value, self.resource.0);
+        MACRO_STOPPED.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct MacroFactory {
+    object: PluginObject<MacroConstructedPlugin>,
+}
+
+impl NativePluginFactory for MacroFactory {
+    fn package_id(&self) -> &'static str {
+        "test.macro-complete-object"
+    }
+
+    fn runtime_profile(&self) -> &'static str {
+        "lenso.native-authoring@2"
+    }
+
+    fn instantiate(
+        &self,
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        let lifecycle =
+            CompleteObjectLifecycle::linked(self.object.clone(), context.configuration())?;
+        Ok(NativePluginInstance::with_lifecycle(Vec::new(), lifecycle))
+    }
+}
+
+#[test]
+fn plugin_impl_constructs_a_non_default_non_clone_complete_object() {
+    MACRO_STOPPED.store(0, Ordering::SeqCst);
+    let object = PluginObject::empty();
+    let plan = ResolvedAppPlan::new(
+        vec![
+            PluginInstancePlan::new("macro", "test.macro-complete-object")
+                .with_authoring(2, "lenso.native-authoring@2")
+                .with_configuration(r#"{"value":"owned"}"#),
+        ],
+        vec![],
+    );
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativePluginRegistry::new().with_factory(MacroFactory {
+                object: object.clone(),
+            }),
+        ))
+        .expect("generated custom constructor should create the complete object");
+
+    let plugin = object
+        .get()
+        .expect("generated constructor should install object");
+    assert_eq!(plugin.config.value, "owned");
+    assert_eq!(plugin.resource.0, "owned");
+    assert_eq!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        ShutdownOutcome::Clean
+    );
+    assert_eq!(MACRO_STOPPED.load(Ordering::SeqCst), 1);
 }

@@ -15,7 +15,7 @@ use lenso_app_plan::{
 };
 use lenso_kernel::{ActivateContext, DeactivateContext, PrepareContext};
 pub use lenso_kernel::{CancellationToken, RuntimeFailure};
-pub use lenso_native_adapter_macros::{PluginConfig, plugin, provides};
+pub use lenso_native_adapter_macros::{PluginConfig, plugin, plugin_impl, provides};
 pub use lenso_runtime_codec::InstanceResources;
 pub use managed_tasks::{ManagedTasks, ManagedTasksError};
 
@@ -42,6 +42,7 @@ pub trait Lifecycle: Clone + 'static {
 /// Implementation details referenced by generated Plugin glue.
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::authoring::{ErasedConstructionFuture, LinkedPluginConstruction};
     pub use crate::{
         __inventory, CompleteObjectLifecycle, ConstructionContext, Lifecycle, LifecycleContext,
         LinkedNativePluginFactory, NativePluginFactory, NativePluginFactoryContext,
@@ -53,6 +54,9 @@ pub mod __private {
         ActivateContext, DeactivateContext, InvocationContext, NativeEventEndpoint,
         NativeRequestEndpoint, NativeRequestFuture, NativeStreamEndpoint, NativeStreamSession,
         PluginFuture, PluginLifecycle, PrepareContext,
+    };
+    pub use lenso_plugin_authoring::{
+        BoundCapabilityClient, CapabilityClient, CapabilityClientMany,
     };
     pub use lenso_runtime_codec::InstanceResources;
     pub use serde_json;
