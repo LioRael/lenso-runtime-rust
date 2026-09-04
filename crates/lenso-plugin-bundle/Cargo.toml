@@ -20,7 +20,6 @@ wit-component = "0.252"
 wasmparser = { version = "0.252", features = ["component-model"] }
 
 [dev-dependencies]
-lenso-guest-sdk = { version = "0.3.0", path = "../lenso-guest-sdk" }
 wasm-encoder = "0.252"
 
 [lints]
