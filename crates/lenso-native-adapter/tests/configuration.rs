@@ -1,10 +1,10 @@
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use lenso_app_plan::{PluginInstancePlan, ResolvedAppPlan, RestartPolicy};
-use lenso_kernel::{DeterministicDriver, Kernel, RuntimeDriver, RuntimeFailure};
+use lenso_kernel::{DeterministicDriver, Kernel, RuntimeDriver, RuntimeFailure, ShutdownOutcome};
 use lenso_native_adapter::{
-    InstanceResources, NativePluginFactory, NativePluginFactoryContext, NativePluginInstance,
-    NativePluginRegistry,
+    CompleteObjectLifecycle, InstanceResources, NativePluginFactory, NativePluginFactoryContext,
+    NativePluginInstance, NativePluginRegistry, PluginObject,
 };
 use lenso_runtime_codec::InstanceResourceCatalog;
 
@@ -231,4 +231,96 @@ fn native_factory_receives_the_generation_resource_snapshot() {
         .expect("the native App should start with snapshotted resources");
 
     assert_eq!(*observed.borrow(), vec!["generation one".to_owned()]);
+}
+
+#[derive(Debug)]
+struct NonClonePlugin {
+    configuration: String,
+}
+
+#[derive(Debug)]
+struct CompleteObjectFactory {
+    object: PluginObject<NonClonePlugin>,
+    constructed: Rc<RefCell<usize>>,
+    stopped: Rc<RefCell<usize>>,
+}
+
+impl NativePluginFactory for CompleteObjectFactory {
+    fn package_id(&self) -> &'static str {
+        "test.complete-object"
+    }
+
+    fn runtime_profile(&self) -> &'static str {
+        "lenso.native-authoring@2"
+    }
+
+    fn instantiate(
+        &self,
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        let constructed = self.constructed.clone();
+        let stopped = self.stopped.clone();
+        let lifecycle = CompleteObjectLifecycle::new(
+            self.object.clone(),
+            context.configuration(),
+            move |context| {
+                *constructed.borrow_mut() += 1;
+                Box::pin(async move {
+                    Ok(NonClonePlugin {
+                        configuration: context.configuration().to_owned(),
+                    })
+                })
+            },
+        )
+        .with_stop(move |object, lifecycle| {
+            *stopped.borrow_mut() += 1;
+            Box::pin(async move {
+                assert_eq!(object.configuration, r#"{"mode":"v2"}"#);
+                assert!(lifecycle.remaining_budget().is_some());
+                Ok(())
+            })
+        });
+        Ok(NativePluginInstance::with_lifecycle(Vec::new(), lifecycle))
+    }
+}
+
+#[test]
+fn complete_object_profile_constructs_once_without_clone_and_stops_once() {
+    let object = PluginObject::empty();
+    let constructed = Rc::new(RefCell::new(0));
+    let stopped = Rc::new(RefCell::new(0));
+    let plan = ResolvedAppPlan::new(
+        vec![
+            PluginInstancePlan::new("complete", "test.complete-object")
+                .with_authoring(2, "lenso.native-authoring@2")
+                .with_configuration(r#"{"mode":"v2"}"#),
+        ],
+        vec![],
+    );
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativePluginRegistry::new().with_factory(CompleteObjectFactory {
+                object: object.clone(),
+                constructed: constructed.clone(),
+                stopped: stopped.clone(),
+            }),
+        ))
+        .expect("authoring v2 complete object should construct");
+
+    let first = object
+        .get()
+        .expect("constructed object should be installed");
+    let second = object.get().expect("all providers should share the object");
+    assert!(Rc::ptr_eq(&first, &second));
+    assert_eq!(first.configuration, r#"{"mode":"v2"}"#);
+    assert_eq!(*constructed.borrow(), 1);
+
+    assert_eq!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        ShutdownOutcome::Clean
+    );
+    assert_eq!(*stopped.borrow(), 1);
 }

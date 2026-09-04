@@ -34,6 +34,8 @@ pub use abi::{
 
 /// Stable open execution-class identity.
 pub const EXECUTION_CLASS: &str = "lenso.native-dylib@1";
+/// Exact runtime profile implemented by this Adapter release.
+pub const RUNTIME_PROFILE: &str = "lenso.native-dylib@1";
 
 /// Host-owned trust and platform-signature decision for exact dylib bytes.
 pub trait DylibVerifier: std::fmt::Debug + 'static {
@@ -148,6 +150,12 @@ impl DylibAdapter {
         &self,
         instance: &PluginInstancePlan,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.runtime_profile() != RUNTIME_PROFILE {
+            return invalid(format!(
+                "Dylib Adapter does not support runtime profile `{}`",
+                instance.runtime_profile()
+            ));
+        }
         let artifact = self.artifacts.require(instance.instance_key())?;
         self.verifier.verify(artifact)?;
         validate_content_addressed_path(artifact)?;

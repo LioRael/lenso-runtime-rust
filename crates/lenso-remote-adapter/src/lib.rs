@@ -36,6 +36,8 @@ use serde_json::{Value, value::RawValue};
 
 /// Stable remote HTTP execution class.
 pub const EXECUTION_CLASS: &str = "lenso.remote@1";
+/// Exact runtime profile implemented by this Adapter release.
+pub const RUNTIME_PROFILE: &str = "lenso.remote@1";
 /// Exact wire protocol spoken by Host and remote deployment.
 pub const PROTOCOL_VERSION: &str = "lenso.remote-http-json@1";
 
@@ -123,6 +125,12 @@ impl RemoteAdapter {
         &self,
         instance: &PluginInstancePlan,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.runtime_profile() != RUNTIME_PROFILE {
+            return invalid(format!(
+                "Remote Adapter does not support runtime profile `{}`",
+                instance.runtime_profile()
+            ));
+        }
         if instance.entrypoint() != "plugin" {
             return invalid(format!(
                 "Remote Plugin Instance `{}` needs entrypoint `plugin`",

@@ -87,6 +87,8 @@ mod host_imports_abi {
 
 /// Stable open execution-class identity.
 pub const EXECUTION_CLASS: &str = "lenso.wasm-component@1";
+/// Exact runtime profile implemented by this Adapter release.
+pub const RUNTIME_PROFILE: &str = "lenso.wasm-component@1";
 
 /// Per-generation Wasmtime resource and execution limits.
 #[derive(Clone, Debug)]
@@ -173,6 +175,12 @@ impl WasmComponentAdapter {
         &self,
         instance: &PluginInstancePlan,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.runtime_profile() != RUNTIME_PROFILE {
+            return invalid(format!(
+                "Wasm Component Adapter does not support runtime profile `{}`",
+                instance.runtime_profile()
+            ));
+        }
         if instance.entrypoint() != "plugin" {
             return invalid(format!(
                 "Wasm Component Instance `{}` requires the `plugin` world entrypoint",

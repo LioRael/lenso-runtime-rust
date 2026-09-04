@@ -34,6 +34,8 @@ use serde_json::Value;
 
 /// Stable generic process execution class.
 pub const EXECUTION_CLASS: &str = "lenso.process@1";
+/// Legacy request-only Process protocol accepted by this Adapter path.
+pub const RUNTIME_PROFILE_V1: &str = "lenso.process@1";
 
 /// Host-owned resource limits for one Process Plugin generation.
 #[derive(Clone, Debug)]
@@ -104,6 +106,12 @@ impl ProcessAdapter {
         &self,
         instance: &PluginInstancePlan,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.runtime_profile() != RUNTIME_PROFILE_V1 {
+            return invalid(format!(
+                "Process Adapter does not support runtime profile `{}`",
+                instance.runtime_profile()
+            ));
+        }
         if instance.entrypoint() != "plugin" {
             return invalid(format!(
                 "Process Plugin Instance `{}` needs entrypoint `plugin`",

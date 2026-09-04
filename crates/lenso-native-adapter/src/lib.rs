@@ -1,9 +1,12 @@
 //! Native Rust Execution Adapter for statically linked Plugin packages.
 
+mod authoring;
 mod managed_tasks;
 
 use std::{collections::BTreeMap, rc::Rc};
 
+#[doc(hidden)]
+pub use authoring::{CompleteObjectLifecycle, ConstructionContext, LifecycleContext, PluginObject};
 #[doc(hidden)]
 pub use inventory as __inventory;
 use lenso_app_plan::{
@@ -40,8 +43,9 @@ pub trait Lifecycle: Clone + 'static {
 #[doc(hidden)]
 pub mod __private {
     pub use crate::{
-        __inventory, Lifecycle, LinkedNativePluginFactory, NativePluginFactory,
-        NativePluginFactoryContext, NativePluginInstance, RuntimeFailure,
+        __inventory, CompleteObjectLifecycle, ConstructionContext, Lifecycle, LifecycleContext,
+        LinkedNativePluginFactory, NativePluginFactory, NativePluginFactoryContext,
+        NativePluginInstance, PluginObject, RuntimeFailure,
     };
     pub use futures;
     pub use futures::future::LocalBoxFuture;
@@ -187,6 +191,10 @@ pub trait NativePluginFactory: std::fmt::Debug + 'static {
     fn package_version(&self) -> &'static str {
         ""
     }
+    /// Exact authoring/runtime protocol implemented by this factory.
+    fn runtime_profile(&self) -> &'static str {
+        "lenso.native-authoring@1"
+    }
     /// Immutable factory identity advertised by the exact Host Build Manifest.
     ///
     /// Plugin-resolved Plans carry this value as their package revision. The
@@ -271,6 +279,7 @@ fn factory_matches(
     expected: &lenso_app_plan::PluginInstancePlan,
 ) -> bool {
     factory.package_id() == expected.package_id()
+        && factory.runtime_profile() == expected.runtime_profile()
         && (expected.package_revision().is_empty()
             || factory.package_version() == expected.package_revision()
             || factory.factory_identity() == expected.package_revision())
@@ -394,6 +403,14 @@ impl NativePluginRegistry {
 }
 
 impl NativeExecutionAdapter for NativePluginRegistry {
+    fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
+        matches!(
+            (authoring_version, profile),
+            (1, "lenso.native-authoring@1" | "lenso.native-rust@1")
+                | (2, "lenso.native-authoring@2")
+        )
+    }
+
     fn prepare(&self, plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
         plan.validate()
             .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
