@@ -446,6 +446,80 @@ fn late_constructor_success_after_cancellation_is_owned_and_stopped_once() {
     assert_eq!(*stopped.borrow(), 1);
 }
 
+#[derive(Debug)]
+struct NonCooperativeStopFactory {
+    object: PluginObject<NonClonePlugin>,
+    stop_attempts: Rc<RefCell<usize>>,
+}
+
+impl NativePluginFactory for NonCooperativeStopFactory {
+    fn package_id(&self) -> &'static str {
+        "test.non-cooperative-stop"
+    }
+
+    fn runtime_profile(&self) -> &'static str {
+        "lenso.native-authoring@2"
+    }
+
+    fn instantiate(
+        &self,
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        let configuration = context.configuration().to_owned();
+        let stop_attempts = self.stop_attempts.clone();
+        let lifecycle = CompleteObjectLifecycle::new(
+            self.object.clone(),
+            context.configuration(),
+            move |_context| {
+                let configuration = configuration.clone();
+                Box::pin(async move { Ok(Rc::new(NonClonePlugin { configuration })) })
+            },
+        )
+        .with_stop(move |_object, _lifecycle| {
+            *stop_attempts.borrow_mut() += 1;
+            Box::pin(futures::future::pending())
+        });
+        Ok(NativePluginInstance::with_lifecycle(Vec::new(), lifecycle))
+    }
+}
+
+#[test]
+fn native_noncooperation_reports_timeout_without_claiming_physical_termination() {
+    let object = PluginObject::empty();
+    let stop_attempts = Rc::new(RefCell::new(0));
+    let driver = DeterministicDriver::new();
+    let plan = ResolvedAppPlan::new(
+        vec![
+            PluginInstancePlan::new("native", "test.non-cooperative-stop")
+                .with_authoring(2, "lenso.native-authoring@2")
+                .with_configuration(r#"{"mode":"non-cooperative"}"#),
+        ],
+        vec![],
+    );
+    let app = driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativePluginRegistry::new().with_factory(NonCooperativeStopFactory {
+                object: object.clone(),
+                stop_attempts: stop_attempts.clone(),
+            }),
+        ))
+        .expect("the non-cooperative fixture should start");
+
+    let timer_driver = driver.clone();
+    let shutdown = app.shutdown(Duration::from_millis(1));
+    let advance_timeout = async move {
+        timer_driver.yield_now().await;
+        timer_driver.advance(Duration::from_millis(1));
+    };
+    let (outcome, ()) = driver.run(futures::future::join(shutdown, advance_timeout));
+
+    assert_eq!(outcome, ShutdownOutcome::Timeout);
+    assert_eq!(*stop_attempts.borrow(), 1);
+    assert!(object.get().is_ok());
+}
+
 #[derive(Debug, serde::Deserialize, lenso_native_adapter::PluginConfig)]
 struct MacroConfig {
     value: String,
