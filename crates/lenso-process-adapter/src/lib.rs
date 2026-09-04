@@ -4,9 +4,13 @@
 //! readiness, cancellation retirement, and cleanup. It intentionally exposes
 //! request-only V1 first; Stream and Host imports fail before readiness.
 
+mod v2;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     io::{self, BufRead as _, BufReader, BufWriter, Write as _},
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     rc::Rc,
     sync::{
@@ -36,6 +40,8 @@ use serde_json::Value;
 pub const EXECUTION_CLASS: &str = "lenso.process@1";
 /// Legacy request-only Process protocol accepted by this Adapter path.
 pub const RUNTIME_PROFILE_V1: &str = "lenso.process@1";
+/// Complete-object Process protocol with Plan-bound Host imports.
+pub const RUNTIME_PROFILE_V2: &str = lenso_process_sdk::PROTOCOL_VERSION_V2;
 
 /// Host-owned resource limits for one Process Plugin generation.
 #[derive(Clone, Debug)]
@@ -43,6 +49,58 @@ pub struct ProcessLimits {
     pub max_frame_bytes: usize,
     pub max_pending_requests: usize,
     pub startup_timeout: Duration,
+    pub cancellation_settlement_timeout: Duration,
+}
+
+/// Host-selected command used to start one admitted artifact.
+#[derive(Clone, Debug)]
+pub struct ProcessLauncher {
+    program: Option<PathBuf>,
+    arguments: Vec<OsString>,
+}
+
+impl ProcessLauncher {
+    /// Executes the artifact path itself.
+    #[must_use]
+    pub const fn direct() -> Self {
+        Self {
+            program: None,
+            arguments: Vec::new(),
+        }
+    }
+
+    /// Executes a Host-owned language runtime and passes the artifact last.
+    #[must_use]
+    pub fn program(program: impl Into<PathBuf>) -> Self {
+        Self {
+            program: Some(program.into()),
+            arguments: Vec::new(),
+        }
+    }
+
+    /// Adds one fixed Host-owned argument before the admitted artifact path.
+    #[must_use]
+    pub fn with_argument(mut self, argument: impl Into<OsString>) -> Self {
+        self.arguments.push(argument.into());
+        self
+    }
+
+    fn command(&self, artifact: &Path) -> Command {
+        match &self.program {
+            Some(program) => {
+                let mut command = Command::new(program);
+                command.args(&self.arguments).arg(artifact);
+                command
+            }
+            None => Command::new(artifact),
+        }
+    }
+}
+
+impl Default for ProcessLauncher {
+    fn default() -> Self {
+        Self::direct()
+    }
 }
 
 impl Default for ProcessLimits {
@@ -51,6 +109,7 @@ impl Default for ProcessLimits {
             max_frame_bytes: lenso_process_sdk::DEFAULT_MAX_FRAME_BYTES,
             max_pending_requests: 64,
             startup_timeout: Duration::from_secs(5),
+            cancellation_settlement_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -106,6 +165,18 @@ impl ProcessAdapter {
         &self,
         instance: &PluginInstancePlan,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.runtime_profile() == RUNTIME_PROFILE_V2 {
+            self.reject_duplicate_codecs()?;
+            return v2::prepare_instance(
+                &self.artifacts,
+                &self.codecs,
+                instance,
+                self.limits.clone(),
+                EXECUTION_CLASS,
+                RUNTIME_PROFILE_V2,
+                ProcessLauncher::direct(),
+            );
+        }
         if instance.runtime_profile() != RUNTIME_PROFILE_V1 {
             return invalid(format!(
                 "Process Adapter does not support runtime profile `{}`",
@@ -127,10 +198,7 @@ impl ProcessAdapter {
             return invalid("Process V1 supports request-only providers without Host imports");
         }
         if !self.duplicate_codecs.is_empty() {
-            return invalid(format!(
-                "duplicate generated codecs registered for {:?}",
-                self.duplicate_codecs
-            ));
+            self.reject_duplicate_codecs()?;
         }
         let artifact = self.artifacts.require(instance.instance_key())?.clone();
         let codecs = codecs_for_instance(instance, &self.codecs)?;
@@ -147,6 +215,13 @@ impl ProcessAdapter {
 impl ExecutionAdapter for ProcessAdapter {
     fn execution_class(&self) -> ExecutionClassId {
         ExecutionClassId::new(EXECUTION_CLASS)
+    }
+
+    fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
+        matches!(
+            (authoring_version, profile),
+            (1, RUNTIME_PROFILE_V1) | (2, RUNTIME_PROFILE_V2)
+        )
     }
 
     fn prepare(&self, plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
@@ -184,6 +259,169 @@ impl ExecutionAdapter for ProcessAdapter {
         })?;
         if instance.execution_class().as_str() != EXECUTION_CLASS {
             return invalid(format!("Instance `{instance_key}` is not a Process Plugin"));
+        }
+        self.prepare_instance(instance)
+    }
+}
+
+impl ProcessAdapter {
+    fn reject_duplicate_codecs(&self) -> Result<(), RuntimeFailure> {
+        if self.duplicate_codecs.is_empty() {
+            return Ok(());
+        }
+        invalid(format!(
+            "duplicate generated codecs registered for {:?}",
+            self.duplicate_codecs
+        ))
+    }
+}
+
+/// Reusable complete-object child-process engine for language-specific V2 Adapters.
+///
+/// The owning Adapter supplies its stable execution class and exact runtime
+/// profile. Process framing, named Host imports, cancellation settlement, and
+/// lifecycle cleanup remain implemented once in this crate.
+#[derive(Debug)]
+pub struct AuthoringProcessAdapter {
+    execution_class: &'static str,
+    runtime_profile: &'static str,
+    artifacts: ArtifactCatalog,
+    codecs: BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
+    duplicate_codecs: BTreeSet<String>,
+    limits: ProcessLimits,
+    launcher: ProcessLauncher,
+}
+
+impl AuthoringProcessAdapter {
+    /// Creates a request-only Authoring V2 process engine for one outer Adapter.
+    #[must_use]
+    pub fn new(
+        execution_class: &'static str,
+        runtime_profile: &'static str,
+        artifacts: ArtifactCatalog,
+    ) -> Self {
+        Self {
+            execution_class,
+            runtime_profile,
+            artifacts,
+            codecs: BTreeMap::new(),
+            duplicate_codecs: BTreeSet::new(),
+            limits: ProcessLimits::default(),
+            launcher: ProcessLauncher::direct(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_codec(mut self, codec: impl JsonCapabilityCodec) -> Self {
+        let capability = codec.capability_id().to_owned();
+        if self
+            .codecs
+            .insert(capability.clone(), Rc::new(codec))
+            .is_some()
+        {
+            self.duplicate_codecs.insert(capability);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_shared_codec(mut self, codec: Rc<dyn JsonCapabilityCodec>) -> Self {
+        let capability = codec.capability_id().to_owned();
+        if self.codecs.insert(capability.clone(), codec).is_some() {
+            self.duplicate_codecs.insert(capability);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_limits(mut self, limits: ProcessLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Selects the Host-owned program used to start each artifact.
+    #[must_use]
+    pub fn with_launcher(mut self, launcher: ProcessLauncher) -> Self {
+        self.launcher = launcher;
+        self
+    }
+
+    fn prepare_instance(
+        &self,
+        instance: &PluginInstancePlan,
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.runtime_profile() != self.runtime_profile {
+            return invalid(format!(
+                "{} Adapter does not support runtime profile `{}`",
+                self.execution_class,
+                instance.runtime_profile()
+            ));
+        }
+        if !self.duplicate_codecs.is_empty() {
+            return invalid(format!(
+                "duplicate generated codecs registered for {:?}",
+                self.duplicate_codecs
+            ));
+        }
+        v2::prepare_instance(
+            &self.artifacts,
+            &self.codecs,
+            instance,
+            self.limits.clone(),
+            self.execution_class,
+            self.runtime_profile,
+            self.launcher.clone(),
+        )
+    }
+}
+
+impl ExecutionAdapter for AuthoringProcessAdapter {
+    fn execution_class(&self) -> ExecutionClassId {
+        ExecutionClassId::new(self.execution_class)
+    }
+
+    fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
+        authoring_version == 2 && profile == self.runtime_profile
+    }
+
+    fn prepare(&self, plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
+        plan.validate()
+            .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
+                detail: error.to_string(),
+            })?;
+        let execution_class = self.execution_class();
+        let mut generations = BTreeMap::new();
+        for instance in plan
+            .plugin_instances()
+            .iter()
+            .filter(|instance| instance.execution_class() == &execution_class)
+        {
+            let generation = self.prepare_instance(instance)?;
+            if generations
+                .insert(instance.instance_key().to_owned(), generation)
+                .is_some()
+            {
+                return invalid(format!("duplicate Instance `{}`", instance.instance_key()));
+            }
+        }
+        prepare_request_app(plan, &execution_class, generations)
+    }
+
+    fn recreate(
+        &self,
+        plan: &ResolvedAppPlan,
+        instance_key: &str,
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        let instance = plan.plugin_instance(instance_key).ok_or_else(|| {
+            RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("unknown Instance `{instance_key}`"),
+            }
+        })?;
+        if instance.execution_class().as_str() != self.execution_class {
+            return invalid(format!(
+                "Instance `{instance_key}` does not belong to {}",
+                self.execution_class
+            ));
         }
         self.prepare_instance(instance)
     }
@@ -655,5 +893,42 @@ fn process_io(error: &io::Error) -> RuntimeFailure {
 fn protocol_failure() -> RuntimeFailure {
     RuntimeFailure::ProtocolViolation {
         capability: EXECUTION_CLASS,
+    }
+}
+
+#[cfg(test)]
+mod authoring_process_adapter_tests {
+    use super::*;
+
+    const FIXTURE_EXECUTION_CLASS: &str = "example.language@1";
+    const FIXTURE_RUNTIME_PROFILE: &str = "example.language-authoring@2";
+
+    #[test]
+    fn generic_authoring_engine_admits_only_its_selected_profile() {
+        let adapter = AuthoringProcessAdapter::new(
+            FIXTURE_EXECUTION_CLASS,
+            FIXTURE_RUNTIME_PROFILE,
+            ArtifactCatalog::new(),
+        );
+
+        assert_eq!(adapter.execution_class().as_str(), FIXTURE_EXECUTION_CLASS);
+        assert!(adapter.supports_runtime_profile(2, FIXTURE_RUNTIME_PROFILE));
+        assert!(!adapter.supports_runtime_profile(1, FIXTURE_RUNTIME_PROFILE));
+        assert!(!adapter.supports_runtime_profile(2, RUNTIME_PROFILE_V2));
+    }
+
+    #[test]
+    fn language_launcher_places_the_admitted_artifact_after_host_arguments() {
+        let launcher = ProcessLauncher::program("bun").with_argument("--smol");
+        let command = launcher.command(Path::new("plugin.js"));
+
+        assert_eq!(command.get_program(), "bun");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                std::ffi::OsStr::new("--smol"),
+                std::ffi::OsStr::new("plugin.js")
+            ]
+        );
     }
 }
