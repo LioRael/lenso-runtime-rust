@@ -22,8 +22,12 @@ fn consumer_only_plugin_derives_an_empty_provider_set_and_linked_factory() {
         descriptor["required_capabilities"],
         lenso::__private::serde_json::json!([])
     );
+    assert_eq!(descriptor["authoring_version"], 2);
+    assert_eq!(descriptor["runtime_profile"], "lenso.native-authoring@2");
 
-    let consumer = PluginInstancePlan::new("consumer", "lenso").with_configuration("{}");
+    let consumer = PluginInstancePlan::new("consumer", "lenso")
+        .with_authoring(2, "lenso.native-authoring@2")
+        .with_configuration("{}");
     let plan = AppComposition::new(vec![consumer], vec![])
         .resolve()
         .expect("consumer-only plan should resolve");

@@ -82,6 +82,14 @@ mod echo {
     }
     pub use crate::__test_lenso_native_lower_echo as __lenso_native_lower_echo;
 
+    #[macro_export]
+    macro_rules! __test_lenso_native_lower_object_echo {
+        ($object:ty, $plugin:ty, $support:path) => {
+            impl $crate::echo::EchoProvider for $object {}
+        };
+    }
+    pub use crate::__test_lenso_native_lower_object_echo as __lenso_native_lower_object_echo;
+
     pub struct Echo;
     pub trait EchoProvider {}
 }
@@ -160,6 +168,14 @@ mod conversation {
     }
     pub use crate::__test_lenso_native_lower_conversation as __lenso_native_lower_conversation;
 
+    #[macro_export]
+    macro_rules! __test_lenso_native_lower_object_conversation {
+        ($object:ty, $plugin:ty, $support:path) => {
+            impl $crate::conversation::ConversationProvider for $object {}
+        };
+    }
+    pub use crate::__test_lenso_native_lower_object_conversation as __lenso_native_lower_object_conversation;
+
     pub struct Conversation;
     pub trait ConversationProvider {}
 }
@@ -227,6 +243,14 @@ mod audit {
         };
     }
     pub use crate::__test_lenso_native_lower_audit as __lenso_native_lower_audit;
+
+    #[macro_export]
+    macro_rules! __test_lenso_native_lower_object_audit {
+        ($object:ty, $plugin:ty, $support:path) => {
+            impl $crate::audit::AuditProvider for $object {}
+        };
+    }
+    pub use crate::__test_lenso_native_lower_object_audit as __lenso_native_lower_object_audit;
 
     pub struct Audit;
     pub trait AuditProvider {}

@@ -248,6 +248,11 @@ fn expand_plugin_impl(mut implementation: ItemImpl) -> syn::Result<proc_macro2::
 
         #[doc(hidden)]
         mod #module_name {
+            const _: () = assert!(
+                super::#plugin_type::__LENSO_AUTHORING_VERSION == 2,
+                "#[plugin_impl] create/stop hooks cannot be combined with legacy lifecycle, Port, resources, or tasks fields",
+            );
+
             fn plugin_type() -> ::std::any::TypeId {
                 ::std::any::TypeId::of::<super::#plugin_type>()
             }
@@ -756,6 +761,8 @@ struct CapabilityContribution {
     descriptor: syn::Ident,
     endpoints: syn::Ident,
     lower: syn::Ident,
+    object_lower: syn::Ident,
+    trait_object_lower: syn::Ident,
 }
 
 fn capability_contributions(capabilities: &[Path]) -> syn::Result<Vec<CapabilityContribution>> {
@@ -790,6 +797,10 @@ fn capability_contributions(capabilities: &[Path]) -> syn::Result<Vec<Capability
                 descriptor: format_ident!("__lenso_provided_{capability_snake}"),
                 endpoints: format_ident!("__lenso_native_endpoints_{capability_snake}"),
                 lower: format_ident!("__lenso_native_lower_{capability_snake}"),
+                object_lower: format_ident!("__lenso_native_lower_object_{capability_snake}"),
+                trait_object_lower: format_ident!(
+                    "__lenso_native_lower_trait_object_{capability_snake}"
+                ),
             })
         })
         .collect()
@@ -852,29 +863,47 @@ fn expand_provides(
     let generated_plugin = format_ident!("__lenso_provider_{}", snake(&plugin_ident.to_string()));
     let lifecycle = format_ident!("__LensoLifecycle{plugin_ident}");
     let artifact = format_ident!("__LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_{plugin_ident}");
-    let provider_implementations = if lowers_domain_methods {
-        contributions
-            .iter()
-            .map(|contribution| {
-                let namespace = &contribution.namespace;
-                let lower = &contribution.lower;
-                quote! { #namespace::#lower!(#plugin_ident, #sdk::__private); }
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let endpoint_contributions = contributions.iter().map(|contribution| {
-        let namespace = &contribution.namespace;
-        let endpoints = &contribution.endpoints;
-        quote! {
-            let (provided_requests, provided_streams, provided_events) =
-                super::#namespace::#endpoints!(plugin.as_ref().clone(), #sdk::__private);
-            request_endpoints.extend(provided_requests);
-            stream_endpoints.extend(provided_streams);
-            event_endpoints.extend(provided_events);
-        }
-    });
+    let provider_implementations = contributions
+        .iter()
+        .flat_map(|contribution| {
+            let namespace = &contribution.namespace;
+            let lower = &contribution.lower;
+            let object_lower = if lowers_domain_methods {
+                &contribution.object_lower
+            } else {
+                &contribution.trait_object_lower
+            };
+            let mut implementations = Vec::new();
+            if lowers_domain_methods {
+                implementations.push(quote! {
+                    #namespace::#lower!(#plugin_ident, #sdk::__private);
+                });
+            }
+            implementations.push(quote! {
+                #namespace::#object_lower!(
+                    #sdk::__private::PluginObject<#plugin_ident>,
+                    #plugin_ident,
+                    #sdk::__private
+                );
+            });
+            implementations
+        })
+        .collect::<Vec<_>>();
+    let endpoint_contributions = contributions
+        .iter()
+        .map(|contribution| {
+            let namespace = &contribution.namespace;
+            let endpoints = &contribution.endpoints;
+            quote! {
+                let (provided_requests, provided_streams, provided_events) =
+                    super::#namespace::#endpoints!(plugin.clone(), #sdk::__private);
+                request_endpoints.extend(provided_requests);
+                stream_endpoints.extend(provided_streams);
+                event_endpoints.extend(provided_events);
+            }
+        })
+        .collect::<Vec<_>>();
+    let v2_endpoint_contributions = endpoint_contributions.clone();
 
     let mut implementation = implementation.clone();
     implementation
@@ -908,6 +937,9 @@ fn expand_provides(
             impl #sdk::__private::NativePluginFactory for Factory {
                 fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                 fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
+                fn runtime_profile(&self) -> &'static str {
+                    super::#plugin_ident::__LENSO_RUNTIME_PROFILE
+                }
 
                 fn instantiate(
                     &self,
@@ -916,10 +948,28 @@ fn expand_provides(
                     #sdk::__private::NativePluginInstance,
                     #sdk::__private::RuntimeFailure,
                 > {
+                    if super::#plugin_ident::__LENSO_AUTHORING_VERSION == 2 {
+                        let plugin = #sdk::__private::PluginObject::<super::#plugin_ident>::empty();
+                        let lifecycle = #sdk::__private::CompleteObjectLifecycle::linked(
+                            plugin.clone(),
+                            context.configuration(),
+                        )?;
+                        let mut request_endpoints = Vec::new();
+                        let mut stream_endpoints = Vec::new();
+                        let mut event_endpoints = Vec::new();
+                        #(#v2_endpoint_contributions)*
+                        return Ok(#sdk::__private::NativePluginInstance::with_all_endpoints(
+                            request_endpoints,
+                            stream_endpoints,
+                            event_endpoints,
+                            lifecycle,
+                        ));
+                    }
                     let plugin = ::std::rc::Rc::new(
                         super::#plugin_ident::__lenso_construct(context)?,
                     );
                     let lifecycle = super::#lifecycle { plugin: plugin.clone() };
+                    let plugin = #sdk::__private::PluginObject::from_value(plugin);
                     let mut request_endpoints = Vec::new();
                     let mut stream_endpoints = Vec::new();
                     let mut event_endpoints = Vec::new();
@@ -1008,10 +1058,20 @@ fn expand_plugin_struct(
         .iter()
         .map(|field| v2_field_initializer(field, &sdk))
         .collect::<Vec<_>>();
-    let v2_construct = if construction_fields
+    let uses_legacy_authoring = construction_fields
         .iter()
         .any(|field| matches!(field.kind, ConstructionFieldKind::Legacy))
-    {
+        || attributes.lifecycle
+        || attributes.prepare.is_some()
+        || attributes.activate.is_some()
+        || attributes.deactivate.is_some();
+    let authoring_version = if uses_legacy_authoring { 1_u32 } else { 2_u32 };
+    let runtime_profile = if uses_legacy_authoring {
+        "lenso.native-authoring@1"
+    } else {
+        "lenso.native-authoring@2"
+    };
+    let v2_construct = if uses_legacy_authoring {
         quote! {
             Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
                 detail: "legacy Plugin fields cannot use authoring version 2".to_owned(),
@@ -1030,13 +1090,36 @@ fn expand_plugin_struct(
         .iter()
         .map(|(_, client, cardinality)| requirement_macro(client, *cardinality))
         .collect::<syn::Result<Vec<_>>>()?;
+    let dependency_requirement_macros = construction_fields
+        .iter()
+        .filter_map(|field| match &field.kind {
+            ConstructionFieldKind::Dependency {
+                id,
+                client,
+                cardinality,
+            } => Some(named_requirement_macro(client, *cardinality, id)),
+            ConstructionFieldKind::Config
+            | ConstructionFieldKind::Private
+            | ConstructionFieldKind::Legacy => None,
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
     let connect_ports = ports.iter().map(|(field, _, _)| {
         quote! { self.plugin.#field.connect(context.dependencies())?; }
     });
     let connect_tasks = task_connectors(&tasks);
-    let requirement_parts = intersperse_commas(requirement_macros);
-    let (prefix, after_schema, suffix, defaults) =
-        descriptor_affixes(&plugin_id, &package_version, &root_slot);
+    let requirement_parts = intersperse_commas(
+        requirement_macros
+            .into_iter()
+            .chain(dependency_requirement_macros)
+            .collect(),
+    );
+    let (prefix, after_schema, suffix, defaults) = descriptor_affixes(
+        &plugin_id,
+        &package_version,
+        &root_slot,
+        authoring_version,
+        runtime_profile,
+    );
     let construct_configuration = if let Some(config_type) = &config_type {
         let validate = attributes
             .validate
@@ -1170,6 +1253,9 @@ fn expand_plugin_struct(
                 impl #sdk::__private::NativePluginFactory for Factory {
                     fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                     fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
+                    fn runtime_profile(&self) -> &'static str {
+                        super::#name::__LENSO_RUNTIME_PROFILE
+                    }
 
                     fn instantiate(
                         &self,
@@ -1178,6 +1264,17 @@ fn expand_plugin_struct(
                         #sdk::__private::NativePluginInstance,
                         #sdk::__private::RuntimeFailure,
                     > {
+                        if super::#name::__LENSO_AUTHORING_VERSION == 2 {
+                            let object = #sdk::__private::PluginObject::<super::#name>::empty();
+                            let lifecycle = #sdk::__private::CompleteObjectLifecycle::linked(
+                                object,
+                                context.configuration(),
+                            )?;
+                            return Ok(#sdk::__private::NativePluginInstance::with_lifecycle(
+                                Vec::new(),
+                                lifecycle,
+                            ));
+                        }
                         let plugin = ::std::rc::Rc::new(super::#name::__lenso_construct(context)?);
                         let lifecycle = super::#lifecycle_name { plugin };
                         Ok(#sdk::__private::NativePluginInstance::with_lifecycle(
@@ -1230,6 +1327,11 @@ fn expand_plugin_struct(
 
         impl #name {
             #[doc(hidden)]
+            const __LENSO_AUTHORING_VERSION: u32 = #authoring_version;
+            #[doc(hidden)]
+            const __LENSO_RUNTIME_PROFILE: &'static str = #runtime_profile;
+
+            #[doc(hidden)]
             fn __lenso_inputs(
                 context: &#sdk::__private::ConstructionContext,
             ) -> Result<#inputs_name, #sdk::__private::RuntimeFailure> {
@@ -1238,6 +1340,7 @@ fn expand_plugin_struct(
             }
 
             #[doc(hidden)]
+            #[allow(unreachable_code)]
             fn __lenso_construct(
                 context: #sdk::__private::NativePluginFactoryContext<'_>,
             ) -> Result<Self, #sdk::__private::RuntimeFailure> {
@@ -1316,9 +1419,12 @@ fn descriptor_affixes(
     plugin_id: &str,
     package_version: &str,
     root_slot: &str,
+    authoring_version: u32,
+    runtime_profile: &str,
 ) -> (String, &'static str, &'static str, &'static str) {
     let prefix = format!(
-        "{{\"plugin_id\":{},\"release_version\":{},\"root_slot\":{},\"runtime_package_id\":{},\"runtime_package_revision\":{},\"entrypoint\":\"default\",\"configuration_schema\":",
+        "{{\"authoring_version\":{authoring_version},\"runtime_profile\":{},\"plugin_id\":{},\"release_version\":{},\"root_slot\":{},\"runtime_package_id\":{},\"runtime_package_revision\":{},\"entrypoint\":\"default\",\"configuration_schema\":",
+        serde_json::to_string(runtime_profile).expect("runtime profile serializes"),
         serde_json::to_string(plugin_id).expect("Plugin ID serializes"),
         serde_json::to_string(package_version).expect("package version serializes"),
         serde_json::to_string(root_slot).expect("root Slot serializes"),
@@ -1974,10 +2080,41 @@ fn requirement_macro(
     client: &Path,
     cardinality: PortCardinality,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let prefix = match cardinality {
+        PortCardinality::One => "__lenso_required_",
+        PortCardinality::Many => "__lenso_required_many_",
+    };
+    requirement_macro_path(client, prefix, None)
+}
+
+fn named_requirement_macro(
+    client: &Type,
+    cardinality: DependencyCardinality,
+    requirement_id: &LitStr,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let Type::Path(client) = client else {
+        return Err(syn::Error::new_spanned(
+            client,
+            "dependency client must be a namespace-qualified generated client",
+        ));
+    };
+    let prefix = match cardinality {
+        DependencyCardinality::One => "__lenso_required_",
+        DependencyCardinality::Optional => "__lenso_required_optional_",
+        DependencyCardinality::Many => "__lenso_required_many_",
+    };
+    requirement_macro_path(&client.path, prefix, Some(requirement_id))
+}
+
+fn requirement_macro_path(
+    client: &Path,
+    prefix: &str,
+    requirement_id: Option<&LitStr>,
+) -> syn::Result<proc_macro2::TokenStream> {
     if client.segments.len() < 2 {
         return Err(syn::Error::new_spanned(
             client,
-            "a Port client must be namespace-qualified, for example `model::ModelClient`",
+            "a Capability client must be namespace-qualified, for example `model::ModelClient`",
         ));
     }
     let mut namespace = client.clone();
@@ -1988,12 +2125,11 @@ fn requirement_macro(
         .into_value()
         .ident;
     namespace.segments.pop_punct();
-    let prefix = match cardinality {
-        PortCardinality::One => "__lenso_required_",
-        PortCardinality::Many => "__lenso_required_many_",
-    };
     let macro_name = format_ident!("{}{}", prefix, snake(&client_name.to_string()));
-    Ok(quote!(#namespace::#macro_name!()))
+    Ok(requirement_id.map_or_else(
+        || quote!(#namespace::#macro_name!()),
+        |requirement_id| quote!(#namespace::#macro_name!(#requirement_id)),
+    ))
 }
 
 fn intersperse_commas(values: Vec<proc_macro2::TokenStream>) -> Vec<proc_macro2::TokenStream> {
