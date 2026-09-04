@@ -200,6 +200,8 @@ struct GuestRuntimeDescriptor {
     capabilities: Vec<GuestCapability>,
     #[serde(default)]
     required_capabilities: Vec<GuestRequirement>,
+    #[serde(default)]
+    configuration_schema: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -664,6 +666,9 @@ fn portable_plugin_descriptor(
         .with_runtime_package(plugin_id, artifact_digest)
         .with_entrypoint("plugin")
         .with_execution_class(ExecutionClassId::new(execution_class));
+    if let Some(configuration_schema) = runtime.configuration_schema {
+        descriptor = descriptor.with_configuration_schema(configuration_schema);
+    }
     for capability in runtime.capabilities {
         let mut endpoint = CapabilityEndpointPlan::new(
             capability.capability_id,
@@ -1309,7 +1314,7 @@ mod tests {
 
     #[test]
     fn host_imports_v2_preserves_named_requirements_during_bundle_lowering() {
-        let encoded = br#"{"abi":"lenso.json-host-imports@2","capabilities":[],"required_capabilities":[{"requirement_id":"source","capability_id":"example.store@1","descriptor_version":"1.0.0","cardinality":"one"}]}"#;
+        let encoded = br#"{"abi":"lenso.json-host-imports@2","capabilities":[],"required_capabilities":[{"requirement_id":"source","capability_id":"example.store@1","descriptor_version":"1.0.0","cardinality":"one"}],"configuration_schema":{"type":"object","required":["prefix"]}}"#;
         let value = portable_plugin_descriptor(
             "example.copy",
             "1.0.0",
@@ -1325,6 +1330,10 @@ mod tests {
         assert_eq!(
             descriptor.required_capabilities()[0].requirement_id(),
             "source"
+        );
+        assert_eq!(
+            descriptor.configuration_schema().unwrap()["required"],
+            serde_json::json!(["prefix"])
         );
     }
 
