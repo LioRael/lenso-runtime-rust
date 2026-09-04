@@ -1137,7 +1137,6 @@ version = "0.2.2"
 dependencies = [
  "hex",
  "lenso-app-plan",
- "lenso-guest-sdk",
  "semver",
  "serde",
  "serde_json",
