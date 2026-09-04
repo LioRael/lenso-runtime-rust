@@ -1,6 +1,6 @@
 [package]
 name = "lenso-plugin-sdk"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -13,7 +13,7 @@ lenso-plugin-sdk-macros = { version = "0.1.0", path = "../lenso-plugin-sdk-macro
 serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-lenso-guest-sdk = { version = "0.2.0", path = "../lenso-guest-sdk" }
+lenso-guest-sdk = { version = "0.3.0", path = "../lenso-guest-sdk" }
 wit-bindgen = "0.60"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
