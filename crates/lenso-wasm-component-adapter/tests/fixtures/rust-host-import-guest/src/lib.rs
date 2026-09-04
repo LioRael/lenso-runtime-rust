@@ -25,7 +25,7 @@ impl Guest for GuestComponent {
                 requests: [echo::ECHO],
                 streams: [],
             }],
-            requires: [probe],
+            requires: [("~lenso.runtime.conformance.probe@1", probe)],
         }
     }
 
@@ -38,7 +38,8 @@ impl Guest for GuestComponent {
         assert_eq!(operation, "echo");
         let context = lenso_guest_sdk::GuestContext::load(WasmHost).unwrap();
         let probe = context
-            .require(
+            .require_named(
+                "~lenso.runtime.conformance.probe@1",
                 "lenso.runtime.conformance.probe@1",
                 "1.0.0",
                 &["probe"],

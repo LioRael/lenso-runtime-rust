@@ -110,6 +110,7 @@ pub struct GuestProvidedCapability<'a> {
 /// One Host Capability required by a guest Plugin or built-in Plugin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestRequiredCapability<'a> {
+    pub requirement_id: &'a str,
     pub capability_id: &'a str,
     pub descriptor_version: &'a str,
 }
@@ -125,6 +126,7 @@ struct EncodedProvidedCapability<'a> {
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct EncodedRequiredCapability<'a> {
+    requirement_id: &'a str,
     capability_id: &'a str,
     descriptor_version: &'a str,
     cardinality: &'static str,
@@ -157,6 +159,7 @@ pub fn encode_guest_descriptor(
     let mut required_capabilities = required_capabilities
         .iter()
         .map(|requirement| EncodedRequiredCapability {
+            requirement_id: requirement.requirement_id,
             capability_id: requirement.capability_id,
             descriptor_version: requirement.descriptor_version,
             cardinality: "one",
@@ -164,7 +167,7 @@ pub fn encode_guest_descriptor(
         .collect::<Vec<_>>();
     required_capabilities.sort_unstable();
     let abi = if !required_capabilities.is_empty() {
-        "lenso.json-host-imports@1"
+        "lenso.json-host-imports@2"
     } else if capabilities
         .iter()
         .any(|capability| !capability.stream_operations.is_empty())
@@ -196,6 +199,38 @@ macro_rules! guest_descriptor {
                 }
             ),* $(,)?
         ],
+        requires: [$(($requirement_id:literal, $required:ident)),* $(,)?] $(,)?
+    ) => {{
+        let capabilities = [
+            $(
+                $crate::GuestProvidedCapability {
+                    capability_id: $provided::CAPABILITY_ID,
+                    descriptor_version: $provided::DESCRIPTOR_VERSION,
+                    request_operations: &[$($request),*],
+                    stream_operations: &[$($stream),*],
+                }
+            ),*
+        ];
+        let required_capabilities = [
+            $(
+                $crate::GuestRequiredCapability {
+                    requirement_id: $requirement_id,
+                    capability_id: $required::CAPABILITY_ID,
+                    descriptor_version: $required::DESCRIPTOR_VERSION,
+                }
+            ),*
+        ];
+        $crate::encode_guest_descriptor(&capabilities, &required_capabilities)
+    }};
+    (
+        provides: [
+            $(
+                $provided:ident {
+                    requests: [$($request:expr),* $(,)?],
+                    streams: [$($stream:expr),* $(,)?] $(,)?
+                }
+            ),* $(,)?
+        ],
         requires: [$($required:ident),* $(,)?] $(,)?
     ) => {{
         let capabilities = [
@@ -211,6 +246,7 @@ macro_rules! guest_descriptor {
         let required_capabilities = [
             $(
                 $crate::GuestRequiredCapability {
+                    requirement_id: $required::CAPABILITY_ID,
                     capability_id: $required::CAPABILITY_ID,
                     descriptor_version: $required::DESCRIPTOR_VERSION,
                 }
@@ -427,6 +463,7 @@ impl<E> GuestError<E> {
 #[serde(deny_unknown_fields)]
 pub struct GuestBinding {
     binding_id: u32,
+    requirement_id: String,
     provider_instance: String,
     capability_id: String,
     descriptor_version: String,
@@ -441,6 +478,10 @@ impl GuestBinding {
 
     pub fn provider_instance(&self) -> &str {
         &self.provider_instance
+    }
+
+    pub fn requirement_id(&self) -> &str {
+        &self.requirement_id
     }
 
     pub fn capability_id(&self) -> &str {
@@ -498,6 +539,52 @@ impl<H: HostImports> GuestContext<H> {
             return Err(GuestError::Protocol(error));
         };
         if !operations_match(&binding.request_operations, request_operations)
+            || !operations_match(&binding.stream_operations, stream_operations)
+        {
+            return Err(GuestError::Protocol(
+                GuestProtocolError::DescriptorMismatch {
+                    capability_id,
+                    descriptor_version,
+                },
+            ));
+        }
+        Ok(GuestCapability {
+            host: &self.host,
+            binding,
+        })
+    }
+
+    /// Resolves one generated Capability client by stable consumer-local requirement identity.
+    pub fn require_named(
+        &self,
+        requirement_id: &str,
+        capability_id: &'static str,
+        descriptor_version: &'static str,
+        request_operations: &'static [&'static str],
+        stream_operations: &'static [&'static str],
+    ) -> Result<GuestCapability<'_, H>, GuestError<Value>> {
+        let matches = self
+            .bindings
+            .iter()
+            .filter(|binding| binding.requirement_id == requirement_id)
+            .collect::<Vec<_>>();
+        let [binding] = matches.as_slice() else {
+            let error = if matches.is_empty() {
+                GuestProtocolError::MissingBinding {
+                    capability_id,
+                    descriptor_version,
+                }
+            } else {
+                GuestProtocolError::AmbiguousBinding {
+                    capability_id,
+                    descriptor_version,
+                }
+            };
+            return Err(GuestError::Protocol(error));
+        };
+        if binding.capability_id != capability_id
+            || binding.descriptor_version != descriptor_version
+            || !operations_match(&binding.request_operations, request_operations)
             || !operations_match(&binding.stream_operations, stream_operations)
         {
             return Err(GuestError::Protocol(
@@ -758,7 +845,7 @@ mod tests {
 
         assert_eq!(
             descriptor,
-            r#"{"abi":"lenso.json-host-imports@1","capabilities":[{"capability_id":"example.agent@1","descriptor_version":"1.2.0","request_operations":[],"stream_operations":["run"]}],"required_capabilities":[{"capability_id":"example.model@1","descriptor_version":"2.0.0","cardinality":"one"}]}"#
+            r#"{"abi":"lenso.json-host-imports@2","capabilities":[{"capability_id":"example.agent@1","descriptor_version":"1.2.0","request_operations":[],"stream_operations":["run"]}],"required_capabilities":[{"requirement_id":"example.model@1","capability_id":"example.model@1","descriptor_version":"2.0.0","cardinality":"one"}]}"#
         );
     }
 
@@ -871,6 +958,7 @@ mod tests {
     fn binding() -> Value {
         json!({
             "binding_id": 7,
+            "requirement_id": "example.chat@1",
             "provider_instance": "provider",
             "capability_id": "example.chat@1",
             "descriptor_version": "1.0.0",

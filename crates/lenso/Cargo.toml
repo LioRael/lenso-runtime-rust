@@ -1,6 +1,6 @@
 [package]
 name = "lenso"
-version = "0.5.1"
+version = "0.5.2"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -16,7 +16,7 @@ root-slot = "test"
 futures.workspace = true
 lenso-kernel.workspace = true
 lenso-plugin-authoring.workspace = true
-lenso-plugin-control-plane = { version = "0.4.0", path = "../lenso-plugin-control-plane", optional = true }
+lenso-plugin-control-plane = { version = "0.4.1", path = "../lenso-plugin-control-plane", optional = true }
 lenso-native-adapter = { version = "0.3.1", path = "../lenso-native-adapter" }
 serde.workspace = true
 serde_json.workspace = true
@@ -24,10 +24,15 @@ tokio = { workspace = true, optional = true }
 
 [features]
 default = []
-host = ["dep:lenso-plugin-control-plane", "dep:tokio"]
+host = ["dep:lenso-plugin-control-plane", "dep:tokio", "tokio/io-std"]
+
+[[example]]
+name = "control_fixture"
+required-features = ["host"]
 
 [dev-dependencies]
 lenso-app-plan.workspace = true
+lenso-runtime-codec = { path = "../lenso-runtime-codec" }
 lenso-test = { path = "../lenso-test" }
 
 [lints]

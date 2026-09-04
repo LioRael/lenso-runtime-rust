@@ -31,6 +31,12 @@ The Controller is lane-local and uses `spawn_local`; start it inside the same
 Tokio `LocalSet` that owns the product Host. Kernel semantics remain below this
 facade and product loops remain above it.
 
+`lenso-host-distribution` independently verifies an offline distribution lock,
+invokes its bounded same-cohort resolver over an external Plugin Root, binds each
+resolved Instance to a digest-verified private Artifact snapshot, and closes the
+result into `ResolvedGeneration`. Product distribution crates still choose the
+installed Adapter catalog.
+
 ## Validation
 
 ```sh
@@ -65,7 +71,8 @@ The WASIp2 command requires Wasmtime on `PATH`.
 The preview Wasm Component and QuickJS Adapters preserve the stable
 `lenso.json-request@1` ABI and additionally implement
 `lenso.json-interactions@1` for Request plus bidirectional Stream Capabilities.
-Guests with declared requirements use `lenso.json-host-imports@1`. During
+Guests with declared requirements use `lenso.json-host-imports@2`; v2 preserves
+the consumer-local requirement identity independently of its Capability. During
 activation the Host exposes an opaque binding table derived only from the
 immutable Plan; there is no ambient Capability lookup or mutable registry.
 Generated Capability codecs translate portable JSON into typed dependency

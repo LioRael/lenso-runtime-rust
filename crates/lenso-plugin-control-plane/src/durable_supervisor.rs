@@ -22,6 +22,7 @@ pub struct DurableGenerationLease {
     supervisor_epoch: u64,
     routing_epoch: u64,
     leases: Rc<Cell<usize>>,
+    released: Rc<tokio::sync::Notify>,
 }
 
 /// Route target pinned to one immutable Generation for a complete work unit.
@@ -70,6 +71,7 @@ impl DurableGenerationLease {
 impl Drop for DurableGenerationLease {
     fn drop(&mut self) {
         self.leases.set(self.leases.get().saturating_sub(1));
+        self.released.notify_one();
     }
 }
 
@@ -112,6 +114,7 @@ pub struct DurableGenerationSupervisor<R: GenerationRuntime, S: ControlStateStor
     store: S,
     state: DurableControlState,
     slots: BTreeMap<String, LiveSlot<R::Handle>>,
+    lease_released: Rc<tokio::sync::Notify>,
 }
 
 impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, S> {
@@ -149,6 +152,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             store,
             state,
             slots: BTreeMap::new(),
+            lease_released: Rc::default(),
         })
     }
 
@@ -202,6 +206,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             store,
             state,
             slots: BTreeMap::new(),
+            lease_released: Rc::default(),
         })
     }
 
@@ -343,6 +348,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             store,
             state: next,
             slots,
+            lease_released: Rc::default(),
         })
     }
 
@@ -593,6 +599,7 @@ impl<R: GenerationRuntime, S: ControlStateStore> DurableGenerationSupervisor<R, 
             supervisor_epoch: self.state.supervisor_epoch,
             routing_epoch,
             leases: slot.leases.clone(),
+            released: self.lease_released.clone(),
         })
     }
 
@@ -1203,3 +1210,6 @@ fn rejected<T>(detail: impl Into<String>) -> Result<T, ControlPlaneError> {
 #[cfg(test)]
 #[path = "durable_supervisor_tests.rs"]
 mod tests;
+
+#[path = "host_suspension.rs"]
+mod host_suspension;

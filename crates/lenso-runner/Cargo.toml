@@ -1,6 +1,6 @@
 [package]
 name = "lenso-runner"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -13,8 +13,24 @@ lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 cpu-time = "1.0"
+fs2 = { version = "0.4", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["process"], optional = true }
+
+[features]
+process-owner = ["dep:fs2", "dep:serde", "dep:serde_json", "dep:sha2", "dep:rustix"]
+
+[[bin]]
+name = "lenso-process-owner"
+path = "src/bin/process_owner.rs"
+required-features = ["process-owner"]
 
 [dev-dependencies]
+tempfile = "3"
 lenso-native-adapter = { version = "0.3.1", path = "../lenso-native-adapter" }
 lenso-runtime-conformance.workspace = true
 

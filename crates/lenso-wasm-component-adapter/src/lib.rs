@@ -19,11 +19,12 @@ use lenso_kernel::{
     RuntimeFailure,
 };
 use lenso_runtime_codec::{
-    ArtifactCatalog, JsonCapabilityCodec, JsonHostImports, JsonInvocationOutcome,
-    JsonRequestTransport, JsonStreamFrame, JsonStreamItem, JsonStreamOpenFuture,
-    JsonStreamSessionTransport, JsonStreamTransport, codecs_for_instance, codecs_for_requirements,
-    json_host_invocation_envelope, json_request_endpoints, json_runtime_failure,
-    json_stream_endpoints, prepare_request_app, validate_json_plugin_descriptor,
+    ArtifactCatalog, JSON_HOST_IMPORTS_ABI_V2, JsonCapabilityCodec, JsonHostImports,
+    JsonInvocationOutcome, JsonRequestTransport, JsonStreamFrame, JsonStreamItem,
+    JsonStreamOpenFuture, JsonStreamSessionTransport, JsonStreamTransport, codecs_for_instance,
+    codecs_for_requirements, json_host_invocation_envelope, json_request_endpoints,
+    json_runtime_failure, json_stream_endpoints, prepare_request_app,
+    validate_json_plugin_descriptor,
 };
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
@@ -505,7 +506,7 @@ impl WasmGeneration {
                     let encoded = if imported > self.max_host_imports_per_call {
                         serde_json::to_string(&serde_json::json!({
                             "runtime": json_runtime_failure(&RuntimeFailure::ResourceExhausted {
-                                capability: "lenso.json-host-imports@1",
+                                capability: JSON_HOST_IMPORTS_ABI_V2,
                                 operation: "invoke".to_owned(),
                             })
                         }))
@@ -1326,7 +1327,7 @@ impl PluginLifecycle for WasmLifecycle {
 
 fn parse_host_payload(encoded: &str) -> Result<serde_json::Value, RuntimeFailure> {
     serde_json::from_str(encoded).map_err(|_| RuntimeFailure::ProtocolViolation {
-        capability: "lenso.json-host-imports@1",
+        capability: JSON_HOST_IMPORTS_ABI_V2,
     })
 }
 
