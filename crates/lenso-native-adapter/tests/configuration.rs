@@ -330,6 +330,122 @@ fn complete_object_profile_constructs_once_without_clone_and_stops_once() {
     assert_eq!(*stopped.borrow(), 1);
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ConstructionExit {
+    Fail,
+    CancelAfterReturn,
+}
+
+#[derive(Debug)]
+struct ConstructionExitFactory {
+    object: PluginObject<NonClonePlugin>,
+    stopped: Rc<RefCell<usize>>,
+    exit: ConstructionExit,
+}
+
+impl NativePluginFactory for ConstructionExitFactory {
+    fn package_id(&self) -> &'static str {
+        "test.construction-exit"
+    }
+
+    fn runtime_profile(&self) -> &'static str {
+        "lenso.native-authoring@2"
+    }
+
+    fn instantiate(
+        &self,
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        let exit = self.exit;
+        let stopped = self.stopped.clone();
+        let lifecycle = CompleteObjectLifecycle::new(
+            self.object.clone(),
+            context.configuration(),
+            move |context| {
+                Box::pin(async move {
+                    match exit {
+                        ConstructionExit::Fail => Err(RuntimeFailure::PluginFailure {
+                            detail: "constructor failed".to_owned(),
+                        }),
+                        ConstructionExit::CancelAfterReturn => {
+                            context.lifecycle().cancellation().cancel();
+                            Ok(Rc::new(NonClonePlugin {
+                                configuration: context.configuration().to_owned(),
+                            }))
+                        }
+                    }
+                })
+            },
+        )
+        .with_stop(move |_object, _lifecycle| {
+            *stopped.borrow_mut() += 1;
+            Box::pin(futures::future::ready(Ok(())))
+        });
+        Ok(NativePluginInstance::with_lifecycle(Vec::new(), lifecycle))
+    }
+}
+
+fn construction_exit_plan() -> ResolvedAppPlan {
+    ResolvedAppPlan::new(
+        vec![
+            PluginInstancePlan::new("exit", "test.construction-exit")
+                .with_authoring(2, "lenso.native-authoring@2")
+                .with_configuration(r#"{"mode":"exit"}"#),
+        ],
+        vec![],
+    )
+}
+
+#[test]
+fn failed_construction_does_not_stop_an_object_that_never_existed() {
+    let object = PluginObject::empty();
+    let stopped = Rc::new(RefCell::new(0));
+    let driver = DeterministicDriver::new();
+    let error = driver
+        .run(Kernel::start_native(
+            construction_exit_plan(),
+            driver.clone(),
+            NativePluginRegistry::new().with_factory(ConstructionExitFactory {
+                object: object.clone(),
+                stopped: stopped.clone(),
+                exit: ConstructionExit::Fail,
+            }),
+        ))
+        .expect_err("failed construction must fail startup");
+
+    assert!(matches!(error, RuntimeFailure::PluginFailure { .. }));
+    assert!(object.get().is_err());
+    assert_eq!(*stopped.borrow(), 0);
+}
+
+#[test]
+fn late_constructor_success_after_cancellation_is_owned_and_stopped_once() {
+    let object = PluginObject::empty();
+    let stopped = Rc::new(RefCell::new(0));
+    let driver = DeterministicDriver::new();
+    let error = driver
+        .run(Kernel::start_native(
+            construction_exit_plan(),
+            driver.clone(),
+            NativePluginRegistry::new().with_factory(ConstructionExitFactory {
+                object: object.clone(),
+                stopped: stopped.clone(),
+                exit: ConstructionExit::CancelAfterReturn,
+            }),
+        ))
+        .expect_err("cancelled construction must fail startup");
+
+    assert_eq!(error, RuntimeFailure::AdmissionClosed);
+    assert_eq!(
+        object
+            .get()
+            .expect("late returned object must remain Host-owned")
+            .configuration,
+        r#"{"mode":"exit"}"#
+    );
+    assert_eq!(*stopped.borrow(), 1);
+}
+
 #[derive(Debug, serde::Deserialize, lenso_native_adapter::PluginConfig)]
 struct MacroConfig {
     value: String,
@@ -433,4 +549,95 @@ fn plugin_impl_constructs_a_non_default_non_clone_complete_object() {
         ShutdownOutcome::Clean
     );
     assert_eq!(MACRO_STOPPED.load(Ordering::SeqCst), 1);
+}
+
+mod sync_constructor {
+    use super::{AtomicUsize, LifecycleContext, Ordering};
+
+    #[derive(Debug)]
+    pub struct Resource(pub &'static str);
+
+    #[lenso_native_adapter::plugin]
+    #[derive(Debug)]
+    pub struct Plugin {
+        pub resource: Resource,
+    }
+
+    pub static STOPPED: AtomicUsize = AtomicUsize::new(0);
+
+    #[lenso_native_adapter::plugin_impl]
+    impl Plugin {
+        #[create]
+        fn create() -> Self {
+            Self {
+                resource: Resource("sync"),
+            }
+        }
+
+        #[stop]
+        async fn stop(&self, #[lifecycle] lifecycle: LifecycleContext) {
+            assert_eq!(self.resource.0, "sync");
+            assert!(lifecycle.remaining_budget().is_some());
+            std::future::ready(()).await;
+            STOPPED.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SyncConstructorFactory {
+    object: PluginObject<sync_constructor::Plugin>,
+}
+
+impl NativePluginFactory for SyncConstructorFactory {
+    fn package_id(&self) -> &'static str {
+        "test.sync-constructor"
+    }
+
+    fn runtime_profile(&self) -> &'static str {
+        "lenso.native-authoring@2"
+    }
+
+    fn instantiate(
+        &self,
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        let lifecycle =
+            CompleteObjectLifecycle::linked(self.object.clone(), context.configuration())?;
+        Ok(NativePluginInstance::with_lifecycle(Vec::new(), lifecycle))
+    }
+}
+
+#[test]
+fn plugin_impl_accepts_sync_create_and_async_stop() {
+    sync_constructor::STOPPED.store(0, Ordering::SeqCst);
+    let object = PluginObject::empty();
+    let plan = ResolvedAppPlan::new(
+        vec![
+            PluginInstancePlan::new("sync", "test.sync-constructor")
+                .with_authoring(2, "lenso.native-authoring@2")
+                .with_configuration("{}"),
+        ],
+        vec![],
+    );
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativePluginRegistry::new().with_factory(SyncConstructorFactory {
+                object: object.clone(),
+            }),
+        ))
+        .expect("sync custom constructor should create the complete object");
+
+    assert_eq!(
+        object.get().expect("object should be installed").resource.0,
+        "sync"
+    );
+    assert_eq!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        ShutdownOutcome::Clean
+    );
+    assert_eq!(sync_constructor::STOPPED.load(Ordering::SeqCst), 1);
 }
