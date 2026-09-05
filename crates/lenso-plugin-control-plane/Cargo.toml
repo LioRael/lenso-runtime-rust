@@ -1,6 +1,6 @@
 [package]
 name = "lenso-plugin-control-plane"
-version = "0.4.7"
+version = "0.4.8"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -13,10 +13,10 @@ lenso-app-plan.workspace = true
 lenso-plugin-bundle = { version = "0.4.1", path = "../lenso-plugin-bundle" }
 lenso-kernel.workspace = true
 lenso-dylib-adapter = { version = "0.2.4", path = "../lenso-dylib-adapter" }
-lenso-process-adapter = { version = "0.3.1", path = "../lenso-process-adapter" }
+lenso-process-adapter = { version = "0.3.2", path = "../lenso-process-adapter" }
 lenso-quickjs-adapter = { version = "0.2.4", path = "../lenso-quickjs-adapter" }
 lenso-remote-adapter = { version = "0.1.3", path = "../lenso-remote-adapter" }
-lenso-runner = { version = "0.2.5", path = "../lenso-runner" }
+lenso-runner = { version = "0.2.6", path = "../lenso-runner" }
 lenso-runtime-codec = { version = "0.3.2", path = "../lenso-runtime-codec" }
 lenso-wasm-component-adapter = { version = "0.2.6", path = "../lenso-wasm-component-adapter" }
 reqwest.workspace = true
@@ -28,7 +28,7 @@ fs2 = "0.4"
 tokio.workspace = true
 
 [dev-dependencies]
-lenso-native-adapter = { version = "0.3.5", path = "../lenso-native-adapter" }
+lenso-native-adapter = { version = "0.3.6", path = "../lenso-native-adapter" }
 tempfile = "3"
 
 [lints]
