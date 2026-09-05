@@ -1012,7 +1012,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "lenso"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-host-distribution"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "lenso-app-plan",
  "lenso-plugin-control-plane",
@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-plugin-control-plane"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "fs2",
  "futures",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-process-adapter"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64",
  "futures",
