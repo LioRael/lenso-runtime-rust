@@ -1,6 +1,6 @@
 [package]
 name = "lenso-plugin-sdk"
-version = "0.4.3"
+version = "0.4.4"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -18,7 +18,7 @@ required-features = ["test-fixture"]
 
 [dependencies]
 lenso-plugin-sdk-macros = { version = "0.1.0", path = "../lenso-plugin-sdk-macros" }
-lenso-guest-sdk = { version = "0.4.0", path = "../lenso-guest-sdk" }
+lenso-guest-sdk = { version = "0.4.1", path = "../lenso-guest-sdk" }
 serde.workspace = true
 serde_json.workspace = true
 
