@@ -621,6 +621,7 @@ fn configuration_inner_schema(segment: &syn::PathSegment, ty: &Type) -> syn::Res
     configuration_type_schema(inner).map(|(schema, _)| schema)
 }
 
+#[allow(clippy::too_many_lines)]
 fn expand_plugin_function(
     attributes: &PluginAttributes,
     function: &ItemFn,
@@ -663,6 +664,7 @@ fn expand_plugin_function(
         .transpose()?;
     let function_name = &function.sig.ident;
     let generated_plugin = format_ident!("__lenso_plugin_{function_name}");
+    let link_function = format_ident!("__lenso_link_{function_name}");
     let descriptor_constant = descriptor_json.map(|descriptor| {
         let artifact =
             format!("LENSO_PLUGIN_DESCRIPTOR_V1\0{descriptor}\0END_LENSO_PLUGIN_DESCRIPTOR_V1");
@@ -719,7 +721,7 @@ fn expand_plugin_function(
                 }
             }
 
-            fn factory() -> std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
+            pub(super) fn factory() -> std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
                 std::rc::Rc::new(Factory)
             }
 
@@ -732,6 +734,17 @@ fn expand_plugin_function(
 
             // Make Cargo track the manifest that supplied the generated identity.
             const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        }
+
+        /// Explicit Host linkage anchor generated for this Plugin factory.
+        #[doc(hidden)]
+        pub fn #link_function() {
+            #sdk::__private::link_native_plugin(
+                #sdk::__private::LinkedNativePluginFactory::new(
+                    #generated_plugin::factory,
+                    PLUGIN_DESCRIPTOR_JSON,
+                ),
+            );
         }
     })
 }
@@ -866,6 +879,7 @@ fn expand_provides(
         snake(&plugin_ident.to_string())
     );
     let generated_plugin = format_ident!("__lenso_provider_{}", snake(&plugin_ident.to_string()));
+    let link_function = format_ident!("__lenso_link_{}", snake(&plugin_ident.to_string()));
     let lifecycle = format_ident!("__LensoLifecycle{plugin_ident}");
     let artifact = format_ident!("__LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_{plugin_ident}");
     let provider_implementations = contributions
@@ -1019,7 +1033,7 @@ fn expand_provides(
                 }
             }
 
-            fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
+            pub(super) fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
                 ::std::rc::Rc::new(Factory)
             }
 
@@ -1029,6 +1043,17 @@ fn expand_provides(
                     super::PLUGIN_DESCRIPTOR_JSON,
                 )
             }
+        }
+
+        /// Explicit Host linkage anchor generated for this Plugin factory.
+        #[doc(hidden)]
+        pub fn #link_function() {
+            #sdk::__private::link_native_plugin(
+                #sdk::__private::LinkedNativePluginFactory::new(
+                    #generated_plugin::factory,
+                    PLUGIN_DESCRIPTOR_JSON,
+                ),
+            );
         }
     })
 }
@@ -1266,6 +1291,7 @@ fn expand_plugin_struct(
     ]);
     let consumer_finalizer = if attributes.consumer {
         let generated_plugin = format_ident!("__lenso_consumer_{}", snake(&name.to_string()));
+        let link_function = format_ident!("__lenso_link_{}", snake(&name.to_string()));
         let artifact = format_ident!("__LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_{name}");
         Some(quote! {
             /// Generated package-owned Plugin Descriptor bytes.
@@ -1320,7 +1346,7 @@ fn expand_plugin_struct(
                     }
                 }
 
-                fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
+                pub(super) fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
                     ::std::rc::Rc::new(Factory)
                 }
 
@@ -1330,6 +1356,17 @@ fn expand_plugin_struct(
                         super::PLUGIN_DESCRIPTOR_JSON,
                     )
                 }
+            }
+
+            /// Explicit Host linkage anchor generated for this Plugin factory.
+            #[doc(hidden)]
+            pub fn #link_function() {
+                #sdk::__private::link_native_plugin(
+                    #sdk::__private::LinkedNativePluginFactory::new(
+                        #generated_plugin::factory,
+                        PLUGIN_DESCRIPTOR_JSON,
+                    ),
+                );
             }
         })
     } else {
