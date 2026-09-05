@@ -1181,6 +1181,7 @@ dependencies = [
  "lenso-guest-sdk",
  "lenso-plugin-sdk-macros",
  "lenso-process-sdk",
+ "serde",
  "serde_json",
  "wit-bindgen",
 ]

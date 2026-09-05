@@ -45,3 +45,43 @@ Generated glue validates Host initialization, constructs one Plugin object,
 reports invocation settlement separately from its result, and attempts stop once
 after the Host drains admitted work. `--lenso-describe` prints the generated
 descriptor for build tooling without starting the runtime session.
+
+Plugins with dependencies construct one complete object from exact named routes.
+The Capability client is generated from the contract, so business code does not
+copy Capability identities or route IDs:
+
+```rust,ignore
+const REQUIREMENTS: &[lenso::Requirement] = &[
+    lenso::Requirement::one::<DocumentStoreClient>("destination"),
+    lenso::Requirement::one::<DocumentStoreClient>("source"),
+];
+
+struct SyncPlugin {
+    source: DocumentStoreClient,
+    destination: DocumentStoreClient,
+}
+
+impl lenso::Plugin for SyncPlugin {
+    fn requirements() -> &'static [lenso::Requirement] {
+        REQUIREMENTS
+    }
+
+    fn create(context: lenso::CreateContext) -> Result<Self, String> {
+        Ok(Self {
+            source: context.dependencies().one("source")?.client()?,
+            destination: context.dependencies().one("destination")?.client()?,
+        })
+    }
+
+    fn stop(&self, context: lenso::Ctx) -> Result<(), String> {
+        // Optional cleanup through the same exact dependency routes.
+        Ok(())
+    }
+}
+```
+
+Each provider invocation receives a fresh `lenso::Ctx`; dependency calls inherit
+that invocation's cancellation, budget, permissions, and parent scope. Process
+Plugins support these named outbound calls. The current Wasm export remains for
+Plugins without dependencies until its Host Imports world is upgraded to the
+same Authoring V2 contract.
