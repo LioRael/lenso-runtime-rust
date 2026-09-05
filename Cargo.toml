@@ -38,7 +38,7 @@ inventory = "0.3"
 lenso-app-plan = { version = "0.4.1" }
 lenso-kernel = { version = "0.3.2" }
 lenso-runtime-conformance = { version = "0.3.2" }
-lenso-plugin-authoring = { version = "0.1.1" }
+lenso-plugin-authoring = { version = "0.2.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
