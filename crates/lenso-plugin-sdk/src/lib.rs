@@ -250,6 +250,9 @@ impl Ctx {
 
 /// Complete portable Plugin object constructed once per admitted generation.
 pub trait Plugin: Send + Sync + 'static {
+    /// Portable JSON Schema for this Plugin's configuration, when it accepts configuration.
+    const CONFIGURATION_SCHEMA: Option<&'static str> = None;
+
     /// Source-declared named dependencies required by this object.
     fn requirements() -> &'static [Requirement] {
         &[]
@@ -277,42 +280,50 @@ where
 
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
-pub fn __process_descriptor(base: &str, requirements: &[Requirement]) -> String {
+pub fn __process_descriptor(
+    base: &str,
+    requirements: &[Requirement],
+    configuration_schema: Option<&str>,
+) -> String {
     let mut value: Value = serde_json::from_str(base).expect("generated descriptor is valid JSON");
     let object = value
         .as_object_mut()
         .expect("generated descriptor is a JSON object");
-    if requirements.is_empty() {
-        return base.to_owned();
+    if let Some(schema) = configuration_schema {
+        let schema =
+            serde_json::from_str(schema).expect("Plugin configuration schema is valid JSON");
+        object.insert("configuration_schema".to_owned(), schema);
     }
-    object.insert(
-        "abi".to_owned(),
-        Value::String("lenso.json-host-imports@2".to_owned()),
-    );
-    let mut requirements = requirements
-        .iter()
-        .map(|requirement| {
-            serde_json::json!({
-                "requirement_id": requirement.requirement_id,
-                "capability_id": requirement.capability_id,
-                "descriptor_version": requirement.descriptor_version,
-                "cardinality": match requirement.cardinality {
-                    Cardinality::One => "one",
-                    Cardinality::Optional => "optional",
-                    Cardinality::Many => "many",
-                },
+    if !requirements.is_empty() {
+        object.insert(
+            "abi".to_owned(),
+            Value::String("lenso.json-host-imports@2".to_owned()),
+        );
+        let mut requirements = requirements
+            .iter()
+            .map(|requirement| {
+                serde_json::json!({
+                    "requirement_id": requirement.requirement_id,
+                    "capability_id": requirement.capability_id,
+                    "descriptor_version": requirement.descriptor_version,
+                    "cardinality": match requirement.cardinality {
+                        Cardinality::One => "one",
+                        Cardinality::Optional => "optional",
+                        Cardinality::Many => "many",
+                    },
+                })
             })
-        })
-        .collect::<Vec<_>>();
-    requirements.sort_by(|left, right| {
-        left["requirement_id"]
-            .as_str()
-            .cmp(&right["requirement_id"].as_str())
-    });
-    object.insert(
-        "required_capabilities".to_owned(),
-        Value::Array(requirements),
-    );
+            .collect::<Vec<_>>();
+        requirements.sort_by(|left, right| {
+            left["requirement_id"]
+                .as_str()
+                .cmp(&right["requirement_id"].as_str())
+        });
+        object.insert(
+            "required_capabilities".to_owned(),
+            Value::Array(requirements),
+        );
+    }
     serde_json::to_string(&value).expect("generated descriptor remains valid JSON")
 }
 
@@ -619,6 +630,7 @@ macro_rules! __export_json_request_handler {
                         $crate::__process_descriptor(
                             DESCRIPTOR,
                             <super::__LensoExportedPlugin as $crate::Plugin>::requirements(),
+                            <super::__LensoExportedPlugin as $crate::Plugin>::CONFIGURATION_SCHEMA,
                         ),
                     );
                     return;
@@ -734,8 +746,12 @@ mod tests {
     #[test]
     fn process_descriptor_contains_sorted_named_requirements() {
         let base = r#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":"example.sync@1","descriptor_version":"1.0.0","request_operations":["sync"]}]}"#;
-        let descriptor: Value =
-            serde_json::from_str(&__process_descriptor(base, REQUIREMENTS)).unwrap();
+        let descriptor: Value = serde_json::from_str(&__process_descriptor(
+            base,
+            REQUIREMENTS,
+            Some(r#"{"type":"object","required":["prefix"]}"#),
+        ))
+        .unwrap();
         assert_eq!(descriptor["abi"], "lenso.json-host-imports@2");
         assert_eq!(
             descriptor["required_capabilities"][0]["requirement_id"],
@@ -745,6 +761,7 @@ mod tests {
             descriptor["required_capabilities"][1]["requirement_id"],
             "source"
         );
+        assert_eq!(descriptor["configuration_schema"]["type"], "object");
     }
 
     #[test]

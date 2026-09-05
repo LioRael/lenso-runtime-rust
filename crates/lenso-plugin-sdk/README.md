@@ -9,7 +9,7 @@ Plugin projects normally depend on it through the `lenso` facade name:
 
 ```toml
 [dependencies]
-lenso = { package = "lenso-plugin-sdk", version = "0.2" }
+lenso = { package = "lenso-plugin-sdk", version = "0.4.3" }
 ```
 
 ## Migrating from 0.1
@@ -62,6 +62,9 @@ struct SyncPlugin {
 }
 
 impl lenso::Plugin for SyncPlugin {
+    const CONFIGURATION_SCHEMA: Option<&'static str> =
+        Some(include_str!("../sync-config.schema.json"));
+
     fn requirements() -> &'static [lenso::Requirement] {
         REQUIREMENTS
     }
