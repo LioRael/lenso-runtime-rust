@@ -52,6 +52,7 @@ impl Guest for GuestComponent {
                 "1.0.0",
                 &["probe"],
                 &[],
+                &[],
             )
             .unwrap();
         assert_eq!(probe.binding().provider_instance(), "provider");
@@ -70,6 +71,7 @@ impl Guest for GuestComponent {
                 "1.0.0",
                 &[],
                 &[],
+                &["notify"],
             )
             .unwrap();
         notifications

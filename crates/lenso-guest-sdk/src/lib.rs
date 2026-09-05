@@ -584,6 +584,7 @@ impl<H: HostImports> GuestContext<H> {
         descriptor_version: &'static str,
         request_operations: &'static [&'static str],
         stream_operations: &'static [&'static str],
+        event_operations: &'static [&'static str],
     ) -> Result<GuestCapability<'_, H>, GuestError<Value>> {
         let matches = self
             .bindings
@@ -609,6 +610,7 @@ impl<H: HostImports> GuestContext<H> {
         };
         if !operations_match(&binding.request_operations, request_operations)
             || !operations_match(&binding.stream_operations, stream_operations)
+            || !operations_match(&binding.event_operations, event_operations)
         {
             return Err(GuestError::Protocol(
                 GuestProtocolError::DescriptorMismatch {
@@ -631,6 +633,7 @@ impl<H: HostImports> GuestContext<H> {
         descriptor_version: &'static str,
         request_operations: &'static [&'static str],
         stream_operations: &'static [&'static str],
+        event_operations: &'static [&'static str],
     ) -> Result<GuestCapability<'_, H>, GuestError<Value>> {
         let matches = self
             .bindings
@@ -655,6 +658,7 @@ impl<H: HostImports> GuestContext<H> {
             || binding.descriptor_version != descriptor_version
             || !operations_match(&binding.request_operations, request_operations)
             || !operations_match(&binding.stream_operations, stream_operations)
+            || !operations_match(&binding.event_operations, event_operations)
         {
             return Err(GuestError::Protocol(
                 GuestProtocolError::DescriptorMismatch {
@@ -1139,7 +1143,7 @@ mod tests {
         ]);
         let context = GuestContext::load(host).unwrap();
         let capability = context
-            .require("example.chat@1", "1.0.0", &["inspect"], &["chat"])
+            .require("example.chat@1", "1.0.0", &["inspect"], &["chat"], &[])
             .unwrap();
         let response = capability
             .request::<_, Value, Value>("inspect", &json!({ "input": "hello" }))
@@ -1154,11 +1158,36 @@ mod tests {
         let host = MockHost::new([json!({ "ok": [descriptor] }), json!({ "ok": null })]);
         let context = GuestContext::load(host).unwrap();
         let capability = context
-            .require("example.chat@1", "1.0.0", &["inspect"], &["chat"])
+            .require(
+                "example.chat@1",
+                "1.0.0",
+                &["inspect"],
+                &["chat"],
+                &["notify"],
+            )
             .unwrap();
         capability
             .publish_event("notify", &json!({ "text": "ready" }))
             .unwrap();
+    }
+
+    #[test]
+    fn context_rejects_event_operation_drift() {
+        let mut descriptor = binding();
+        descriptor["event_operations"] = json!(["notify"]);
+        let context = GuestContext::load(MockHost::new([json!({ "ok": [descriptor] })])).unwrap();
+        assert!(matches!(
+            context.require(
+                "example.chat@1",
+                "1.0.0",
+                &["inspect"],
+                &["chat"],
+                &["different"],
+            ),
+            Err(GuestError::Protocol(
+                GuestProtocolError::DescriptorMismatch { .. }
+            ))
+        ));
     }
 
     #[test]
@@ -1193,7 +1222,7 @@ mod tests {
         let cancellations = host.cancelled.clone();
         let context = GuestContext::load(host).unwrap();
         let capability = context
-            .require("example.chat@1", "1.0.0", &["inspect"], &["chat"])
+            .require("example.chat@1", "1.0.0", &["inspect"], &["chat"], &[])
             .unwrap();
         let mut stream = capability
             .open_stream::<_, Value, Value>("chat", &json!({}))
