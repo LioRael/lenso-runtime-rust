@@ -1,6 +1,6 @@
 [package]
 name = "lenso-wasm-component-adapter"
-version = "0.2.5"
+version = "0.2.6"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -17,7 +17,7 @@ wasmtime = { version = "47.0.1", default-features = false, features = ["componen
 
 [dev-dependencies]
 hex.workspace = true
-lenso-plugin-bundle = { version = "0.4.0", path = "../lenso-plugin-bundle" }
+lenso-plugin-bundle = { version = "0.4.1", path = "../lenso-plugin-bundle" }
 lenso-runtime-conformance.workspace = true
 sha2.workspace = true
 tempfile = "3"
