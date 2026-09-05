@@ -16,6 +16,11 @@ mod probe {
     pub const DESCRIPTOR_VERSION: &str = "1.0.0";
 }
 
+mod notifications {
+    pub const CAPABILITY_ID: &str = "test.notifications@1";
+    pub const DESCRIPTOR_VERSION: &str = "1.0.0";
+}
+
 struct GuestComponent;
 
 impl Guest for GuestComponent {
@@ -25,7 +30,10 @@ impl Guest for GuestComponent {
                 requests: [echo::ECHO],
                 streams: [],
             }],
-            requires: [("~lenso.runtime.conformance.probe@1", probe)],
+            requires: [
+                ("~lenso.runtime.conformance.probe@1", probe),
+                ("~test.notifications@1", notifications),
+            ],
         }
     }
 
@@ -55,6 +63,18 @@ impl Guest for GuestComponent {
             )
             .unwrap();
         assert_eq!(imported["value"], format!("Echo: wasm-{request}"));
+        let notifications = context
+            .require_named(
+                "~test.notifications@1",
+                "test.notifications@1",
+                "1.0.0",
+                &[],
+                &[],
+            )
+            .unwrap();
+        notifications
+            .publish_event("notify", &serde_json::json!({ "value": "from-wasm" }))
+            .unwrap();
         Ok(request_json)
     }
 

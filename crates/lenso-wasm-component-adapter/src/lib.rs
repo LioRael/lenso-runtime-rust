@@ -67,6 +67,7 @@ mod host_imports_abi {
             world plugin {
                 import host-bindings: func() -> string;
                 import host-invoke: func(binding-id: u32, operation: string, request-json: string) -> string;
+                import host-event-publish: func(binding-id: u32, operation: string, event-json: string) -> string;
                 import host-stream-open: func(binding-id: u32, operation: string, request-json: string) -> string;
                 import host-stream-send: func(stream-id: u64, message-json: string) -> string;
                 import host-stream-receive: func(stream-id: u64) -> string;
@@ -292,6 +293,11 @@ enum GuestCall {
 enum HostImportCall {
     Bindings,
     Invoke {
+        binding_id: u32,
+        operation: String,
+        payload: String,
+    },
+    EventPublish {
         binding_id: u32,
         operation: String,
         payload: String,
@@ -553,6 +559,21 @@ impl WasmGeneration {
                         .invoke(binding_id, operation, payload, context)
                         .await,
                 ),
+                Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+            },
+            HostImportCall::EventPublish {
+                binding_id,
+                operation,
+                payload,
+            } => match parse_host_payload(&payload) {
+                Ok(payload) => match self
+                    .host_imports
+                    .publish_event(binding_id, operation, payload, context)
+                    .await
+                {
+                    Ok(()) => serde_json::json!({ "ok": null }),
+                    Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
+                },
                 Err(error) => serde_json::json!({ "runtime": json_runtime_failure(&error) }),
             },
             HostImportCall::StreamOpen {
@@ -900,6 +921,22 @@ impl host_imports_abi::PluginImports for HostState {
                 binding_id,
                 operation,
                 payload: request_json,
+            },
+        )
+    }
+
+    fn host_event_publish(
+        &mut self,
+        binding_id: u32,
+        operation: String,
+        event_json: String,
+    ) -> String {
+        call_wasm_host(
+            self,
+            HostImportCall::EventPublish {
+                binding_id,
+                operation,
+                payload: event_json,
             },
         )
     }

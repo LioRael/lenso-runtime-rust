@@ -3,6 +3,7 @@ package lenso:runtime@1.0.0;
 world plugin {
   import host-bindings: func() -> string;
   import host-invoke: func(binding-id: u32, operation: string, request-json: string) -> string;
+  import host-event-publish: func(binding-id: u32, operation: string, event-json: string) -> string;
   import host-stream-open: func(binding-id: u32, operation: string, request-json: string) -> string;
   import host-stream-send: func(stream-id: u64, message-json: string) -> string;
   import host-stream-receive: func(stream-id: u64) -> string;

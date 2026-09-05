@@ -1,4 +1,13 @@
-use std::{any::Any, process::Command, sync::OnceLock, time::Duration};
+use std::{
+    any::Any,
+    process::Command,
+    rc::Rc,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use futures::FutureExt;
 use lenso_app_plan::{
@@ -7,8 +16,8 @@ use lenso_app_plan::{
 };
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, ExecutionAdapter, ExecutionAdapterCatalog,
-    InvocationContext, Kernel, NativeStreamItem, PluginDependencyHandle, RequestCapability,
-    RuntimeFailure,
+    InvocationContext, Kernel, NativeEventEndpoint, NativeStreamItem, NoopPluginLifecycle,
+    PluginDependencyHandle, PluginEventDependencyHandle, RequestCapability, RuntimeFailure,
 };
 use lenso_plugin_bundle::{
     SourcePluginBuild, build_source_plugin_bundle, extract_plugin_descriptor, sha256_digest,
@@ -31,6 +40,9 @@ static RUST_GUEST: OnceLock<Vec<u8>> = OnceLock::new();
 static RUST_HOST_IMPORT_GUEST: OnceLock<Vec<u8>> = OnceLock::new();
 static RUST_STREAM_GUEST: OnceLock<Vec<u8>> = OnceLock::new();
 static FIXTURE_TARGET: OnceLock<tempfile::TempDir> = OnceLock::new();
+
+const NOTIFICATIONS_CAPABILITY_ID: &str = "test.notifications@1";
+const NOTIFICATIONS_VERSION: &str = "1.0.0";
 
 fn fixture_target() -> &'static std::path::Path {
     FIXTURE_TARGET
@@ -249,6 +261,148 @@ impl JsonCapabilityCodec for ProbeCodec {
 }
 
 #[derive(Debug)]
+struct NotificationsCodec;
+
+impl JsonCapabilityCodec for NotificationsCodec {
+    fn capability_id(&self) -> &'static str {
+        NOTIFICATIONS_CAPABILITY_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        NOTIFICATIONS_VERSION
+    }
+
+    fn request_operations(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn event_operations(&self) -> &'static [&'static str] {
+        &["notify"]
+    }
+
+    fn encode_request(&self, operation: &str, _: &dyn Any) -> Result<Value, RuntimeFailure> {
+        Err(RuntimeFailure::UnknownOperation {
+            capability: NOTIFICATIONS_CAPABILITY_ID,
+            operation: operation.to_owned(),
+        })
+    }
+
+    fn decode_response(&self, operation: &str, _: Value) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(RuntimeFailure::UnknownOperation {
+            capability: NOTIFICATIONS_CAPABILITY_ID,
+            operation: operation.to_owned(),
+        })
+    }
+
+    fn decode_domain_error(
+        &self,
+        operation: &str,
+        _: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(RuntimeFailure::UnknownOperation {
+            capability: NOTIFICATIONS_CAPABILITY_ID,
+            operation: operation.to_owned(),
+        })
+    }
+
+    fn publish_host_event(
+        &self,
+        dependency: PluginEventDependencyHandle,
+        operation: String,
+        event: Value,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move {
+            let results = dependency
+                .typed::<Notifications>()?
+                .publish_with_context(&operation, context, event)
+                .await;
+            let [result] = results.as_slice() else {
+                return Err(RuntimeFailure::ProtocolViolation {
+                    capability: NOTIFICATIONS_CAPABILITY_ID,
+                });
+            };
+            match result.admission() {
+                lenso_kernel::EventAdmission::Accepted => Ok(()),
+                lenso_kernel::EventAdmission::Unavailable => Err(RuntimeFailure::Unavailable {
+                    capability: NOTIFICATIONS_CAPABILITY_ID,
+                }),
+                lenso_kernel::EventAdmission::Exhausted => Err(RuntimeFailure::ResourceExhausted {
+                    capability: NOTIFICATIONS_CAPABILITY_ID,
+                    operation,
+                }),
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct Notifications;
+
+impl lenso_kernel::EventCapability for Notifications {
+    type Event = Value;
+
+    const ID: &'static str = NOTIFICATIONS_CAPABILITY_ID;
+    const DESCRIPTOR_VERSION: &'static str = NOTIFICATIONS_VERSION;
+}
+
+#[derive(Debug)]
+struct NotificationsEndpoint {
+    publications: Arc<AtomicUsize>,
+}
+
+impl NativeEventEndpoint for NotificationsEndpoint {
+    fn capability_id(&self) -> &'static str {
+        NOTIFICATIONS_CAPABILITY_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        NOTIFICATIONS_VERSION
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        &["notify"]
+    }
+
+    fn publish(
+        &self,
+        operation: &str,
+        event: Box<dyn Any>,
+        _: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        let result = if operation != "notify" || event.downcast::<Value>().is_err() {
+            Err(RuntimeFailure::ProtocolViolation {
+                capability: NOTIFICATIONS_CAPABILITY_ID,
+            })
+        } else {
+            self.publications.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+        Box::pin(futures::future::ready(result))
+    }
+}
+
+#[derive(Debug)]
+struct NotificationsFactory {
+    publications: Arc<AtomicUsize>,
+}
+
+impl ConformancePluginFactory for NotificationsFactory {
+    fn package_id(&self) -> &'static str {
+        "test.notifications-provider"
+    }
+
+    fn instantiate(&self, _: &PluginInstancePlan) -> Result<ConformancePlugin, RuntimeFailure> {
+        Ok(ConformancePlugin::with_event_endpoints(
+            vec![Rc::new(NotificationsEndpoint {
+                publications: self.publications.clone(),
+            })],
+            NoopPluginLifecycle,
+        ))
+    }
+}
+
+#[derive(Debug)]
 struct EmptyConsumerFactory;
 
 impl ConformancePluginFactory for EmptyConsumerFactory {
@@ -429,17 +583,22 @@ fn real_component_import_invokes_only_the_plan_bound_host_capability() {
     let digest = format!("sha256:{}", hex::encode(Sha256::digest(&component)));
     let artifact =
         ArtifactHandle::open(artifact_file.path(), &digest, component.len() as u64).unwrap();
+    let publications = Arc::new(AtomicUsize::new(0));
     let wasm = WasmComponentAdapter::new(
         ArtifactCatalog::new()
             .with_artifact("plugin", artifact)
             .unwrap(),
     )
     .with_codec(NarrowCodec)
-    .with_codec(ProbeCodec);
+    .with_codec(ProbeCodec)
+    .with_codec(NotificationsCodec);
     let adapters = ExecutionAdapterCatalog::new()
         .with_adapter(
             ConformanceExecutionAdapter::new()
                 .with_factory(ProbeProviderFactory)
+                .with_factory(NotificationsFactory {
+                    publications: publications.clone(),
+                })
                 .with_factory(EmptyConsumerFactory),
         )
         .unwrap()
@@ -462,6 +621,7 @@ fn real_component_import_invokes_only_the_plan_bound_host_capability() {
         .expect("the Wasm guest should reach the host")
         .expect("the host should not return a Domain Error");
     assert_eq!(result, 7);
+    assert_eq!(publications.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -647,6 +807,17 @@ fn wasm_guest_import_plan() -> ResolvedAppPlan {
                     [PROBE_OPERATION],
                 ),
             ),
+            PluginInstancePlan::new("~test.notifications@1", "test.notifications-provider")
+                .with_capability(
+                    CapabilityEndpointPlan::new(
+                        NOTIFICATIONS_CAPABILITY_ID,
+                        NOTIFICATIONS_VERSION,
+                        ["notify"],
+                    )
+                    .with_event_operation("notify")
+                    .with_event_capacity(4)
+                    .with_limits(0, 4),
+                ),
             PluginInstancePlan::new("plugin", "test.component")
                 .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::new(EXECUTION_CLASS))
@@ -654,6 +825,13 @@ fn wasm_guest_import_plan() -> ResolvedAppPlan {
                     PROBE_CAPABILITY_ID,
                     PROBE_DESCRIPTOR_VERSION,
                 ))
+                .with_requirement(
+                    CapabilityRequirementPlan::one(
+                        NOTIFICATIONS_CAPABILITY_ID,
+                        NOTIFICATIONS_VERSION,
+                    )
+                    .with_requirement_id("~test.notifications@1"),
+                )
                 .with_capability(CapabilityEndpointPlan::new(
                     EchoCapability::ID,
                     EchoCapability::DESCRIPTOR_VERSION,
@@ -673,6 +851,13 @@ fn wasm_guest_import_plan() -> ResolvedAppPlan {
                 PROBE_DESCRIPTOR_VERSION,
                 "provider",
             ),
+            CapabilityBinding::new(
+                "plugin",
+                NOTIFICATIONS_CAPABILITY_ID,
+                NOTIFICATIONS_VERSION,
+                "~test.notifications@1",
+            )
+            .with_requirement_id("~test.notifications@1"),
             CapabilityBinding::new(
                 "consumer",
                 EchoCapability::ID,

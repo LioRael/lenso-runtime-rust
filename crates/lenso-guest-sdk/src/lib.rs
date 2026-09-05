@@ -12,6 +12,9 @@ use serde_json::Value;
 pub trait HostImports: Clone + std::fmt::Debug + 'static {
     fn bindings(&self) -> String;
     fn invoke(&self, binding_id: u32, operation: &str, request_json: &str) -> String;
+    fn event_publish(&self, _: u32, _: &str, _: &str) -> String {
+        r#"{"runtime":{"kind":"unavailable","capability":"lenso.json-host-imports@2"}}"#.to_owned()
+    }
     fn stream_open(&self, binding_id: u32, operation: &str, request_json: &str) -> String;
     fn stream_send(&self, stream_id: u64, message_json: &str) -> String;
     fn stream_receive(&self, stream_id: u64) -> String;
@@ -366,6 +369,7 @@ macro_rules! wasm_host {
             $visibility struct $name {
                 bindings: host_bindings,
                 invoke: host_invoke,
+                event_publish: host_event_publish,
                 stream_open: host_stream_open,
                 stream_send: host_stream_send,
                 stream_receive: host_stream_receive,
@@ -378,6 +382,31 @@ macro_rules! wasm_host {
         $visibility:vis struct $name:ident {
             bindings: $bindings:path,
             invoke: $invoke:path,
+            stream_open: $stream_open:path,
+            stream_send: $stream_send:path,
+            stream_receive: $stream_receive:path,
+            stream_close_send: $stream_close_send:path,
+            stream_cancel: $stream_cancel:path $(,)?
+        }
+    ) => {
+        $crate::wasm_host! {
+            $visibility struct $name {
+                bindings: $bindings,
+                invoke: $invoke,
+                event_publish: $crate::__unsupported_event_publish,
+                stream_open: $stream_open,
+                stream_send: $stream_send,
+                stream_receive: $stream_receive,
+                stream_close_send: $stream_close_send,
+                stream_cancel: $stream_cancel,
+            }
+        }
+    };
+    (
+        $visibility:vis struct $name:ident {
+            bindings: $bindings:path,
+            invoke: $invoke:path,
+            event_publish: $event_publish:path,
             stream_open: $stream_open:path,
             stream_send: $stream_send:path,
             stream_receive: $stream_receive:path,
@@ -400,6 +429,15 @@ macro_rules! wasm_host {
                 request_json: &str,
             ) -> ::std::string::String {
                 $invoke(binding_id, operation, request_json)
+            }
+
+            fn event_publish(
+                &self,
+                binding_id: u32,
+                operation: &str,
+                event_json: &str,
+            ) -> ::std::string::String {
+                $event_publish(binding_id, operation, event_json)
             }
 
             fn stream_open(
@@ -428,6 +466,11 @@ macro_rules! wasm_host {
             }
         }
     };
+}
+
+#[doc(hidden)]
+pub fn __unsupported_event_publish(_: u32, _: &str, _: &str) -> String {
+    r#"{"runtime":{"kind":"unavailable","capability":"lenso.json-host-imports@2"}}"#.to_owned()
 }
 
 /// A bounded Runtime Failure projection safe for guest code to inspect.
@@ -493,6 +536,8 @@ pub struct GuestBinding {
     descriptor_version: String,
     request_operations: Vec<String>,
     stream_operations: Vec<String>,
+    #[serde(default)]
+    event_operations: Vec<String>,
 }
 
 impl GuestBinding {
@@ -662,6 +707,24 @@ impl<H: HostImports> GuestCapability<'_, H> {
                 .host
                 .invoke(self.binding.binding_id, operation, &request),
         )
+    }
+
+    /// Publishes one typed ephemeral Event Operation after Host admission.
+    pub fn publish_event<Event>(
+        &self,
+        operation: &str,
+        event: &Event,
+    ) -> Result<(), GuestError<Value>>
+    where
+        Event: Serialize,
+    {
+        let event = serde_json::to_string(event)
+            .map_err(|_| GuestError::protocol(GuestProtocolError::InvalidValue))?;
+        decode_transport_success(&self.host.event_publish(
+            self.binding.binding_id,
+            operation,
+            &event,
+        ))
     }
 
     /// Opens one typed bidirectional Stream Operation.
@@ -969,6 +1032,10 @@ mod tests {
             self.next()
         }
 
+        fn event_publish(&self, _: u32, _: &str, _: &str) -> String {
+            self.next()
+        }
+
         fn stream_open(&self, _: u32, _: &str, _: &str) -> String {
             self.next()
         }
@@ -1026,6 +1093,7 @@ mod tests {
         struct MacroHost {
             bindings: raw_bindings,
             invoke: raw_invoke,
+            event_publish: raw_invoke,
             stream_open: raw_invoke,
             stream_send: raw_stream,
             stream_receive: raw_receive,
@@ -1077,6 +1145,20 @@ mod tests {
             .request::<_, Value, Value>("inspect", &json!({ "input": "hello" }))
             .unwrap();
         assert_eq!(response, json!({ "answer": "ready" }));
+    }
+
+    #[test]
+    fn typed_event_publishes_through_the_exact_plan_binding() {
+        let mut descriptor = binding();
+        descriptor["event_operations"] = json!(["notify"]);
+        let host = MockHost::new([json!({ "ok": [descriptor] }), json!({ "ok": null })]);
+        let context = GuestContext::load(host).unwrap();
+        let capability = context
+            .require("example.chat@1", "1.0.0", &["inspect"], &["chat"])
+            .unwrap();
+        capability
+            .publish_event("notify", &json!({ "text": "ready" }))
+            .unwrap();
     }
 
     #[test]
