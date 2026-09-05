@@ -16,8 +16,9 @@ use lenso_app_plan::{
 use lenso_kernel::{
     InvocationContext, NativeEventEndpoint, NativeRequestEndpoint, NativeStream,
     NativeStreamEndpoint, NativeStreamItem, NativeStreamSession, PluginDependencies,
-    PluginDependencyHandle, PluginStreamDependencyHandle, PreparedBinding, PreparedNativeApp,
-    PreparedNativePlugin, PreparedStreamBinding, RuntimeFailure, StreamCapability, StreamEvent,
+    PluginDependencyHandle, PluginEventDependencyHandle, PluginStreamDependencyHandle,
+    PreparedBinding, PreparedNativeApp, PreparedNativePlugin, PreparedStreamBinding,
+    RuntimeFailure, StreamCapability, StreamEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -555,6 +556,20 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
             &operation,
         ))))
     }
+    /// Publishes one exact Plan-bound host Event dependency from portable JSON.
+    fn publish_host_event(
+        &self,
+        dependency: PluginEventDependencyHandle,
+        operation: String,
+        event: Value,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        let _ = (dependency, event, context);
+        Box::pin(futures::future::ready(Err(unknown_operation(
+            self.capability_id(),
+            &operation,
+        ))))
+    }
 }
 
 /// Exact host outcome returned by a byte-oriented Plugin invocation.
@@ -940,6 +955,8 @@ pub struct JsonHostBindingDescriptor {
     pub descriptor_digest: String,
     pub request_operations: Vec<String>,
     pub stream_operations: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub event_operations: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -948,6 +965,7 @@ struct JsonHostBinding {
     codec: Rc<dyn JsonCapabilityCodec>,
     request: Option<PluginDependencyHandle>,
     stream: Option<PluginStreamDependencyHandle>,
+    event: Option<PluginEventDependencyHandle>,
 }
 
 impl std::fmt::Debug for JsonHostBinding {
@@ -1020,7 +1038,8 @@ impl JsonHostImports {
                 })?;
             let request = dependency.handle();
             let stream = dependency.stream_handle();
-            validate_host_binding(&codec, request.as_ref(), stream.as_ref())?;
+            let event = dependency.event_handle();
+            validate_host_binding(&codec, request.as_ref(), stream.as_ref(), event.as_ref())?;
             let binding_id =
                 u32::try_from(index).map_err(|_| RuntimeFailure::InvalidResolvedPlan {
                     detail: "guest import binding table exceeds u32 identity space".to_owned(),
@@ -1047,10 +1066,18 @@ impl JsonHostImports {
                             .map(|item| (*item).to_owned())
                             .collect()
                     }),
+                    event_operations: event.as_ref().map_or_else(Vec::new, |handle| {
+                        handle
+                            .operations()
+                            .iter()
+                            .map(|item| (*item).to_owned())
+                            .collect()
+                    }),
                 },
                 codec,
                 request,
                 stream,
+                event,
             });
         }
         self.bindings.replace(Some(bindings));
@@ -1094,6 +1121,31 @@ impl JsonHostImports {
         binding
             .codec
             .invoke_host_request(dependency, operation, request, context)
+    }
+
+    /// Publishes through one activated Event binding.
+    pub fn publish_event(
+        &self,
+        binding_id: u32,
+        operation: String,
+        event: Value,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        let binding = match self.binding(binding_id) {
+            Ok(binding) => binding,
+            Err(error) => return Box::pin(futures::future::ready(Err(error))),
+        };
+        let Some(dependency) = binding.event else {
+            return Box::pin(futures::future::ready(Err(
+                RuntimeFailure::UnknownOperation {
+                    capability: binding.codec.capability_id(),
+                    operation,
+                },
+            )));
+        };
+        binding
+            .codec
+            .publish_host_event(dependency, operation, event, context)
     }
 
     /// Opens one activated Stream binding and assigns an Adapter-local import id.
@@ -1222,11 +1274,13 @@ fn validate_host_binding(
     codec: &Rc<dyn JsonCapabilityCodec>,
     request: Option<&PluginDependencyHandle>,
     stream: Option<&PluginStreamDependencyHandle>,
+    event: Option<&PluginEventDependencyHandle>,
 ) -> Result<(), RuntimeFailure> {
     for (capability, version) in request
         .map(|handle| (handle.capability_id(), handle.descriptor_version()))
         .into_iter()
         .chain(stream.map(|handle| (handle.capability_id(), handle.descriptor_version())))
+        .chain(event.map(|handle| (handle.capability_id(), handle.descriptor_version())))
     {
         if capability != codec.capability_id() || version != codec.descriptor_version() {
             return Err(RuntimeFailure::ProtocolViolation {
