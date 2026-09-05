@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 struct SyncPlugin {
     routes: Mutex<BTreeMap<String, String>>,
     lifecycle_calls: Mutex<bool>,
+    exit_after_construct_ms: Mutex<Option<u64>>,
 }
 
 #[derive(Debug)]
@@ -41,6 +42,13 @@ impl ProcessPluginV2 for SyncPlugin {
             .get("lifecycle_calls")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        *self
+            .exit_after_construct_ms
+            .lock()
+            .expect("fixture exit flag") = params
+            .config
+            .get("exit_after_construct_ms")
+            .and_then(Value::as_u64);
         Ok(())
     }
 
@@ -61,6 +69,16 @@ impl ProcessPluginV2 for SyncPlugin {
                 Ok(outcome) => return Err(format!("unexpected construction outcome: {outcome:?}")),
                 Err(detail) => return Err(detail),
             }
+        }
+        if let Some(delay) = *self
+            .exit_after_construct_ms
+            .lock()
+            .expect("fixture exit flag")
+        {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                std::process::exit(23);
+            });
         }
         Ok(SyncInstance {
             source_route: routes["source"].clone(),
