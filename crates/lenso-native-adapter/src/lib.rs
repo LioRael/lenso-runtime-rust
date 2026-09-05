@@ -116,10 +116,11 @@ pub fn link_native_plugin(factory: LinkedNativePluginFactory) {
 }
 
 fn linked_factories() -> Vec<LinkedNativePluginFactory> {
-    let mut factories = inventory::iter::<LinkedNativePluginFactory>
+    let factories = inventory::iter::<LinkedNativePluginFactory>
         .into_iter()
         .copied()
         .collect::<Vec<_>>();
+    let mut factories = factories;
     factories.extend(
         explicitly_linked_factories()
             .lock()
@@ -127,7 +128,15 @@ fn linked_factories() -> Vec<LinkedNativePluginFactory> {
             .iter()
             .copied(),
     );
-    factories
+    factories.into_iter().fold(Vec::new(), |mut unique, factory| {
+        if !unique.iter().any(|linked: &LinkedNativePluginFactory| {
+            linked.descriptor == factory.descriptor
+                && std::ptr::fn_addr_eq(linked.constructor, factory.constructor)
+        }) {
+            unique.push(factory);
+        }
+        unique
+    })
 }
 
 /// Endpoints created for one statically linked Plugin Instance generation.
