@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-guest-sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-plugin-sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "lenso-guest-sdk",
  "lenso-plugin-sdk-macros",
