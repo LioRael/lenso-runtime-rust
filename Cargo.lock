@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-host-distribution"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "lenso-app-plan",
  "lenso-plugin-control-plane",
@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-plugin-control-plane"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "fs2",
  "futures",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-process-adapter"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "base64",
  "futures",
@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-runner"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "cpu-time",
  "fs2",

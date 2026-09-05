@@ -16,7 +16,7 @@ root-slot = "test"
 futures.workspace = true
 lenso-kernel.workspace = true
 lenso-plugin-authoring.workspace = true
-lenso-plugin-control-plane = { version = "0.4.9", path = "../lenso-plugin-control-plane", optional = true }
+lenso-plugin-control-plane = { version = "0.4.10", path = "../lenso-plugin-control-plane", optional = true }
 lenso-native-adapter = { version = "0.3.8", path = "../lenso-native-adapter" }
 serde.workspace = true
 serde_json.workspace = true
