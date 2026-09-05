@@ -763,13 +763,16 @@ struct CapabilityContribution {
     lower: syn::Ident,
     object_lower: syn::Ident,
     trait_object_lower: syn::Ident,
+    provider_wrapper: syn::Ident,
+    projection_module: syn::Ident,
 }
 
 fn capability_contributions(capabilities: &[Path]) -> syn::Result<Vec<CapabilityContribution>> {
     let mut seen = BTreeSet::new();
     capabilities
         .iter()
-        .map(|capability| {
+        .enumerate()
+        .map(|(index, capability)| {
             let path = quote!(#capability).to_string();
             if !seen.insert(path) {
                 return Err(syn::Error::new_spanned(
@@ -801,6 +804,8 @@ fn capability_contributions(capabilities: &[Path]) -> syn::Result<Vec<Capability
                 trait_object_lower: format_ident!(
                     "__lenso_native_lower_trait_object_{capability_snake}"
                 ),
+                provider_wrapper: format_ident!("Provider"),
+                projection_module: format_ident!("projection_{index}"),
             })
         })
         .collect()
@@ -865,28 +870,52 @@ fn expand_provides(
     let artifact = format_ident!("__LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_{plugin_ident}");
     let provider_implementations = contributions
         .iter()
-        .flat_map(|contribution| {
+        .filter_map(|contribution| {
             let namespace = &contribution.namespace;
             let lower = &contribution.lower;
+            lowers_domain_methods.then(|| {
+                quote! {
+                    #namespace::#lower!(#plugin_ident, #sdk::__private);
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let object_provider_implementations = contributions
+        .iter()
+        .map(|contribution| {
+            let namespace = &contribution.namespace;
+            let provider_wrapper = &contribution.provider_wrapper;
+            let projection_module = &contribution.projection_module;
             let object_lower = if lowers_domain_methods {
                 &contribution.object_lower
             } else {
                 &contribution.trait_object_lower
             };
-            let mut implementations = Vec::new();
-            if lowers_domain_methods {
-                implementations.push(quote! {
-                    #namespace::#lower!(#plugin_ident, #sdk::__private);
-                });
+            quote! {
+                mod #projection_module {
+                    #[derive(Clone, Debug)]
+                    pub(super) struct #provider_wrapper(
+                        pub(super) #sdk::__private::PluginObject<super::super::#plugin_ident>
+                    );
+
+                    impl #provider_wrapper {
+                        fn get(
+                            &self,
+                        ) -> Result<
+                            ::std::rc::Rc<super::super::#plugin_ident>,
+                            #sdk::__private::RuntimeFailure,
+                        > {
+                            self.0.get()
+                        }
+                    }
+
+                    super::super::#namespace::#object_lower!(
+                        #provider_wrapper,
+                        super::super::#plugin_ident,
+                        #sdk::__private
+                    );
+                }
             }
-            implementations.push(quote! {
-                #namespace::#object_lower!(
-                    #sdk::__private::PluginObject<#plugin_ident>,
-                    #plugin_ident,
-                    #sdk::__private
-                );
-            });
-            implementations
         })
         .collect::<Vec<_>>();
     let endpoint_contributions = contributions
@@ -894,9 +923,14 @@ fn expand_provides(
         .map(|contribution| {
             let namespace = &contribution.namespace;
             let endpoints = &contribution.endpoints;
+            let provider_wrapper = &contribution.provider_wrapper;
+            let projection_module = &contribution.projection_module;
             quote! {
                 let (provided_requests, provided_streams, provided_events) =
-                    super::#namespace::#endpoints!(plugin.clone(), #sdk::__private);
+                    super::#namespace::#endpoints!(
+                        #projection_module::#provider_wrapper(plugin.clone()),
+                        #sdk::__private
+                    );
                 request_endpoints.extend(provided_requests);
                 stream_endpoints.extend(provided_streams);
                 event_endpoints.extend(provided_events);
@@ -931,6 +965,8 @@ fn expand_provides(
 
         #[doc(hidden)]
         mod #generated_plugin {
+            #(#object_provider_implementations)*
+
             #[derive(Clone, Copy, Debug, Default)]
             struct Factory;
 
