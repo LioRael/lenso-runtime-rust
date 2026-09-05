@@ -14,11 +14,12 @@ use std::{
 
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, PluginInstancePlan,
+    ExecutionClassId, PluginInstancePlan, TerminalPolicy,
 };
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, ExecutionAdapterCatalog, InvocationContext, Kernel,
-    NativeRequestEndpoint, PluginDependencyHandle, RequestCapability, RuntimeFailure,
+    NativeRequestEndpoint, PluginDependencyHandle, RequestCapability, RuntimeDriver,
+    RuntimeFailure,
 };
 use lenso_native_adapter::{
     NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
@@ -448,13 +449,49 @@ fn ignored_cancellation_keeps_capacity_until_the_process_is_killed_and_reaped() 
         blocked_result,
         Err(RuntimeFailure::Cancelled { request_id: 40 })
     ));
-    assert!(
-        matches!(&second_result, Err(RuntimeFailure::PluginFailure { .. })),
-        "second result: {second_result:?}"
+    assert_eq!(
+        second_result,
+        Err(RuntimeFailure::Unavailable {
+            capability: SYNC_ID,
+        })
     );
     assert!(started.elapsed() >= Duration::from_millis(30));
     assert_eq!(source_calls.load(Ordering::Relaxed), 0);
     assert_eq!(destination_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn unexpected_process_exit_reports_a_host_essential_terminal_failure() {
+    let source = Arc::new(Mutex::new(BTreeMap::new()));
+    let destination = Arc::new(Mutex::new(BTreeMap::new()));
+    let source_calls = Arc::new(AtomicUsize::new(0));
+    let destination_calls = Arc::new(AtomicUsize::new(0));
+    let (driver, app) = start_process_app_with_configuration(
+        &source,
+        &destination,
+        &source_calls,
+        &destination_calls,
+        ProcessLimits::default(),
+        false,
+        &json!({"exit_after_construct_ms": 25}),
+        true,
+    );
+
+    std::thread::sleep(Duration::from_millis(75));
+    for _ in 0..8 {
+        driver.run(async { driver.yield_now().await });
+    }
+
+    assert!(app.is_failed());
+    assert!(!app.is_accepting());
+    let terminal = app.terminal_failure();
+    assert!(
+        matches!(
+        terminal,
+        Some(RuntimeFailure::PluginRestartExhausted { ref instance, .. }) if instance == "sync"
+        ),
+        "terminal failure: {terminal:?}"
+    );
 }
 
 fn start_process_app(
@@ -498,6 +535,29 @@ fn start_process_app_with_engine(
     limits: ProcessLimits,
     generic_engine: bool,
     lifecycle_calls: bool,
+) -> (DeterministicDriver, lenso_kernel::NativeApp) {
+    start_process_app_with_configuration(
+        source,
+        destination,
+        source_calls,
+        destination_calls,
+        limits,
+        generic_engine,
+        &json!({"lifecycle_calls": lifecycle_calls}),
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_process_app_with_configuration(
+    source: &Arc<Mutex<BTreeMap<String, String>>>,
+    destination: &Arc<Mutex<BTreeMap<String, String>>>,
+    source_calls: &Arc<AtomicUsize>,
+    destination_calls: &Arc<AtomicUsize>,
+    limits: ProcessLimits,
+    generic_engine: bool,
+    configuration: &Value,
+    host_essential: bool,
 ) -> (DeterministicDriver, lenso_kernel::NativeApp) {
     let executable = std::path::Path::new(env!("CARGO_BIN_EXE_lenso-process-v2-test-fixture"));
     let bytes = fs::read(executable).unwrap();
@@ -556,12 +616,7 @@ fn start_process_app_with_engine(
                 CapabilityEndpointPlan::new(STORE_ID, DESCRIPTOR_VERSION, ["put", "read"]),
             ),
             PluginInstancePlan::new("sync", "test.process-v2")
-                .with_configuration(
-                    serde_json::json!({
-                        "lifecycle_calls": lifecycle_calls,
-                    })
-                    .to_string(),
-                )
+                .with_configuration(configuration.to_string())
                 .with_authoring(2, RUNTIME_PROFILE_V2)
                 .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::new(process_execution_class))
@@ -591,9 +646,27 @@ fn start_process_app_with_engine(
     )
     .resolve()
     .unwrap();
+    let plan = apply_terminal_policy(plan, host_essential);
     let driver = DeterministicDriver::new();
     let app = driver
         .run(Kernel::start(plan, driver.clone(), adapters))
         .expect("the Process V2 App should activate");
     (driver, app)
+}
+
+fn apply_terminal_policy(
+    plan: lenso_app_plan::ResolvedAppPlan,
+    host_essential: bool,
+) -> lenso_app_plan::ResolvedAppPlan {
+    if !host_essential {
+        return plan;
+    }
+    plan.with_terminal_policy(TerminalPolicy::HostEssential {
+        roots: vec!["sync".to_owned()],
+        closure: vec![
+            "destination".to_owned(),
+            "source".to_owned(),
+            "sync".to_owned(),
+        ],
+    })
 }

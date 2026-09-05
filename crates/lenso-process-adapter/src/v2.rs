@@ -45,6 +45,19 @@ type InvocationSender = mpsc::UnboundedSender<InvocationEvent>;
 type PendingInvocations = Arc<Mutex<BTreeMap<String, InvocationSender>>>;
 
 #[derive(Debug)]
+enum ReaderExit {
+    Stopped,
+    Failed(String),
+}
+
+struct ReaderLifecycle {
+    initialized: LifecycleSlot<InitializeParams>,
+    constructed: LifecycleSlot<lenso_process_protocol::authoring::ConstructedResult>,
+    stopped: LifecycleSlot<lenso_process_protocol::authoring::StoppedResult>,
+    exit: futures::channel::oneshot::Sender<ReaderExit>,
+}
+
+#[derive(Debug)]
 enum InvocationEvent {
     Outcome(InvocationResult),
     Outbound(OutboundCallParams),
@@ -125,6 +138,7 @@ struct ProcessGenerationV2 {
     writer: Arc<Mutex<BufWriter<ChildStdin>>>,
     child: Arc<Mutex<Option<Child>>>,
     reader: Mutex<Option<thread::JoinHandle<()>>>,
+    reader_exit: std::cell::RefCell<Option<futures::channel::oneshot::Receiver<ReaderExit>>>,
     initialized: LifecycleSlot<InitializeParams>,
     constructed: LifecycleSlot<lenso_process_protocol::authoring::ConstructedResult>,
     stopped_result: LifecycleSlot<lenso_process_protocol::authoring::StoppedResult>,
@@ -219,11 +233,15 @@ impl ProcessGenerationV2 {
         let stopped_result = LifecycleSlot::default();
         let pending = PendingInvocations::default();
         let failed = Arc::new(AtomicBool::new(false));
+        let (reader_exit_sender, reader_exit) = futures::channel::oneshot::channel();
         let reader = match spawn_reader(
             stdout,
-            initialized.clone(),
-            constructed.clone(),
-            stopped_result.clone(),
+            ReaderLifecycle {
+                initialized: initialized.clone(),
+                constructed: constructed.clone(),
+                stopped: stopped_result.clone(),
+                exit: reader_exit_sender,
+            },
             pending.clone(),
             failed.clone(),
             limits.max_frame_bytes,
@@ -267,6 +285,7 @@ impl ProcessGenerationV2 {
             writer: Arc::new(Mutex::new(BufWriter::new(stdin))),
             child: Arc::new(Mutex::new(Some(child))),
             reader: Mutex::new(Some(reader)),
+            reader_exit: std::cell::RefCell::new(Some(reader_exit)),
             initialized,
             constructed,
             stopped_result,
@@ -663,10 +682,50 @@ impl PluginLifecycle for ProcessLifecycleV2 {
         })
     }
 
+    fn activate(&self, context: ActivateContext) -> lenso_kernel::PluginFuture {
+        let generation = self.generation.clone();
+        Box::pin(async move {
+            let reader_exit = generation.reader_exit.borrow_mut().take().ok_or_else(|| {
+                RuntimeFailure::Internal {
+                    detail: "Process V2 reader monitor was already installed".to_owned(),
+                }
+            })?;
+            let cancellation = context.tasks().cancellation();
+            let monitored_generation = generation.clone();
+            context
+                .tasks()
+                .spawn_local(Box::pin(async move {
+                    let exit = reader_exit.fuse();
+                    let cancelled = cancellation.cancelled().fuse();
+                    futures::pin_mut!(exit, cancelled);
+                    let exit = select! {
+                        exit = exit => exit.unwrap_or_else(|_| {
+                            ReaderExit::Failed("Process V2 reader monitor was dropped".to_owned())
+                        }),
+                        () = cancelled => return,
+                    };
+                    if let ReaderExit::Failed(detail) = exit
+                        && !monitored_generation.stop_started.load(Ordering::Acquire)
+                    {
+                        panic!("Process V2 generation failed: {detail}");
+                    }
+                }))
+                .map_err(|error| RuntimeFailure::Internal {
+                    detail: format!("failed to monitor Process V2 generation: {error:?}"),
+                })?;
+            Ok(())
+        })
+    }
+
     fn deactivate(&self, context: DeactivateContext) -> lenso_kernel::PluginFuture {
         let generation = self.generation.clone();
         Box::pin(async move {
             if generation.stop_started.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
+            if generation.failed.load(Ordering::Acquire) {
+                generation.imports.deactivate();
+                generation.abort();
                 return Ok(());
             }
             let params = StopParams {
@@ -815,9 +874,7 @@ impl Drop for ProcessGenerationV2 {
 
 fn spawn_reader(
     stdout: impl io::Read + Send + 'static,
-    initialized: LifecycleSlot<InitializeParams>,
-    constructed: LifecycleSlot<lenso_process_protocol::authoring::ConstructedResult>,
-    stopped: LifecycleSlot<lenso_process_protocol::authoring::StoppedResult>,
+    lifecycle: ReaderLifecycle,
     pending: PendingInvocations,
     failed: Arc<AtomicBool>,
     limit: usize,
@@ -825,15 +882,21 @@ fn spawn_reader(
     thread::Builder::new()
         .name("lenso-process-v2-reader".to_owned())
         .spawn(move || {
+            let ReaderLifecycle {
+                initialized,
+                constructed,
+                stopped,
+                exit: reader_exit,
+            } = lifecycle;
             let mut reader = BufReader::new(stdout);
-            loop {
+            let exit = loop {
                 let result = read_frame::<GuestFrameV2>(&mut reader, limit);
                 let frame = match result {
                     Ok(frame) => frame,
                     Err(detail) => {
                         failed.store(true, Ordering::Release);
                         retire_all(&initialized, &constructed, &stopped, &pending, &detail);
-                        return;
+                        break ReaderExit::Failed(detail);
                     }
                 };
                 let delivered = match frame {
@@ -843,15 +906,11 @@ fn spawn_reader(
                         let delivered = send_lifecycle(&stopped, value);
                         if !delivered {
                             failed.store(true, Ordering::Release);
-                            retire_all(
-                                &initialized,
-                                &constructed,
-                                &stopped,
-                                &pending,
-                                "Process V2 returned an unexpected stop result",
-                            );
+                            let detail = "Process V2 returned an unexpected stop result";
+                            retire_all(&initialized, &constructed, &stopped, &pending, detail);
+                            break ReaderExit::Failed(detail.to_owned());
                         }
-                        return;
+                        break ReaderExit::Stopped;
                     }
                     GuestFrameV2::InvocationResult(value) => send_invocation(
                         &pending,
@@ -876,16 +935,12 @@ fn spawn_reader(
                 };
                 if !delivered {
                     failed.store(true, Ordering::Release);
-                    retire_all(
-                        &initialized,
-                        &constructed,
-                        &stopped,
-                        &pending,
-                        "Process V2 returned an unexpected frame",
-                    );
-                    return;
+                    let detail = "Process V2 returned an unexpected frame";
+                    retire_all(&initialized, &constructed, &stopped, &pending, detail);
+                    break ReaderExit::Failed(detail.to_owned());
                 }
-            }
+            };
+            let _ = reader_exit.send(exit);
         })
         .map_err(internal)
 }
