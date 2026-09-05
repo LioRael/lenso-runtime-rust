@@ -22,6 +22,7 @@ lenso::__export_json_request_handler! {
     Echo {
         capability_id: "dev.fixture.echo@1",
         descriptor_version: "1.0.0",
+        descriptor_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         requests: ["echo"],
     }
 }
