@@ -923,7 +923,6 @@ pub enum JsonStreamFrame {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct JsonHostBindingDescriptor {
     pub binding_id: u32,
-    #[serde(skip_serializing)]
     pub requirement_id: String,
     pub provider_instance: String,
     pub capability_id: String,

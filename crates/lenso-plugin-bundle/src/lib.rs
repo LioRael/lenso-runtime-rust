@@ -12,7 +12,6 @@ use std::{
 
 use lenso_app_plan::{
     CapabilityEndpointPlan, CapabilityOperationKind, CapabilityRequirementPlan, ExecutionClassId,
-    PLUGIN_AUTHORING_V2_RUNTIME_PROFILE,
     authoring::{PluginContract, PluginDescriptor, PluginImplementation},
 };
 pub use model::*;
@@ -947,7 +946,6 @@ fn validate_profiled_manifest<'a>(
     if contract.plugin_id().is_empty()
         || semver::Version::parse(contract.release_version()).is_err()
         || contract.root_slot().is_empty()
-        || contract.provided_capabilities().is_empty()
     {
         return invalid_manifest(format!("{schema} Contract is invalid"));
     }
@@ -1715,7 +1713,7 @@ root-slot = "tools"
         assert_eq!(selected.descriptor.authoring_version(), 2);
         assert_eq!(
             selected.descriptor.runtime_profile(),
-            PLUGIN_AUTHORING_V2_RUNTIME_PROFILE
+            "lenso.quickjs-authoring@2"
         );
         assert_eq!(
             selected.descriptor.contract(),
@@ -1847,7 +1845,7 @@ root-slot = "tools"
     }
 
     #[test]
-    fn v3_release_accepts_a_providerless_lifecycle_implementation() {
+    fn v4_release_accepts_a_providerless_lifecycle_implementation() {
         let root = tempfile::tempdir().unwrap();
         let script = root.path().join("plugin.js");
         fs::write(&script, b"export default {};\n").unwrap();
