@@ -3,12 +3,15 @@ use std::{collections::BTreeMap, sync::Mutex};
 use lenso_process_protocol::authoring::{
     ConstructParams, InitializeParams, InvocationOutcome, InvokeParams, StopParams,
 };
-use lenso_process_sdk::{ProcessInvocationContext, ProcessPluginV2, ProcessStopOutcome};
+use lenso_process_sdk::{
+    ProcessInvocationContext, ProcessLifecycleContext, ProcessPluginV2, ProcessStopOutcome,
+};
 use serde_json::{Value, json};
 
 #[derive(Debug, Default)]
 struct SyncPlugin {
     routes: Mutex<BTreeMap<String, String>>,
+    lifecycle_calls: Mutex<bool>,
 }
 
 #[derive(Debug)]
@@ -33,11 +36,32 @@ impl ProcessPluginV2 for SyncPlugin {
             return Err("expected exact source and destination Store routes".to_owned());
         }
         *self.routes.lock().expect("fixture routes") = routes;
+        *self.lifecycle_calls.lock().expect("fixture lifecycle flag") = params
+            .config
+            .get("lifecycle_calls")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Ok(())
     }
 
-    fn construct(&self, _params: &ConstructParams) -> Result<Self::Instance, String> {
+    fn construct(
+        &self,
+        _params: &ConstructParams,
+        context: ProcessLifecycleContext,
+    ) -> Result<Self::Instance, String> {
         let routes = self.routes.lock().expect("fixture routes");
+        if *self.lifecycle_calls.lock().expect("fixture lifecycle flag") {
+            match context.call(
+                "source",
+                &routes["source"],
+                "read",
+                json!({"document": "startup"}),
+            ) {
+                Ok(InvocationOutcome::Success { .. }) => {}
+                Ok(outcome) => return Err(format!("unexpected construction outcome: {outcome:?}")),
+                Err(detail) => return Err(detail),
+            }
+        }
         Ok(SyncInstance {
             source_route: routes["source"].clone(),
             destination_route: routes["destination"].clone(),
@@ -101,7 +125,27 @@ impl ProcessPluginV2 for SyncPlugin {
         }
     }
 
-    fn stop(&self, _instance: &Self::Instance, _params: &StopParams) -> ProcessStopOutcome {
+    fn stop(
+        &self,
+        _instance: &Self::Instance,
+        _params: &StopParams,
+        context: ProcessLifecycleContext,
+    ) -> ProcessStopOutcome {
+        if *self.lifecycle_calls.lock().expect("fixture lifecycle flag") {
+            let route = self.routes.lock().expect("fixture routes")["destination"].clone();
+            return match context.call(
+                "destination",
+                route,
+                "put",
+                json!({"document": "cleanup", "text": "stopped"}),
+            ) {
+                Ok(InvocationOutcome::Success { .. }) => ProcessStopOutcome::Completed,
+                Ok(outcome) => {
+                    ProcessStopOutcome::Failed(format!("unexpected cleanup outcome: {outcome:?}"))
+                }
+                Err(detail) => ProcessStopOutcome::Failed(detail),
+            };
+        }
         ProcessStopOutcome::Completed
     }
 }

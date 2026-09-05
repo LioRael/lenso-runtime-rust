@@ -1,7 +1,10 @@
 //! Guest-side framed stdio protocol for trusted Lenso Process Plugins.
 //!
 //! Plugin authors use a higher-level product SDK. This crate owns process
-//! framing so business code never parses Host messages.
+//! framing so business code never parses Host messages. Authoring V2 runs
+//! construction, invocation, and stop work independently of the control reader,
+//! allowing dependency results and cancellation to make progress during every
+//! lifecycle phase.
 
 use std::io::{self, BufRead as _, BufReader, BufWriter};
 
@@ -10,10 +13,13 @@ use serde_json::Value;
 
 mod v2;
 
+/// Shared Authoring V2 value types used by generated Process Plugin glue.
+pub use lenso_process_protocol::authoring;
+
 pub use v2::{
-    GuestFrameV2, HostFrameV2, PROTOCOL_VERSION_V2, ProcessInvocationContext, ProcessPluginV2,
-    ProcessStopOutcome, serve_v2, serve_v2_with_limit, serve_v2_with_profile,
-    serve_v2_with_profile_and_limit,
+    GuestFrameV2, HostFrameV2, PROTOCOL_VERSION_V2, ProcessCallContext, ProcessInvocationContext,
+    ProcessLifecycleContext, ProcessPluginV2, ProcessStopOutcome, serve_v2, serve_v2_with_limit,
+    serve_v2_with_profile, serve_v2_with_profile_and_limit,
 };
 
 /// Stable process wire identity negotiated before readiness.
