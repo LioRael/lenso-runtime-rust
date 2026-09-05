@@ -764,8 +764,6 @@ pub struct JsonCapabilityDescriptor {
     pub request_operations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stream_operations: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub event_operations: Vec<String>,
 }
 
 /// One exact Capability requirement declared by a guest Plugin.
@@ -784,6 +782,14 @@ pub fn expected_json_plugin_descriptor(
 ) -> Result<JsonPluginDescriptor, RuntimeFailure> {
     let mut capabilities = Vec::with_capacity(instance.provided_capabilities().len());
     for descriptor in instance.provided_capabilities() {
+        if !descriptor.event_operations().is_empty() {
+            return Err(RuntimeFailure::InvalidResolvedPlan {
+                detail: format!(
+                    "Execution class `{}` does not support Event endpoints through the legacy JSON descriptor",
+                    instance.execution_class()
+                ),
+            });
+        }
         capabilities.push(JsonCapabilityDescriptor {
             capability_id: descriptor.capability_id().to_owned(),
             descriptor_version: descriptor.descriptor_version().to_owned(),
@@ -794,11 +800,6 @@ pub fn expected_json_plugin_descriptor(
                 .collect(),
             stream_operations: descriptor
                 .stream_operations()
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            event_operations: descriptor
-                .event_operations()
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
