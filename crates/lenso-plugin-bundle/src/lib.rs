@@ -281,6 +281,8 @@ struct GuestRuntimeDescriptor {
 struct GuestCapability {
     capability_id: String,
     descriptor_version: String,
+    #[serde(default)]
+    descriptor_digest: Option<String>,
     request_operations: Vec<String>,
     #[serde(default)]
     stream_operations: Vec<String>,
@@ -824,6 +826,19 @@ fn portable_plugin_descriptor(
         descriptor = descriptor.with_configuration_schema(configuration_schema);
     }
     for capability in runtime.capabilities {
+        match capability.descriptor_digest.as_deref() {
+            Some(digest) => {
+                digest_component(digest)?;
+            }
+            None if authoring.authoring_version == 2
+                && authoring.execution_class == "lenso.process@1" =>
+            {
+                return invalid_manifest(
+                    "Process V2 Capability omitted its exact Descriptor digest",
+                );
+            }
+            None => {}
+        }
         let mut endpoint = CapabilityEndpointPlan::new(
             capability.capability_id,
             capability.descriptor_version,
@@ -1570,6 +1585,30 @@ mod tests {
     }
 
     #[test]
+    fn process_v2_requires_a_canonical_capability_digest() {
+        for encoded in [
+            br#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":"example.echo@1","descriptor_version":"1.0.0","request_operations":["echo"]}]}"#.as_slice(),
+            br#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":"example.echo@1","descriptor_version":"1.0.0","descriptor_digest":"sha256:not-a-digest","request_operations":["echo"]}]}"#.as_slice(),
+        ] {
+            assert!(
+                portable_plugin_descriptor(
+                    "example.process",
+                    "1.0.0",
+                    "tools",
+                    "sha256:artifact",
+                    encoded,
+                    PortableRuntime {
+                        execution_class: "lenso.process@1",
+                        authoring_version: 2,
+                        runtime_profile: "lenso.process-stdio@2",
+                    },
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn strict_v2_manifest_rejects_duplicate_fields_and_path_escape() {
         assert!(
             SourceManifestDocument::parse(br#"{"schema_version":2,"schema_version":2}"#).is_err()
@@ -1611,7 +1650,7 @@ root-slot = "tools"
         let descriptor = root.path().join("descriptor.json");
         fs::write(
             &descriptor,
-            br#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":"example.echo@1","descriptor_version":"1.0.0","request_operations":["echo"]}]}"#,
+            br#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":"example.echo@1","descriptor_version":"1.0.0","descriptor_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","request_operations":["echo"]}]}"#,
         )
         .unwrap();
         let output = root.path().join("example.process.lenso-plugin");
