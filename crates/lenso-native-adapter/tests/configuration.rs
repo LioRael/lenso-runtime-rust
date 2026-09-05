@@ -151,6 +151,39 @@ fn native_factory_identity_matches_a_plugin_resolved_revision() {
 }
 
 #[test]
+fn legacy_native_rust_profile_selects_a_v1_authoring_factory() {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let plan = ResolvedAppPlan::new(
+        vec![
+            PluginInstancePlan::new("configured", "test.configured")
+                .with_authoring(1, "lenso.native-rust@1")
+                .with_package_revision("1.0.0"),
+        ],
+        vec![],
+    );
+    let driver = DeterministicDriver::new();
+
+    driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativePluginRegistry::new().with_factory(RecordingFactory {
+                observed: observed.clone(),
+            }),
+        ))
+        .expect("the legacy native-rust profile should select a v1 authoring factory");
+
+    assert_eq!(
+        *observed.borrow(),
+        vec![(
+            "configured".to_owned(),
+            "default".to_owned(),
+            "{}".to_owned(),
+        )]
+    );
+}
+
+#[test]
 fn native_factory_receives_the_exact_immutable_instance_input() {
     let observed = Rc::new(RefCell::new(Vec::new()));
     let plan = ResolvedAppPlan::new(

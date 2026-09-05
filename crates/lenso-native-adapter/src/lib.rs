@@ -332,10 +332,19 @@ fn factory_matches(
     expected: &lenso_app_plan::PluginInstancePlan,
 ) -> bool {
     factory.package_id() == expected.package_id()
-        && factory.runtime_profile() == expected.runtime_profile()
+        && native_runtime_profiles_match(factory.runtime_profile(), expected.runtime_profile())
         && (expected.package_revision().is_empty()
             || factory.package_version() == expected.package_revision()
             || factory.factory_identity() == expected.package_revision())
+}
+
+fn native_runtime_profiles_match(factory: &str, expected: &str) -> bool {
+    factory == expected
+        || matches!(
+            (factory, expected),
+            ("lenso.native-authoring@1", "lenso.native-rust@1")
+                | ("lenso.native-rust@1", "lenso.native-authoring@1")
+        )
 }
 
 impl NativePluginRegistry {
