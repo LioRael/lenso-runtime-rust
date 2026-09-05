@@ -8,9 +8,18 @@ repository.workspace = true
 description = "Target-independent Rust authoring SDK for portable Lenso Plugins."
 readme = "README.md"
 
+[features]
+test-fixture = []
+
+[[bin]]
+name = "lenso-plugin-sdk-process-fixture"
+path = "src/bin/process_fixture.rs"
+required-features = ["test-fixture"]
+
 [dependencies]
 lenso-plugin-sdk-macros = { version = "0.1.0", path = "../lenso-plugin-sdk-macros" }
 lenso-guest-sdk = { version = "0.4.0", path = "../lenso-guest-sdk" }
+serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
