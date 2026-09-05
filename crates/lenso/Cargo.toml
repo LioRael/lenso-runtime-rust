@@ -1,6 +1,6 @@
 [package]
 name = "lenso"
-version = "0.5.14"
+version = "0.5.15"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -16,8 +16,8 @@ root-slot = "test"
 futures.workspace = true
 lenso-kernel.workspace = true
 lenso-plugin-authoring.workspace = true
-lenso-plugin-control-plane = { version = "0.4.13", path = "../lenso-plugin-control-plane", optional = true }
-lenso-native-adapter = { version = "0.3.11", path = "../lenso-native-adapter" }
+lenso-plugin-control-plane = { version = "0.4.14", path = "../lenso-plugin-control-plane", optional = true }
+lenso-native-adapter = { version = "0.3.12", path = "../lenso-native-adapter" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, optional = true }
