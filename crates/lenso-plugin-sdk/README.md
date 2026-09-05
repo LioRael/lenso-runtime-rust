@@ -85,6 +85,7 @@ impl lenso::Plugin for SyncPlugin {
 
 Each provider invocation receives a fresh `lenso::Ctx`; dependency calls inherit
 that invocation's cancellation, budget, permissions, and parent scope. Process
-Plugins support these named outbound calls. The current Wasm export remains for
-Plugins without dependencies until its Host Imports world is upgraded to the
-same Authoring V2 contract.
+Plugins publish `CONFIGURATION_SCHEMA` and support these named outbound calls.
+The current Wasm export remains for Plugins without configuration or
+dependencies until its Host Imports world is upgraded to the same Authoring V2
+contract.
