@@ -1,6 +1,6 @@
 [package]
 name = "lenso-quickjs-adapter"
-version = "0.2.5"
+version = "0.2.6"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -11,7 +11,7 @@ description = "Bounded QuickJS-NG Execution Adapter for Lenso Plugin artifacts."
 futures.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
-lenso-runtime-codec = { version = "0.3.3", path = "../lenso-runtime-codec" }
+lenso-runtime-codec = { version = "0.3.4", path = "../lenso-runtime-codec" }
 rquickjs = { version = "0.12.2", features = ["loader"] }
 serde_json.workspace = true
 
