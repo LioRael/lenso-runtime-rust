@@ -133,7 +133,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "lenso-guest-sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-plugin-sdk"
-version = "0.2.2"
+version = "0.4.0"
 dependencies = [
  "lenso-guest-sdk",
  "lenso-plugin-sdk-macros",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-process-sdk"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "lenso-process-protocol",
  "serde",

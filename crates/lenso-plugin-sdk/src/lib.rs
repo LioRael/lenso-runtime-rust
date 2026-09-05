@@ -73,7 +73,6 @@ macro_rules! __export_json_request_handler {
             const DESCRIPTOR: &str = $crate::__private::lenso_guest_sdk::__request_plugin_descriptor!(
                 $capability_id,
                 $descriptor_version,
-                digest: $descriptor_digest,
                 $first_request $(, $request)*
             );
 
