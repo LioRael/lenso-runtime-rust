@@ -120,47 +120,65 @@ macro_rules! __export_json_request_handler {
 
         #[cfg(not(target_arch = "wasm32"))]
         mod __lenso_process_export {
-            struct Component(super::__LensoExportedPlugin);
+            struct Component;
 
-            impl $crate::__private::lenso_process_sdk::ProcessPlugin for Component {
-                fn descriptor(&self) -> $crate::__private::serde_json::Value {
-                    $crate::__private::serde_json::json!({
-                        "abi": "lenso.json-request@1",
-                        "capabilities": [{
-                            "capability_id": $capability_id,
-                            "descriptor_version": $descriptor_version,
-                            "request_operations": [$first_request $(, $request)*],
-                        }],
-                    })
+            const DESCRIPTOR: &str =
+                $crate::__private::lenso_guest_sdk::__request_plugin_descriptor!(
+                    $capability_id,
+                    $descriptor_version,
+                    $first_request $(, $request)*
+                );
+
+            impl $crate::__private::lenso_process_sdk::ProcessPluginV2 for Component {
+                type Instance = super::__LensoExportedPlugin;
+
+                fn construct(
+                    &self,
+                    _params: &$crate::__private::lenso_process_sdk::authoring::ConstructParams,
+                    _context: $crate::__private::lenso_process_sdk::ProcessLifecycleContext,
+                ) -> ::std::result::Result<Self::Instance, ::std::string::String> {
+                    Ok(<super::__LensoExportedPlugin as ::std::default::Default>::default())
                 }
 
                 fn invoke(
                     &self,
-                    capability: &str,
-                    operation: &str,
-                    request: $crate::__private::serde_json::Value,
-                ) -> $crate::__private::lenso_process_sdk::ProcessOutcome {
+                    instance: &Self::Instance,
+                    params: $crate::__private::lenso_process_sdk::authoring::InvokeParams,
+                    _context: $crate::__private::lenso_process_sdk::ProcessInvocationContext,
+                ) -> $crate::__private::lenso_process_sdk::authoring::InvocationOutcome {
                     match <super::__LensoExportedPlugin as $crate::JsonRequestHandler>::invoke(
-                        &self.0,
-                        capability,
-                        operation,
-                        request,
+                        instance,
+                        &params.capability_id,
+                        &params.operation,
+                        params.payload,
                     ) {
                         $crate::InvocationOutcome::Success(value) =>
-                            $crate::__private::lenso_process_sdk::ProcessOutcome::Success(value),
+                            $crate::__private::lenso_process_sdk::authoring::InvocationOutcome::Success {
+                                value,
+                            },
                         $crate::InvocationOutcome::DomainError(value) =>
-                            $crate::__private::lenso_process_sdk::ProcessOutcome::DomainError(value),
+                            $crate::__private::lenso_process_sdk::authoring::InvocationOutcome::Domain {
+                                error: value,
+                            },
                         $crate::InvocationOutcome::Failure(detail) =>
-                            $crate::__private::lenso_process_sdk::ProcessOutcome::Failure(detail),
+                            $crate::__private::lenso_process_sdk::authoring::InvocationOutcome::Runtime {
+                                failure: $crate::__private::lenso_process_sdk::authoring::RuntimeFailure::PluginFailure {
+                                    detail,
+                                },
+                            },
                     }
                 }
             }
 
             pub fn serve() {
-                $crate::__private::lenso_process_sdk::serve(&Component(
-                    <super::__LensoExportedPlugin as ::std::default::Default>::default(),
-                ))
-                .expect("serve Lenso Process Plugin");
+                if ::std::env::args_os().nth(1).as_deref()
+                    == Some(::std::ffi::OsStr::new("--lenso-describe"))
+                {
+                    println!("{DESCRIPTOR}");
+                    return;
+                }
+                $crate::__private::lenso_process_sdk::serve_v2(Component)
+                .expect("serve Lenso Process V2 Plugin");
             }
         }
 
@@ -177,7 +195,6 @@ pub mod __private {
 
     #[cfg(target_arch = "wasm32")]
     pub use crate::__wasm as wasm;
-    #[cfg(target_arch = "wasm32")]
     pub use lenso_guest_sdk;
     #[cfg(not(target_arch = "wasm32"))]
     pub use lenso_process_sdk;

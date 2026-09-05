@@ -308,6 +308,41 @@ fn process_v2_calls_two_named_native_store_dependencies_and_stops_cleanly() {
 }
 
 #[test]
+fn process_v2_lifecycle_scopes_can_call_declared_dependencies() {
+    let source = Arc::new(Mutex::new(BTreeMap::from([(
+        "startup".to_owned(),
+        "ready".to_owned(),
+    )])));
+    let destination = Arc::new(Mutex::new(BTreeMap::new()));
+    let source_calls = Arc::new(AtomicUsize::new(0));
+    let destination_calls = Arc::new(AtomicUsize::new(0));
+    let (driver, app) = start_process_app_with_engine(
+        &source,
+        &destination,
+        &source_calls,
+        &destination_calls,
+        ProcessLimits::default(),
+        false,
+        true,
+    );
+
+    assert_eq!(source_calls.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        lenso_kernel::ShutdownOutcome::Clean
+    ));
+    assert_eq!(destination_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        destination
+            .lock()
+            .unwrap()
+            .get("cleanup")
+            .map(String::as_str),
+        Some("stopped")
+    );
+}
+
+#[test]
 fn reusable_authoring_engine_runs_a_language_owned_execution_class() {
     let source = Arc::new(Mutex::new(BTreeMap::from([(
         "guide".to_owned(),
@@ -323,6 +358,7 @@ fn reusable_authoring_engine_runs_a_language_owned_execution_class() {
         &destination_calls,
         ProcessLimits::default(),
         true,
+        false,
     );
 
     let result = driver
@@ -450,6 +486,7 @@ fn start_process_app_with_limits(
         destination_calls,
         limits,
         false,
+        false,
     )
 }
 
@@ -460,6 +497,7 @@ fn start_process_app_with_engine(
     destination_calls: &Arc<AtomicUsize>,
     limits: ProcessLimits,
     generic_engine: bool,
+    lifecycle_calls: bool,
 ) -> (DeterministicDriver, lenso_kernel::NativeApp) {
     let executable = std::path::Path::new(env!("CARGO_BIN_EXE_lenso-process-v2-test-fixture"));
     let bytes = fs::read(executable).unwrap();
@@ -518,6 +556,12 @@ fn start_process_app_with_engine(
                 CapabilityEndpointPlan::new(STORE_ID, DESCRIPTOR_VERSION, ["put", "read"]),
             ),
             PluginInstancePlan::new("sync", "test.process-v2")
+                .with_configuration(
+                    serde_json::json!({
+                        "lifecycle_calls": lifecycle_calls,
+                    })
+                    .to_string(),
+                )
                 .with_authoring(2, RUNTIME_PROFILE_V2)
                 .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::new(process_execution_class))

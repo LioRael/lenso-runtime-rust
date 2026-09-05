@@ -14,8 +14,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, select};
 use lenso_app_plan::{CapabilityCardinality, PluginInstancePlan};
 use lenso_kernel::{
-    ActivateContext, DeactivateContext, InvocationContext, PluginDependencies, PluginLifecycle,
-    PreparedNativePlugin, RuntimeFailure,
+    ActivateContext, CancellationToken, DeactivateContext, InvocationContext, PluginDependencies,
+    PluginLifecycle, PreparedNativePlugin, RuntimeFailure,
 };
 use lenso_process_protocol::{
     VALUE_PROFILE,
@@ -601,11 +601,13 @@ impl PluginLifecycle for ProcessLifecycleV2 {
                 .expect("initialized slot")
                 .replace(sender);
             generation.send(&HostFrameV2::Initialize(initialization.clone()))?;
-            let echoed = await_lifecycle(receiver, &context, &generation).await?;
+            let echoed = await_initialization(receiver, &context, &generation).await?;
             initialization
                 .validate_initialized(&echoed)
                 .map_err(|error| protocol(generation.execution_class, error))?;
-            generation.initialization.replace(Some(initialization));
+            generation
+                .initialization
+                .replace(Some(initialization.clone()));
 
             let remaining_budget_nanos = u128::from(u64::MAX).to_string();
             let params = lenso_process_protocol::authoring::ConstructParams {
@@ -613,6 +615,21 @@ impl PluginLifecycle for ProcessLifecycleV2 {
                 lifecycle_scope_id: "construct-1".to_owned(),
                 remaining_budget_nanos,
             };
+            let scope = lifecycle_scope(&params.lifecycle_scope_id, &params.remaining_budget_nanos);
+            let dependency_context = context
+                .dependencies()
+                .invocation_context(None, context.cancellation())?;
+            let pending_key = lifecycle_pending_key(&scope.scope_id);
+            let (event_sender, event_receiver) = mpsc::unbounded();
+            if generation
+                .pending
+                .lock()
+                .expect("Process V2 pending")
+                .insert(pending_key.clone(), event_sender)
+                .is_some()
+            {
+                return Err(protocol_failure(generation.execution_class));
+            }
             let (sender, receiver) = futures::channel::oneshot::channel();
             generation
                 .constructed
@@ -620,7 +637,22 @@ impl PluginLifecycle for ProcessLifecycleV2 {
                 .expect("constructed slot")
                 .replace(sender);
             generation.send(&HostFrameV2::Construct(params.clone()))?;
-            let result = await_lifecycle(receiver, &context, &generation).await?;
+            let result = await_lifecycle(
+                receiver,
+                event_receiver,
+                dependency_context,
+                context.cancellation(),
+                &generation,
+                &initialization,
+                &scope,
+            )
+            .await;
+            generation
+                .pending
+                .lock()
+                .expect("Process V2 pending")
+                .remove(&pending_key);
+            let result = result?;
             result
                 .validate_for(&params)
                 .map_err(|error| protocol(generation.execution_class, error))?;
@@ -642,6 +674,24 @@ impl PluginLifecycle for ProcessLifecycleV2 {
                 cleanup_scope_id: "cleanup-1".to_owned(),
                 remaining_budget_nanos: duration_nanos(context.remaining_budget()),
             };
+            let initialization = generation
+                .initialization
+                .borrow()
+                .clone()
+                .ok_or(RuntimeFailure::AdmissionClosed)?;
+            let scope = lifecycle_scope(&params.cleanup_scope_id, &params.remaining_budget_nanos);
+            let dependency_context = context.dependency_invocation_context()?;
+            let pending_key = lifecycle_pending_key(&scope.scope_id);
+            let (event_sender, event_receiver) = mpsc::unbounded();
+            if generation
+                .pending
+                .lock()
+                .expect("Process V2 pending")
+                .insert(pending_key.clone(), event_sender)
+                .is_some()
+            {
+                return Err(protocol_failure(generation.execution_class));
+            }
             let (sender, receiver) = futures::channel::oneshot::channel();
             generation
                 .stopped_result
@@ -649,16 +699,22 @@ impl PluginLifecycle for ProcessLifecycleV2 {
                 .expect("stopped slot")
                 .replace(sender);
             generation.send(&HostFrameV2::Stop(params.clone()))?;
-            let response = receiver.fuse();
-            let cancelled = context.cancellation().cancelled().fuse();
-            futures::pin_mut!(response, cancelled);
-            let result = select! {
-                response = response => response.map_err(|_| unavailable())??,
-                () = cancelled => {
-                    generation.abort();
-                    return Err(RuntimeFailure::AdmissionClosed);
-                }
-            };
+            let result = await_lifecycle(
+                receiver,
+                event_receiver,
+                dependency_context,
+                context.cancellation(),
+                &generation,
+                &initialization,
+                &scope,
+            )
+            .await;
+            generation
+                .pending
+                .lock()
+                .expect("Process V2 pending")
+                .remove(&pending_key);
+            let result = result?;
             result
                 .validate_for(&params)
                 .map_err(|error| protocol(generation.execution_class, error))?;
@@ -685,6 +741,53 @@ impl PluginLifecycle for ProcessLifecycleV2 {
 }
 
 async fn await_lifecycle<T>(
+    receiver: futures::channel::oneshot::Receiver<Result<T, RuntimeFailure>>,
+    mut events: mpsc::UnboundedReceiver<InvocationEvent>,
+    dependency_context: InvocationContext,
+    cancellation: CancellationToken,
+    generation: &ProcessGenerationV2,
+    initialization: &InitializeParams,
+    scope: &InvocationScope,
+) -> Result<T, RuntimeFailure> {
+    let mut response = receiver.fuse();
+    loop {
+        let event = events.next().fuse();
+        let cancelled = cancellation.cancelled().fuse();
+        futures::pin_mut!(event, cancelled);
+        select! {
+            result = response => return result.map_err(|_| unavailable())?,
+            event = event => match event.ok_or_else(unavailable)? {
+                InvocationEvent::Outbound(call) => {
+                    dispatch_outbound(
+                        generation,
+                        initialization,
+                        scope,
+                        call,
+                        dependency_context.clone(),
+                    ).await?;
+                }
+                InvocationEvent::Outcome(_)
+                | InvocationEvent::CancelAck(_)
+                | InvocationEvent::Settlement(_) => {
+                    generation.abort();
+                    return Err(protocol_failure(generation.execution_class));
+                }
+            },
+            () = cancelled => {
+                let _ = generation.send(&HostFrameV2::Cancel(CancelParams {
+                    session: generation.identity.session.clone(),
+                    scope_id: scope.scope_id.clone(),
+                    correlation_id: "0".to_owned(),
+                    reason: "Host lifecycle scope was cancelled".to_owned(),
+                }));
+                generation.abort();
+                return Err(RuntimeFailure::AdmissionClosed);
+            }
+        }
+    }
+}
+
+async fn await_initialization<T>(
     receiver: futures::channel::oneshot::Receiver<Result<T, RuntimeFailure>>,
     context: &ActivateContext,
     generation: &ProcessGenerationV2,
@@ -757,7 +860,7 @@ fn spawn_reader(
                     ),
                     GuestFrameV2::OutboundCall(value) => send_invocation(
                         &pending,
-                        &parent_correlation(&value.scope),
+                        &parent_pending_key(&value.scope),
                         InvocationEvent::Outbound(value),
                     ),
                     GuestFrameV2::CancelAck(value) => send_invocation(
@@ -888,6 +991,40 @@ fn duration_nanos(duration: Option<std::time::Duration>) -> String {
     )
 }
 
+async fn dispatch_outbound(
+    generation: &ProcessGenerationV2,
+    initialization: &InitializeParams,
+    parent: &InvocationScope,
+    call: OutboundCallParams,
+    context: InvocationContext,
+) -> Result<(), RuntimeFailure> {
+    if call.validate_against(initialization, parent, true).is_err() {
+        generation.abort();
+        return Err(protocol_failure(generation.execution_class));
+    }
+    let binding_id = match route_binding_id(initialization, &call, generation.execution_class) {
+        Ok(binding_id) => binding_id,
+        Err(error) => {
+            generation.abort();
+            return Err(error);
+        }
+    };
+    let result = generation
+        .imports
+        .invoke(
+            binding_id,
+            call.operation.clone(),
+            call.payload.clone(),
+            context,
+        )
+        .await;
+    generation.send(&HostFrameV2::OutboundResult(InvocationResult {
+        session: call.session,
+        correlation_id: call.correlation_id,
+        outcome: wire_outcome(result),
+    }))
+}
+
 fn route_binding_id(
     initialization: &InitializeParams,
     call: &OutboundCallParams,
@@ -905,13 +1042,25 @@ fn route_binding_id(
         .ok_or_else(|| protocol_failure(execution_class))
 }
 
-fn parent_correlation(scope: &InvocationScope) -> String {
-    scope
-        .parent_scope_id
-        .as_deref()
-        .and_then(|value| value.strip_prefix("invoke-"))
-        .unwrap_or_default()
-        .to_owned()
+fn parent_pending_key(scope: &InvocationScope) -> String {
+    let parent = scope.parent_scope_id.as_deref().unwrap_or_default();
+    parent
+        .strip_prefix("invoke-")
+        .map_or_else(|| lifecycle_pending_key(parent), str::to_owned)
+}
+
+fn lifecycle_pending_key(scope_id: &str) -> String {
+    format!("lifecycle:{scope_id}")
+}
+
+fn lifecycle_scope(scope_id: &str, remaining_budget_nanos: &str) -> InvocationScope {
+    InvocationScope {
+        scope_id: scope_id.to_owned(),
+        parent_scope_id: None,
+        remaining_budget_nanos: remaining_budget_nanos.to_owned(),
+        permissions: Vec::new(),
+        extensions: Vec::new(),
+    }
 }
 
 fn cardinality(value: CapabilityCardinality) -> RequirementCardinality {

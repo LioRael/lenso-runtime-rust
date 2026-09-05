@@ -77,6 +77,8 @@ pub struct SourceProcessPluginBuild {
     pub package_manifest: PathBuf,
     pub executable: PathBuf,
     pub runtime_descriptor: PathBuf,
+    pub authoring_version: u32,
+    pub runtime_profile: String,
     pub target: String,
     pub output: PathBuf,
 }
@@ -366,7 +368,11 @@ pub fn build_source_plugin_bundle(
         &package.package.metadata.lenso.root_slot,
         &artifact.digest,
         &runtime_descriptor,
-        "lenso.wasm-component@1",
+        PortableRuntime {
+            execution_class: "lenso.wasm-component@1",
+            authoring_version: 1,
+            runtime_profile: "lenso.wasm-component@1",
+        },
     )?;
     let document = SourceManifestDocument::from_value(PluginManifestV2 {
         schema_version: 2,
@@ -424,7 +430,11 @@ pub fn build_source_process_plugin_bundle(
         &package.package.metadata.lenso.root_slot,
         &artifact.digest,
         &encoded_descriptor,
-        "lenso.process@1",
+        PortableRuntime {
+            execution_class: "lenso.process@1",
+            authoring_version: build.authoring_version,
+            runtime_profile: &build.runtime_profile,
+        },
     )?;
     let document = SourceManifestDocument::from_value(PluginManifestV2 {
         schema_version: 2,
@@ -663,7 +673,11 @@ fn verify_profiled_bundle_files<'a>(
                 contract.root_slot(),
                 &artifact.digest,
                 &encoded,
-                runtime.execution_class().as_str(),
+                PortableRuntime {
+                    execution_class: runtime.execution_class().as_str(),
+                    authoring_version: contract.authoring_version(),
+                    runtime_profile: runtime.runtime_profile(),
+                },
             )?;
             let derived = serde_json::from_value::<PluginDescriptor>(derived)
                 .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
@@ -737,7 +751,24 @@ fn verify_source_bundle_files(
                 .ok_or_else(|| BundleError::InvalidManifest("root_slot is required".to_owned()))?,
             &artifact.digest,
             &runtime_descriptor,
-            "lenso.wasm-component@1",
+            PortableRuntime {
+                execution_class: "lenso.wasm-component@1",
+                authoring_version: manifest
+                    .value
+                    .entry
+                    .descriptor
+                    .get("authoring_version")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(1),
+                runtime_profile: manifest
+                    .value
+                    .entry
+                    .descriptor
+                    .get("runtime_profile")
+                    .and_then(Value::as_str)
+                    .unwrap_or("lenso.wasm-component@1"),
+            },
         )?;
         let packaged = serde_json::to_vec(&manifest.value.entry.descriptor)
             .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
@@ -758,13 +789,20 @@ fn verify_source_bundle_files(
     })
 }
 
+#[derive(Clone, Copy)]
+struct PortableRuntime<'a> {
+    execution_class: &'a str,
+    authoring_version: u32,
+    runtime_profile: &'a str,
+}
+
 fn portable_plugin_descriptor(
     plugin_id: &str,
     release_version: &str,
     root_slot: &str,
     artifact_digest: &str,
     encoded: &[u8],
-    execution_class: &str,
+    authoring: PortableRuntime<'_>,
 ) -> Result<Value, BundleError> {
     let runtime = strict_json::<GuestRuntimeDescriptor>(encoded)?;
     if ![
@@ -778,9 +816,10 @@ fn portable_plugin_descriptor(
         return invalid_manifest("unsupported guest Plugin ABI");
     }
     let mut descriptor = PluginDescriptor::new(plugin_id, release_version, root_slot)
+        .with_authoring(authoring.authoring_version, authoring.runtime_profile)
         .with_runtime_package(plugin_id, artifact_digest)
         .with_entrypoint("plugin")
-        .with_execution_class(ExecutionClassId::new(execution_class));
+        .with_execution_class(ExecutionClassId::new(authoring.execution_class));
     if let Some(configuration_schema) = runtime.configuration_schema {
         descriptor = descriptor.with_configuration_schema(configuration_schema);
     }
@@ -1510,7 +1549,11 @@ mod tests {
             "tools",
             "sha256:artifact",
             encoded,
-            "lenso.wasm-component@1",
+            PortableRuntime {
+                execution_class: "lenso.wasm-component@1",
+                authoring_version: 2,
+                runtime_profile: "lenso.wasm-component@2",
+            },
         )
         .unwrap();
         let descriptor: PluginDescriptor = serde_json::from_value(value).unwrap();
@@ -1576,6 +1619,8 @@ root-slot = "tools"
             package_manifest: manifest,
             executable: std::env::current_exe().unwrap(),
             runtime_descriptor: descriptor,
+            authoring_version: 2,
+            runtime_profile: "lenso.process-stdio@2".to_owned(),
             target: "test-host".to_owned(),
             output: output.clone(),
         })
@@ -1592,6 +1637,11 @@ root-slot = "tools"
         assert_eq!(
             document.value.entry.descriptor["execution_class"],
             "lenso.process@1"
+        );
+        assert_eq!(document.value.entry.descriptor["authoring_version"], 2);
+        assert_eq!(
+            document.value.entry.descriptor["runtime_profile"],
+            "lenso.process-stdio@2"
         );
 
         let bounded = BundleVerificationLimits {

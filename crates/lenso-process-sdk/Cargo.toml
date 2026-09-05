@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Guest-side framed stdio SDK for trusted Lenso Process Plugins."
 
 [dependencies]
-lenso-process-protocol = "0.2.0"
+lenso-process-protocol = "0.2.1"
 serde.workspace = true
 serde_json.workspace = true
 

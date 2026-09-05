@@ -39,3 +39,9 @@ impl TextTools {
 
 Cargo metadata selects `wasm`, `process`, or both outputs. Plugin business code
 does not implement transport framing or a target-specific Agent Tool trait.
+
+Native Process output uses the complete-object `lenso.process-stdio@2` profile.
+Generated glue validates Host initialization, constructs one Plugin object,
+reports invocation settlement separately from its result, and attempts stop once
+after the Host drains admitted work. `--lenso-describe` prints the generated
+descriptor for build tooling without starting the runtime session.

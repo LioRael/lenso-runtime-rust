@@ -10,10 +10,10 @@ readme = "README.md"
 
 [dependencies]
 lenso-plugin-sdk-macros = { version = "0.1.0", path = "../lenso-plugin-sdk-macros" }
+lenso-guest-sdk = { version = "0.3.0", path = "../lenso-guest-sdk" }
 serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-lenso-guest-sdk = { version = "0.3.0", path = "../lenso-guest-sdk" }
 wit-bindgen = "0.60"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
