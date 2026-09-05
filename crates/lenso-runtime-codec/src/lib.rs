@@ -1170,6 +1170,7 @@ impl JsonHostImports {
                     capability: binding.codec.capability_id(),
                     operation: operation.clone(),
                 })?;
+            let context = dependency.child_context(context)?;
             match binding
                 .codec
                 .open_host_stream(dependency, operation, request, context)
