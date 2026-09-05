@@ -1,6 +1,6 @@
 [package]
 name = "lenso-plugin-sdk"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -17,7 +17,7 @@ lenso-guest-sdk = { version = "0.3.0", path = "../lenso-guest-sdk" }
 wit-bindgen = "0.60"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-lenso-process-sdk = { version = "0.1.0", path = "../lenso-process-sdk" }
+lenso-process-sdk = { version = "0.1.1", path = "../lenso-process-sdk" }
 
 [lints]
 workspace = true
