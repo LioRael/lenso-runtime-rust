@@ -1,6 +1,6 @@
 [package]
 name = "lenso-remote-adapter"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -11,7 +11,7 @@ description = "Generation-bound HTTP Execution Adapter for remote Lenso Plugins.
 futures.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
-lenso-runtime-codec = { version = "0.3.4", path = "../lenso-runtime-codec" }
+lenso-runtime-codec = { version = "0.4.0", path = "../lenso-runtime-codec" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
