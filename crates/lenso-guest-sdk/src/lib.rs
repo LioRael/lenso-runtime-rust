@@ -314,6 +314,30 @@ macro_rules! __request_plugin_descriptor {
     (
         $capability_id:literal,
         $descriptor_version:literal,
+        digest: $descriptor_digest:literal,
+        $first_request:literal $(, $request:literal)*
+    ) => {
+        concat!(
+            r#"{"abi":"lenso.json-request@1","capabilities":[{"capability_id":""#,
+            $capability_id,
+            r#"","descriptor_version":""#,
+            $descriptor_version,
+            r#"","descriptor_digest":""#,
+            $descriptor_digest,
+            r#"","request_operations":[""#,
+            $first_request,
+            "\"",
+            $(
+                ",\"",
+                $request,
+                "\"",
+            )*
+            "]}]}"
+        )
+    };
+    (
+        $capability_id:literal,
+        $descriptor_version:literal,
         $first_request:literal $(, $request:literal)*
     ) => {
         concat!(
@@ -895,6 +919,21 @@ mod tests {
         );
 
         assert_eq!(PACKAGING, runtime);
+    }
+
+    #[test]
+    fn request_plugin_packaging_descriptor_can_close_capability_digest() {
+        const PACKAGING: &str = __request_plugin_descriptor!(
+            "example.request@1",
+            "1.0.0",
+            digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "inspect",
+            "execute"
+        );
+
+        assert!(PACKAGING.contains(
+            r#""descriptor_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""#
+        ));
     }
 
     #[derive(Clone, Debug)]

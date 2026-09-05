@@ -60,6 +60,7 @@ macro_rules! __export_json_request_handler {
         $plugin:ty {
             capability_id: $capability_id:literal,
             descriptor_version: $descriptor_version:literal,
+            descriptor_digest: $descriptor_digest:literal,
             requests: [$first_request:literal $(, $request:literal)* $(,)?] $(,)?
         }
     ) => {
@@ -72,6 +73,7 @@ macro_rules! __export_json_request_handler {
             const DESCRIPTOR: &str = $crate::__private::lenso_guest_sdk::__request_plugin_descriptor!(
                 $capability_id,
                 $descriptor_version,
+                digest: $descriptor_digest,
                 $first_request $(, $request)*
             );
 
@@ -126,6 +128,7 @@ macro_rules! __export_json_request_handler {
                 $crate::__private::lenso_guest_sdk::__request_plugin_descriptor!(
                     $capability_id,
                     $descriptor_version,
+                    digest: $descriptor_digest,
                     $first_request $(, $request)*
                 );
 
