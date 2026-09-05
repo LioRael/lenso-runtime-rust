@@ -1012,7 +1012,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "lenso"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -1100,7 +1100,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-native-adapter"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "futures",
  "inventory",
