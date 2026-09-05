@@ -119,6 +119,32 @@ fn native_factory_version_must_match_the_authoring_resolved_version() {
 }
 
 #[test]
+fn native_factory_authoring_profile_is_not_the_plan_execution_profile() {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let plan = ResolvedAppPlan::new(
+        vec![
+            PluginInstancePlan::new("configured", "test.configured")
+                .with_package_revision("1.0.0")
+                .with_authoring(1, "lenso.native-rust@1"),
+        ],
+        vec![],
+    );
+    let driver = DeterministicDriver::new();
+
+    driver
+        .run(Kernel::start_native(
+            plan,
+            driver.clone(),
+            NativePluginRegistry::new().with_factory(RecordingFactory {
+                observed: observed.clone(),
+            }),
+        ))
+        .expect("the selected native Adapter owns the Plan execution profile");
+
+    assert_eq!(observed.borrow().len(), 1);
+}
+
+#[test]
 fn native_factory_identity_matches_a_plugin_resolved_revision() {
     let observed = Rc::new(RefCell::new(Vec::new()));
     let plan = ResolvedAppPlan::new(
