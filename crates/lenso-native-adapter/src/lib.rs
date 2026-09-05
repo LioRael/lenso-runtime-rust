@@ -3,7 +3,11 @@
 mod authoring;
 mod managed_tasks;
 
-use std::{collections::BTreeMap, rc::Rc};
+use std::{
+    collections::BTreeMap,
+    rc::Rc,
+    sync::{Mutex, OnceLock},
+};
 
 #[doc(hidden)]
 pub use authoring::{CompleteObjectLifecycle, ConstructionContext, LifecycleContext, PluginObject};
@@ -46,7 +50,7 @@ pub mod __private {
     pub use crate::{
         __inventory, CompleteObjectLifecycle, ConstructionContext, Lifecycle, LifecycleContext,
         LinkedNativePluginFactory, NativePluginFactory, NativePluginFactoryContext,
-        NativePluginInstance, PluginObject, RuntimeFailure,
+        NativePluginInstance, PluginObject, RuntimeFailure, link_native_plugin,
     };
     pub use futures;
     pub use futures::future::LocalBoxFuture;
@@ -91,6 +95,40 @@ impl LinkedNativePluginFactory {
 }
 
 inventory::collect!(LinkedNativePluginFactory);
+
+fn explicitly_linked_factories() -> &'static Mutex<Vec<LinkedNativePluginFactory>> {
+    static FACTORIES: OnceLock<Mutex<Vec<LinkedNativePluginFactory>>> = OnceLock::new();
+    FACTORIES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Retains one generated native Plugin registration through an explicit Host link call.
+#[doc(hidden)]
+pub fn link_native_plugin(factory: LinkedNativePluginFactory) {
+    let mut factories = explicitly_linked_factories()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !factories.iter().any(|linked| {
+        linked.descriptor == factory.descriptor
+            && std::ptr::fn_addr_eq(linked.constructor, factory.constructor)
+    }) {
+        factories.push(factory);
+    }
+}
+
+fn linked_factories() -> Vec<LinkedNativePluginFactory> {
+    let mut factories = inventory::iter::<LinkedNativePluginFactory>
+        .into_iter()
+        .copied()
+        .collect::<Vec<_>>();
+    factories.extend(
+        explicitly_linked_factories()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .copied(),
+    );
+    factories
+}
 
 /// Endpoints created for one statically linked Plugin Instance generation.
 #[derive(Debug)]
@@ -302,12 +340,14 @@ impl NativePluginRegistry {
     #[must_use]
     pub fn with_linked_factories(mut self) -> Self {
         self.factories.extend(
-            inventory::iter::<LinkedNativePluginFactory>
+            linked_factories()
                 .into_iter()
                 .map(|linked| (linked.constructor)()),
         );
         self.factories
             .sort_by_key(|factory| factory.factory_identity());
+        self.factories
+            .dedup_by(|left, right| left.factory_identity() == right.factory_identity());
         self
     }
 
@@ -331,7 +371,7 @@ impl NativePluginRegistry {
         slots: impl IntoIterator<Item = HostSlot>,
         defaults: impl IntoIterator<Item = HostDefaultPlugin>,
     ) -> Result<HostCatalog, RuntimeFailure> {
-        let plugins = inventory::iter::<LinkedNativePluginFactory>
+        let plugins = linked_factories()
             .into_iter()
             .map(|linked| {
                 serde_json::from_str::<PluginDescriptor>(linked.descriptor)
