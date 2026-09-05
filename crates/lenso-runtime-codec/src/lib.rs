@@ -14,10 +14,10 @@ use lenso_app_plan::{
     CapabilityCardinality, ExecutionClassId, PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_kernel::{
-    InvocationContext, NativeRequestEndpoint, NativeStream, NativeStreamEndpoint, NativeStreamItem,
-    NativeStreamSession, PluginDependencies, PluginDependencyHandle, PluginStreamDependencyHandle,
-    PreparedBinding, PreparedNativeApp, PreparedNativePlugin, PreparedStreamBinding,
-    RuntimeFailure, StreamCapability, StreamEvent,
+    InvocationContext, NativeEventEndpoint, NativeRequestEndpoint, NativeStream,
+    NativeStreamEndpoint, NativeStreamItem, NativeStreamSession, PluginDependencies,
+    PluginDependencyHandle, PluginStreamDependencyHandle, PreparedBinding, PreparedNativeApp,
+    PreparedNativePlugin, PreparedStreamBinding, RuntimeFailure, StreamCapability, StreamEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -468,6 +468,10 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
     fn stream_operations(&self) -> &'static [&'static str] {
         &[]
     }
+    /// Exact ephemeral Event Operation table.
+    fn event_operations(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Converts one generated request into validated portable JSON.
     fn encode_request(&self, operation: &str, request: &dyn Any) -> Result<Value, RuntimeFailure>;
     /// Converts portable JSON into the generated response value.
@@ -516,6 +520,11 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
         value: Value,
     ) -> Result<Box<dyn Any>, RuntimeFailure> {
         let _ = value;
+        Err(unknown_operation(self.capability_id(), operation))
+    }
+    /// Converts one generated Event value into validated portable JSON.
+    fn encode_event(&self, operation: &str, event: &dyn Any) -> Result<Value, RuntimeFailure> {
+        let _ = event;
         Err(unknown_operation(self.capability_id(), operation))
     }
     /// Invokes one exact Plan-bound host Request dependency from portable JSON.
@@ -1283,6 +1292,18 @@ pub trait JsonStreamTransport: std::fmt::Debug + 'static {
     ) -> JsonStreamOpenFuture;
 }
 
+/// Guest transport seam shared by Event-capable byte-oriented Adapters.
+pub trait JsonEventTransport: std::fmt::Debug + 'static {
+    /// Publishes one Event after the guest transport has committed bounded admission.
+    fn publish(
+        self: Rc<Self>,
+        capability: String,
+        operation: String,
+        event_json: String,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>>;
+}
+
 /// Builds typed Kernel endpoints over one exact guest transport generation.
 pub fn json_request_endpoints<T: JsonRequestTransport>(
     transport: Rc<T>,
@@ -1317,6 +1338,73 @@ pub fn json_stream_endpoints<T: JsonStreamTransport>(
             }) as Rc<dyn NativeStreamEndpoint>
         })
         .collect()
+}
+
+/// Builds typed Kernel Event endpoints over one exact guest transport generation.
+pub fn json_event_endpoints<T: JsonEventTransport>(
+    transport: Rc<T>,
+    codecs: Vec<Rc<dyn JsonCapabilityCodec>>,
+) -> Vec<Rc<dyn NativeEventEndpoint>> {
+    let transport: Rc<dyn JsonEventTransport> = transport;
+    codecs
+        .into_iter()
+        .filter(|codec| !codec.event_operations().is_empty())
+        .map(|codec| {
+            Rc::new(JsonEventEndpoint {
+                transport: transport.clone(),
+                codec,
+            }) as Rc<dyn NativeEventEndpoint>
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct JsonEventEndpoint {
+    transport: Rc<dyn JsonEventTransport>,
+    codec: Rc<dyn JsonCapabilityCodec>,
+}
+
+impl NativeEventEndpoint for JsonEventEndpoint {
+    fn capability_id(&self) -> &'static str {
+        self.codec.capability_id()
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        self.codec.descriptor_version()
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        self.codec.event_operations()
+    }
+
+    fn owns_event_admission(&self) -> bool {
+        true
+    }
+
+    fn publish(
+        &self,
+        operation: &str,
+        event: Box<dyn Any>,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        if !self.codec.event_operations().contains(&operation) {
+            return Box::pin(futures::future::ready(Err(unknown_operation(
+                self.codec.capability_id(),
+                operation,
+            ))));
+        }
+        let event = self.codec.encode_event(operation, event.as_ref());
+        let capability = self.codec.capability_id();
+        let operation = operation.to_owned();
+        let transport = self.transport.clone();
+        Box::pin(async move {
+            let event_json = serde_json::to_string(&event?)
+                .map_err(|_| RuntimeFailure::ProtocolViolation { capability })?;
+            transport
+                .publish(capability.to_owned(), operation, event_json, context)
+                .await
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -1741,9 +1829,115 @@ fn invalid_resources(detail: impl Into<String>) -> RuntimeFailure {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::{cell::RefCell, io::Write};
 
     use super::*;
+
+    #[derive(Debug)]
+    struct EventCodec;
+
+    impl JsonCapabilityCodec for EventCodec {
+        fn capability_id(&self) -> &'static str {
+            "example.events@1"
+        }
+
+        fn descriptor_version(&self) -> &'static str {
+            "1.0.0"
+        }
+
+        fn request_operations(&self) -> &'static [&'static str] {
+            &[]
+        }
+
+        fn event_operations(&self) -> &'static [&'static str] {
+            &["changed"]
+        }
+
+        fn encode_request(
+            &self,
+            operation: &str,
+            _request: &dyn Any,
+        ) -> Result<Value, RuntimeFailure> {
+            Err(unknown_operation(self.capability_id(), operation))
+        }
+
+        fn decode_response(
+            &self,
+            operation: &str,
+            _value: Value,
+        ) -> Result<Box<dyn Any>, RuntimeFailure> {
+            Err(unknown_operation(self.capability_id(), operation))
+        }
+
+        fn decode_domain_error(
+            &self,
+            operation: &str,
+            _value: Value,
+        ) -> Result<Box<dyn Any>, RuntimeFailure> {
+            Err(unknown_operation(self.capability_id(), operation))
+        }
+
+        fn encode_event(&self, operation: &str, event: &dyn Any) -> Result<Value, RuntimeFailure> {
+            if operation != "changed" {
+                return Err(unknown_operation(self.capability_id(), operation));
+            }
+            event
+                .downcast_ref::<String>()
+                .map(|value| serde_json::json!({"value": value}))
+                .ok_or(RuntimeFailure::ProtocolViolation {
+                    capability: self.capability_id(),
+                })
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct EventTransport {
+        published: RefCell<Option<(String, String, String)>>,
+    }
+
+    impl JsonEventTransport for EventTransport {
+        fn publish(
+            self: Rc<Self>,
+            capability: String,
+            operation: String,
+            event_json: String,
+            _context: InvocationContext,
+        ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+            Box::pin(async move {
+                self.published
+                    .replace(Some((capability, operation, event_json)));
+                Ok(())
+            })
+        }
+    }
+
+    #[test]
+    fn event_endpoints_encode_typed_values_and_commit_transport_admission() {
+        let transport = Rc::new(EventTransport::default());
+        let endpoints = json_event_endpoints(
+            transport.clone(),
+            vec![Rc::new(EventCodec) as Rc<dyn JsonCapabilityCodec>],
+        );
+        assert_eq!(endpoints.len(), 1);
+        assert!(endpoints[0].owns_event_admission());
+        assert_eq!(endpoints[0].operations(), &["changed"]);
+
+        futures::executor::block_on(endpoints[0].publish(
+            "changed",
+            Box::new("ready".to_owned()),
+            InvocationContext::new(1, None, lenso_kernel::CancellationToken::new()),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            transport.published.borrow().as_ref().unwrap(),
+            &(
+                "example.events@1".to_owned(),
+                "changed".to_owned(),
+                r#"{"value":"ready"}"#.to_owned(),
+            )
+        );
+    }
 
     #[test]
     fn artifact_handle_keeps_the_admitted_bytes_after_source_drift() {
