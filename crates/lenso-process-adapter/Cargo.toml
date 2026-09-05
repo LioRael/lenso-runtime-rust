@@ -1,6 +1,6 @@
 [package]
 name = "lenso-process-adapter"
-version = "0.3.8"
+version = "0.3.9"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -18,13 +18,13 @@ lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
 lenso-process-protocol = "0.2.1"
 lenso-process-sdk = { version = "0.2.0", path = "../lenso-process-sdk" }
-lenso-runtime-codec = { version = "0.4.0", path = "../lenso-runtime-codec" }
+lenso-runtime-codec = { version = "0.4.1", path = "../lenso-runtime-codec" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
-lenso-native-adapter = { version = "0.3.12", path = "../lenso-native-adapter" }
+lenso-native-adapter = { version = "0.3.13", path = "../lenso-native-adapter" }
 lenso-process-sdk = { version = "0.2.0", path = "../lenso-process-sdk" }
 tempfile = "3"
 
