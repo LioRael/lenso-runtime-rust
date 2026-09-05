@@ -37,6 +37,14 @@ mod echo {
     }
     pub use crate::__test_lenso_native_endpoints_echo as __lenso_native_endpoints_echo;
 
+    #[macro_export]
+    macro_rules! __test_lenso_native_lower_trait_object_echo {
+        ($object:ty, $plugin:ty, $support:path) => {
+            impl $crate::echo::EchoProvider for $object {}
+        };
+    }
+    pub use crate::__test_lenso_native_lower_trait_object_echo as __lenso_native_lower_trait_object_echo;
+
     pub struct Echo;
 
     pub trait EchoProvider {}
@@ -118,6 +126,8 @@ fn struct_plugin_derives_descriptor_factory_and_host_catalog() {
         serde_json::from_str(PLUGIN_DESCRIPTOR_JSON).expect("descriptor should be valid JSON");
     assert_eq!(descriptor["plugin_id"], "lenso.native-adapter");
     assert_eq!(descriptor["root_slot"], "test");
+    assert_eq!(descriptor["authoring_version"], 1);
+    assert_eq!(descriptor["runtime_profile"], "lenso.native-authoring@1");
     assert_eq!(
         descriptor["provided_capabilities"][0]["capability_id"],
         "example.echo@1"

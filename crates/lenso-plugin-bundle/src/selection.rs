@@ -1,14 +1,19 @@
 use lenso_app_plan::{ExecutionClassId, authoring::PluginDescriptor};
 
-use crate::{
-    BundleError, PluginArtifactV2, PluginImplementationV3, PluginManifest, invalid_bundle,
-};
+use crate::{BundleError, PluginArtifactV2, PluginManifest, invalid_bundle};
+
+/// One exact runtime protocol admitted by the Host.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeAdmission {
+    pub execution_class: ExecutionClassId,
+    pub runtime_profile: String,
+}
 
 /// Host policy used to resolve one implementation before Plan construction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImplementationPolicy {
     pub host_target: String,
-    pub execution_classes: Vec<ExecutionClassId>,
+    pub runtimes: Vec<RuntimeAdmission>,
 }
 
 /// One final implementation selected from a Plugin Release.
@@ -29,10 +34,10 @@ pub fn resolve_implementation(
             let descriptor =
                 serde_json::from_value::<PluginDescriptor>(value.entry.descriptor.clone())
                     .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
-            if !policy
-                .execution_classes
-                .contains(descriptor.execution_class())
-                || !target_matches(&value.artifact, &policy.host_target)
+            if !policy.runtimes.iter().any(|admission| {
+                admission.execution_class == *descriptor.execution_class()
+                    && admission.runtime_profile == descriptor.runtime_profile()
+            }) || !target_matches(&value.artifact, &policy.host_target)
             {
                 return invalid_bundle("V2 Bundle has no implementation admitted by Host policy");
             }
@@ -42,45 +47,82 @@ pub fn resolve_implementation(
                 artifact: value.artifact.clone(),
             })
         }
-        PluginManifest::V3(value) => {
-            for execution_class in &policy.execution_classes {
-                let matches = value
-                    .implementations
-                    .iter()
-                    .filter(|candidate| {
-                        candidate.runtime.execution_class() == execution_class
-                            && candidate
-                                .host_targets
-                                .iter()
-                                .any(|target| target == "*" || target == &policy.host_target)
-                    })
-                    .collect::<Vec<_>>();
-                match matches.as_slice() {
-                    [] => {}
-                    [candidate] => return Ok(resolved_v3(value, candidate)),
-                    _ => {
-                        return invalid_bundle(format!(
-                            "Host policy ambiguously matches {} implementations of `{}`",
-                            matches.len(),
-                            execution_class.as_str()
-                        ));
-                    }
-                }
-            }
-            invalid_bundle("V3 Bundle has no implementation admitted by Host policy")
-        }
+        PluginManifest::V3(value) => resolve_profiled_implementation(
+            &value.contract,
+            value.implementations.iter().map(|candidate| {
+                (
+                    &candidate.id,
+                    &candidate.host_targets,
+                    &candidate.artifact,
+                    &candidate.runtime,
+                )
+            }),
+            policy,
+            "V3",
+        ),
+        PluginManifest::V4(value) => resolve_profiled_implementation(
+            &value.contract,
+            value.implementations.iter().map(|candidate| {
+                (
+                    &candidate.id,
+                    &candidate.host_targets,
+                    &candidate.artifact,
+                    &candidate.runtime,
+                )
+            }),
+            policy,
+            "V4",
+        ),
     }
 }
 
-fn resolved_v3(
-    manifest: &crate::PluginManifestV3,
-    candidate: &PluginImplementationV3,
-) -> ResolvedPluginImplementation {
-    ResolvedPluginImplementation {
-        implementation_id: candidate.id.clone(),
-        descriptor: manifest.contract.resolve(&candidate.runtime),
-        artifact: candidate.artifact.clone(),
+fn resolve_profiled_implementation<'a>(
+    contract: &lenso_app_plan::authoring::PluginContract,
+    candidates: impl Iterator<
+        Item = (
+            &'a String,
+            &'a Vec<String>,
+            &'a PluginArtifactV2,
+            &'a lenso_app_plan::authoring::PluginImplementation,
+        ),
+    >,
+    policy: &ImplementationPolicy,
+    schema: &str,
+) -> Result<ResolvedPluginImplementation, BundleError> {
+    let candidates = candidates.collect::<Vec<_>>();
+    for admission in &policy.runtimes {
+        let matches = candidates
+            .iter()
+            .filter(|(_, targets, _, runtime)| {
+                runtime.execution_class() == &admission.execution_class
+                    && runtime.runtime_profile() == admission.runtime_profile
+                    && targets
+                        .iter()
+                        .any(|target| target == "*" || target == &policy.host_target)
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => {}
+            [(id, _, artifact, runtime)] => {
+                return Ok(ResolvedPluginImplementation {
+                    implementation_id: (*id).clone(),
+                    descriptor: contract.resolve(runtime),
+                    artifact: (*artifact).clone(),
+                });
+            }
+            _ => {
+                return invalid_bundle(format!(
+                    "Host policy ambiguously matches {} implementations of `({}, {})`",
+                    matches.len(),
+                    admission.execution_class.as_str(),
+                    admission.runtime_profile
+                ));
+            }
+        }
     }
+    invalid_bundle(format!(
+        "{schema} Bundle has no implementation admitted by Host policy"
+    ))
 }
 
 fn target_matches(artifact: &PluginArtifactV2, host_target: &str) -> bool {

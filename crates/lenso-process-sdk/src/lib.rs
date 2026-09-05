@@ -8,6 +8,14 @@ use std::io::{self, BufRead as _, BufReader, BufWriter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod v2;
+
+pub use v2::{
+    GuestFrameV2, HostFrameV2, PROTOCOL_VERSION_V2, ProcessInvocationContext, ProcessPluginV2,
+    ProcessStopOutcome, serve_v2, serve_v2_with_limit, serve_v2_with_profile,
+    serve_v2_with_profile_and_limit,
+};
+
 /// Stable process wire identity negotiated before readiness.
 pub const PROTOCOL_VERSION: &str = "lenso.process-stdio@1";
 

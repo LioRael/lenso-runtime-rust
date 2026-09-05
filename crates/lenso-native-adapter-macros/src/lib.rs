@@ -133,6 +133,279 @@ pub fn plugin(attributes: TokenStream, item: TokenStream) -> TokenStream {
     expand_authoring_item(attributes, item)
 }
 
+/// Binds an optional complete-object constructor and stop hook to a Plugin type.
+#[proc_macro_attribute]
+pub fn plugin_impl(attributes: TokenStream, item: TokenStream) -> TokenStream {
+    if !attributes.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[plugin_impl] does not accept arguments",
+        )
+        .into_compile_error()
+        .into();
+    }
+    let implementation = parse_macro_input!(item as ItemImpl);
+    expand_plugin_impl(implementation)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[allow(clippy::too_many_lines)]
+fn expand_plugin_impl(mut implementation: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
+    if implementation.trait_.is_some() || !implementation.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &implementation,
+            "#[plugin_impl] requires a non-generic inherent impl",
+        ));
+    }
+    let Type::Path(plugin_path) = implementation.self_ty.as_ref() else {
+        return Err(syn::Error::new_spanned(
+            &implementation.self_ty,
+            "Plugin implementation type must be a path",
+        ));
+    };
+    let plugin_type = &plugin_path.path;
+    let plugin_ident = plugin_type
+        .segments
+        .last()
+        .expect("type paths are non-empty")
+        .ident
+        .clone();
+    let inputs_name = format_ident!("__LensoInputs{plugin_ident}");
+    let module_name = format_ident!(
+        "__lenso_custom_construction_{}",
+        snake(&plugin_ident.to_string())
+    );
+    let sdk = authoring_crate();
+    let mut create = None;
+    let mut stop = None;
+    for item in &mut implementation.items {
+        let syn::ImplItem::Fn(method) = item else {
+            continue;
+        };
+        let is_create = take_marker(&mut method.attrs, "create");
+        let is_stop = take_marker(&mut method.attrs, "stop");
+        let marked_method = method.clone();
+        for input in &mut method.sig.inputs {
+            if let syn::FnArg::Typed(argument) = input {
+                argument
+                    .attrs
+                    .retain(|attribute| !attribute.path().is_ident("lifecycle"));
+            }
+        }
+        if is_create && is_stop {
+            return Err(syn::Error::new_spanned(
+                method,
+                "one method cannot be both create and stop",
+            ));
+        }
+        if is_create && create.replace(marked_method.clone()).is_some() {
+            return Err(syn::Error::new_spanned(
+                method,
+                "duplicate #[create] method",
+            ));
+        }
+        if is_stop && stop.replace(marked_method).is_some() {
+            return Err(syn::Error::new_spanned(method, "duplicate #[stop] method"));
+        }
+    }
+    if create.is_none() && stop.is_none() {
+        return Ok(quote!(#implementation));
+    }
+
+    let construct_body = if let Some(create) = &create {
+        expand_create_call(create, plugin_type, &inputs_name, &sdk)?
+    } else {
+        quote!(super::#plugin_type::__lenso_auto_construct(context))
+    };
+    let (stop_function, stop_entry) = if let Some(stop) = &stop {
+        let body = expand_stop_call(stop, plugin_type, &sdk)?;
+        (
+            quote! {
+                fn stop(
+                    object: ::std::rc::Rc<dyn ::std::any::Any>,
+                    lifecycle: #sdk::__private::LifecycleContext,
+                ) -> #sdk::__private::PluginFuture {
+                    let object = match object.downcast::<super::#plugin_type>() {
+                        Ok(object) => object,
+                        Err(_) => return Box::pin(async {
+                            Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                                detail: "linked Plugin stop hook received the wrong type".to_owned(),
+                            })
+                        }),
+                    };
+                    #body
+                }
+            },
+            quote!(Some(stop)),
+        )
+    } else {
+        (quote!(), quote!(None))
+    };
+
+    Ok(quote! {
+        #implementation
+
+        #[doc(hidden)]
+        mod #module_name {
+            const _: () = assert!(
+                super::#plugin_type::__LENSO_AUTHORING_VERSION == 2,
+                "#[plugin_impl] create/stop hooks cannot be combined with legacy lifecycle, Port, resources, or tasks fields",
+            );
+
+            fn plugin_type() -> ::std::any::TypeId {
+                ::std::any::TypeId::of::<super::#plugin_type>()
+            }
+
+            fn construct(
+                context: #sdk::__private::ConstructionContext,
+            ) -> #sdk::__private::ErasedConstructionFuture {
+                #construct_body
+            }
+
+            #stop_function
+
+            #sdk::__private::__inventory::submit! {
+                #sdk::__private::LinkedPluginConstruction::new(
+                    plugin_type,
+                    true,
+                    construct,
+                    #stop_entry,
+                )
+            }
+        }
+    })
+}
+
+fn expand_create_call(
+    method: &syn::ImplItemFn,
+    plugin_type: &Path,
+    inputs_name: &syn::Ident,
+    sdk: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut names = Vec::new();
+    let mut arguments = Vec::new();
+    for input in &method.sig.inputs {
+        let syn::FnArg::Typed(argument) = input else {
+            return Err(syn::Error::new_spanned(
+                input,
+                "#[create] is an associated function without a receiver",
+            ));
+        };
+        let syn::Pat::Ident(pattern) = argument.pat.as_ref() else {
+            return Err(syn::Error::new_spanned(
+                &argument.pat,
+                "#[create] inputs must be plain identifiers",
+            ));
+        };
+        let lifecycle = argument
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("lifecycle"));
+        if lifecycle {
+            if !is_named_type(&argument.ty, "LifecycleContext") {
+                return Err(syn::Error::new_spanned(
+                    &argument.ty,
+                    "#[lifecycle] input must have type LifecycleContext",
+                ));
+            }
+            arguments.push(quote!(context.lifecycle().clone()));
+        } else {
+            names.push(pattern.ident.clone());
+            arguments.push(quote!(#pattern));
+        }
+    }
+    let method_name = &method.sig.ident;
+    let invoke = if method.sig.asyncness.is_some() {
+        quote!(super::#plugin_type::#method_name(#(#arguments),*).await)
+    } else {
+        quote!(super::#plugin_type::#method_name(#(#arguments),*))
+    };
+    let value = if returns_result(&method.sig.output) {
+        quote!(#invoke.map_err(|error| #sdk::__private::RuntimeFailure::PluginFailure {
+            detail: format!("Plugin construction failed: {error}"),
+        })?)
+    } else {
+        invoke
+    };
+    Ok(quote! {
+        Box::pin(async move {
+            let super::#inputs_name { #(#names),* } =
+                super::#plugin_type::__lenso_inputs(&context)?;
+            let plugin = #value;
+            Ok(::std::rc::Rc::new(plugin) as ::std::rc::Rc<dyn ::std::any::Any>)
+        })
+    })
+}
+
+fn expand_stop_call(
+    method: &syn::ImplItemFn,
+    plugin_type: &Path,
+    sdk: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut inputs = method.sig.inputs.iter();
+    let Some(syn::FnArg::Receiver(receiver)) = inputs.next() else {
+        return Err(syn::Error::new_spanned(
+            &method.sig,
+            "#[stop] requires an &self receiver",
+        ));
+    };
+    if receiver.reference.is_none() || receiver.mutability.is_some() {
+        return Err(syn::Error::new_spanned(receiver, "#[stop] requires &self"));
+    }
+    let mut arguments = Vec::new();
+    for input in inputs {
+        let syn::FnArg::Typed(argument) = input else {
+            return Err(syn::Error::new_spanned(input, "invalid #[stop] input"));
+        };
+        if !argument
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("lifecycle"))
+            || !is_named_type(&argument.ty, "LifecycleContext")
+        {
+            return Err(syn::Error::new_spanned(
+                input,
+                "#[stop] accepts only an optional #[lifecycle] LifecycleContext",
+            ));
+        }
+        arguments.push(quote!(lifecycle));
+    }
+    if arguments.len() > 1 {
+        return Err(syn::Error::new_spanned(
+            &method.sig,
+            "#[stop] accepts at most one lifecycle input",
+        ));
+    }
+    let method_name = &method.sig.ident;
+    let invoke = if method.sig.asyncness.is_some() {
+        quote!(super::#plugin_type::#method_name(object.as_ref(), #(#arguments),*).await)
+    } else {
+        quote!(super::#plugin_type::#method_name(object.as_ref(), #(#arguments),*))
+    };
+    let result = if returns_result(&method.sig.output) {
+        quote!(#invoke.map_err(|error| #sdk::__private::RuntimeFailure::PluginFailure {
+            detail: format!("Plugin stop failed: {error}"),
+        }))
+    } else {
+        quote!({ #invoke; Ok(()) })
+    };
+    Ok(quote!(Box::pin(async move { #result })))
+}
+
+fn returns_result(output: &syn::ReturnType) -> bool {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    let Type::Path(path) = ty.as_ref() else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Result")
+}
+
 fn expand_authoring_item(attributes: TokenStream, item: TokenStream) -> TokenStream {
     let attributes = match syn::parse::<PluginAttributes>(attributes) {
         Ok(attributes) => attributes,
@@ -488,6 +761,8 @@ struct CapabilityContribution {
     descriptor: syn::Ident,
     endpoints: syn::Ident,
     lower: syn::Ident,
+    object_lower: syn::Ident,
+    trait_object_lower: syn::Ident,
 }
 
 fn capability_contributions(capabilities: &[Path]) -> syn::Result<Vec<CapabilityContribution>> {
@@ -522,6 +797,10 @@ fn capability_contributions(capabilities: &[Path]) -> syn::Result<Vec<Capability
                 descriptor: format_ident!("__lenso_provided_{capability_snake}"),
                 endpoints: format_ident!("__lenso_native_endpoints_{capability_snake}"),
                 lower: format_ident!("__lenso_native_lower_{capability_snake}"),
+                object_lower: format_ident!("__lenso_native_lower_object_{capability_snake}"),
+                trait_object_lower: format_ident!(
+                    "__lenso_native_lower_trait_object_{capability_snake}"
+                ),
             })
         })
         .collect()
@@ -561,6 +840,7 @@ fn provided_module(
     Ok((plugin_ident, implementation.trait_.is_none()))
 }
 
+#[allow(clippy::too_many_lines)]
 fn expand_provides(
     capabilities: &[Path],
     implementation: &ItemImpl,
@@ -583,29 +863,47 @@ fn expand_provides(
     let generated_plugin = format_ident!("__lenso_provider_{}", snake(&plugin_ident.to_string()));
     let lifecycle = format_ident!("__LensoLifecycle{plugin_ident}");
     let artifact = format_ident!("__LENSO_PLUGIN_DESCRIPTOR_ARTIFACT_{plugin_ident}");
-    let provider_implementations = if lowers_domain_methods {
-        contributions
-            .iter()
-            .map(|contribution| {
-                let namespace = &contribution.namespace;
-                let lower = &contribution.lower;
-                quote! { #namespace::#lower!(#plugin_ident, #sdk::__private); }
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let endpoint_contributions = contributions.iter().map(|contribution| {
-        let namespace = &contribution.namespace;
-        let endpoints = &contribution.endpoints;
-        quote! {
-            let (provided_requests, provided_streams, provided_events) =
-                super::#namespace::#endpoints!(plugin.clone(), #sdk::__private);
-            request_endpoints.extend(provided_requests);
-            stream_endpoints.extend(provided_streams);
-            event_endpoints.extend(provided_events);
-        }
-    });
+    let provider_implementations = contributions
+        .iter()
+        .flat_map(|contribution| {
+            let namespace = &contribution.namespace;
+            let lower = &contribution.lower;
+            let object_lower = if lowers_domain_methods {
+                &contribution.object_lower
+            } else {
+                &contribution.trait_object_lower
+            };
+            let mut implementations = Vec::new();
+            if lowers_domain_methods {
+                implementations.push(quote! {
+                    #namespace::#lower!(#plugin_ident, #sdk::__private);
+                });
+            }
+            implementations.push(quote! {
+                #namespace::#object_lower!(
+                    #sdk::__private::PluginObject<#plugin_ident>,
+                    #plugin_ident,
+                    #sdk::__private
+                );
+            });
+            implementations
+        })
+        .collect::<Vec<_>>();
+    let endpoint_contributions = contributions
+        .iter()
+        .map(|contribution| {
+            let namespace = &contribution.namespace;
+            let endpoints = &contribution.endpoints;
+            quote! {
+                let (provided_requests, provided_streams, provided_events) =
+                    super::#namespace::#endpoints!(plugin.clone(), #sdk::__private);
+                request_endpoints.extend(provided_requests);
+                stream_endpoints.extend(provided_streams);
+                event_endpoints.extend(provided_events);
+            }
+        })
+        .collect::<Vec<_>>();
+    let v2_endpoint_contributions = endpoint_contributions.clone();
 
     let mut implementation = implementation.clone();
     implementation
@@ -639,6 +937,9 @@ fn expand_provides(
             impl #sdk::__private::NativePluginFactory for Factory {
                 fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                 fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
+                fn runtime_profile(&self) -> &'static str {
+                    super::#plugin_ident::__LENSO_RUNTIME_PROFILE
+                }
 
                 fn instantiate(
                     &self,
@@ -647,8 +948,28 @@ fn expand_provides(
                     #sdk::__private::NativePluginInstance,
                     #sdk::__private::RuntimeFailure,
                 > {
-                    let plugin = super::#plugin_ident::__lenso_construct(context)?;
+                    if super::#plugin_ident::__LENSO_AUTHORING_VERSION == 2 {
+                        let plugin = #sdk::__private::PluginObject::<super::#plugin_ident>::empty();
+                        let lifecycle = #sdk::__private::CompleteObjectLifecycle::linked(
+                            plugin.clone(),
+                            context.configuration(),
+                        )?;
+                        let mut request_endpoints = Vec::new();
+                        let mut stream_endpoints = Vec::new();
+                        let mut event_endpoints = Vec::new();
+                        #(#v2_endpoint_contributions)*
+                        return Ok(#sdk::__private::NativePluginInstance::with_all_endpoints(
+                            request_endpoints,
+                            stream_endpoints,
+                            event_endpoints,
+                            lifecycle,
+                        ));
+                    }
+                    let plugin = ::std::rc::Rc::new(
+                        super::#plugin_ident::__lenso_construct(context)?,
+                    );
                     let lifecycle = super::#lifecycle { plugin: plugin.clone() };
+                    let plugin = #sdk::__private::PluginObject::from_value(plugin);
                     let mut request_endpoints = Vec::new();
                     let mut stream_endpoints = Vec::new();
                     let mut event_endpoints = Vec::new();
@@ -700,7 +1021,8 @@ fn expand_plugin_struct(
         ports,
         tasks,
         initializers,
-    } = analyze_struct_fields(&mut plugin)?;
+        construction_fields,
+    } = analyze_struct_fields(&mut plugin, &sdk)?;
     let schema = configuration_schema_tokens(
         attributes.configuration_schema.as_ref(),
         config_type.as_ref(),
@@ -711,19 +1033,93 @@ fn expand_plugin_struct(
         config_type.as_ref(),
     )?;
     let name = &plugin.ident;
+    let inputs_name = format_ident!("__LensoInputs{name}");
+    let input_fields = construction_fields
+        .iter()
+        .filter_map(|field| match field.kind {
+            ConstructionFieldKind::Config | ConstructionFieldKind::Dependency { .. } => {
+                let name = &field.name;
+                let ty = &field.ty;
+                Some(quote!(#name: #ty))
+            }
+            ConstructionFieldKind::Private | ConstructionFieldKind::Legacy => None,
+        });
+    let input_initializers = construction_fields
+        .iter()
+        .filter_map(|field| v2_input_initializer(field, &sdk));
+    let construction_module = format_ident!("__lenso_construction_{}", snake(&name.to_string()));
+    let v2_configuration = construct_v2_configuration(
+        &plugin_id,
+        config_type.as_ref(),
+        attributes.validate.as_ref(),
+        &sdk,
+    );
+    let v2_initializers = construction_fields
+        .iter()
+        .map(|field| v2_field_initializer(field, &sdk))
+        .collect::<Vec<_>>();
+    let uses_legacy_authoring = construction_fields
+        .iter()
+        .any(|field| matches!(field.kind, ConstructionFieldKind::Legacy))
+        || attributes.lifecycle
+        || attributes.prepare.is_some()
+        || attributes.activate.is_some()
+        || attributes.deactivate.is_some();
+    let authoring_version = if uses_legacy_authoring { 1_u32 } else { 2_u32 };
+    let runtime_profile = if uses_legacy_authoring {
+        "lenso.native-authoring@1"
+    } else {
+        "lenso.native-authoring@2"
+    };
+    let v2_construct = if uses_legacy_authoring {
+        quote! {
+            Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                detail: "legacy Plugin fields cannot use authoring version 2".to_owned(),
+            })
+        }
+    } else {
+        quote! {
+            #v2_configuration
+            let plugin = Self { #(#v2_initializers),* };
+            Ok(::std::rc::Rc::new(plugin) as ::std::rc::Rc<dyn ::std::any::Any>)
+        }
+    };
     let lifecycle_name = format_ident!("__LensoLifecycle{name}");
     let descriptor_macro = format_ident!("__lenso_plugin_descriptor_{}", snake(&name.to_string()));
     let requirement_macros = ports
         .iter()
         .map(|(_, client, cardinality)| requirement_macro(client, *cardinality))
         .collect::<syn::Result<Vec<_>>>()?;
+    let dependency_requirement_macros = construction_fields
+        .iter()
+        .filter_map(|field| match &field.kind {
+            ConstructionFieldKind::Dependency {
+                id,
+                client,
+                cardinality,
+            } => Some(named_requirement_macro(client, *cardinality, id)),
+            ConstructionFieldKind::Config
+            | ConstructionFieldKind::Private
+            | ConstructionFieldKind::Legacy => None,
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
     let connect_ports = ports.iter().map(|(field, _, _)| {
         quote! { self.plugin.#field.connect(context.dependencies())?; }
     });
     let connect_tasks = task_connectors(&tasks);
-    let requirement_parts = intersperse_commas(requirement_macros);
-    let (prefix, after_schema, suffix, defaults) =
-        descriptor_affixes(&plugin_id, &package_version, &root_slot);
+    let requirement_parts = intersperse_commas(
+        requirement_macros
+            .into_iter()
+            .chain(dependency_requirement_macros)
+            .collect(),
+    );
+    let (prefix, after_schema, suffix, defaults) = descriptor_affixes(
+        &plugin_id,
+        &package_version,
+        &root_slot,
+        authoring_version,
+        runtime_profile,
+    );
     let construct_configuration = if let Some(config_type) = &config_type {
         let validate = attributes
             .validate
@@ -780,7 +1176,7 @@ fn expand_plugin_struct(
     let prepare = if attributes.lifecycle {
         quote! {
             let plugin = self.plugin.clone();
-            Box::pin(async move { #sdk::Lifecycle::prepare(&plugin, context).await })
+            Box::pin(async move { #sdk::Lifecycle::prepare(plugin.as_ref(), context).await })
         }
     } else {
         hook(attributes.prepare.as_ref(), &sdk)
@@ -788,7 +1184,7 @@ fn expand_plugin_struct(
     let activate_hook = if attributes.lifecycle {
         quote! {
             let plugin = self.plugin.clone();
-            Box::pin(async move { #sdk::Lifecycle::activate(&plugin, context).await })
+            Box::pin(async move { #sdk::Lifecycle::activate(plugin.as_ref(), context).await })
         }
     } else {
         hook(attributes.activate.as_ref(), &sdk)
@@ -796,7 +1192,7 @@ fn expand_plugin_struct(
     let deactivate_hook = if attributes.lifecycle {
         quote! {
             let plugin = self.plugin.clone();
-            Box::pin(async move { #sdk::Lifecycle::deactivate(&plugin, context).await })
+            Box::pin(async move { #sdk::Lifecycle::deactivate(plugin.as_ref(), context).await })
         }
     } else {
         hook(attributes.deactivate.as_ref(), &sdk)
@@ -857,6 +1253,9 @@ fn expand_plugin_struct(
                 impl #sdk::__private::NativePluginFactory for Factory {
                     fn package_id(&self) -> &'static str { super::PACKAGE_ID }
                     fn package_version(&self) -> &'static str { super::PACKAGE_VERSION }
+                    fn runtime_profile(&self) -> &'static str {
+                        super::#name::__LENSO_RUNTIME_PROFILE
+                    }
 
                     fn instantiate(
                         &self,
@@ -865,7 +1264,18 @@ fn expand_plugin_struct(
                         #sdk::__private::NativePluginInstance,
                         #sdk::__private::RuntimeFailure,
                     > {
-                        let plugin = super::#name::__lenso_construct(context)?;
+                        if super::#name::__LENSO_AUTHORING_VERSION == 2 {
+                            let object = #sdk::__private::PluginObject::<super::#name>::empty();
+                            let lifecycle = #sdk::__private::CompleteObjectLifecycle::linked(
+                                object,
+                                context.configuration(),
+                            )?;
+                            return Ok(#sdk::__private::NativePluginInstance::with_lifecycle(
+                                Vec::new(),
+                                lifecycle,
+                            ));
+                        }
+                        let plugin = ::std::rc::Rc::new(super::#name::__lenso_construct(context)?);
                         let lifecycle = super::#lifecycle_name { plugin };
                         Ok(#sdk::__private::NativePluginInstance::with_lifecycle(
                             Vec::new(),
@@ -901,6 +1311,11 @@ fn expand_plugin_struct(
         #plugin
 
         #[doc(hidden)]
+        struct #inputs_name {
+            #(#input_fields),*
+        }
+
+        #[doc(hidden)]
         macro_rules! #descriptor_macro {
             () => {
                 concat!(#prefix, #schema, ",\"configuration_defaults\":", #configuration_defaults, #after_schema, #suffix #(, #requirement_parts)*, #defaults)
@@ -912,6 +1327,20 @@ fn expand_plugin_struct(
 
         impl #name {
             #[doc(hidden)]
+            const __LENSO_AUTHORING_VERSION: u32 = #authoring_version;
+            #[doc(hidden)]
+            const __LENSO_RUNTIME_PROFILE: &'static str = #runtime_profile;
+
+            #[doc(hidden)]
+            fn __lenso_inputs(
+                context: &#sdk::__private::ConstructionContext,
+            ) -> Result<#inputs_name, #sdk::__private::RuntimeFailure> {
+                #v2_configuration
+                Ok(#inputs_name { #(#input_initializers),* })
+            }
+
+            #[doc(hidden)]
+            #[allow(unreachable_code)]
             fn __lenso_construct(
                 context: #sdk::__private::NativePluginFactoryContext<'_>,
             ) -> Result<Self, #sdk::__private::RuntimeFailure> {
@@ -923,12 +1352,38 @@ fn expand_plugin_struct(
                 #construct_configuration
                 Ok(Self { #(#initializers),* })
             }
+
+            #[doc(hidden)]
+            fn __lenso_auto_construct(
+                context: #sdk::__private::ConstructionContext,
+            ) -> #sdk::__private::ErasedConstructionFuture {
+                Box::pin(async move {
+                    let _ = context;
+                    #v2_construct
+                })
+            }
+        }
+
+        #[doc(hidden)]
+        mod #construction_module {
+            fn plugin_type() -> ::std::any::TypeId {
+                ::std::any::TypeId::of::<super::#name>()
+            }
+
+            #sdk::__private::__inventory::submit! {
+                #sdk::__private::LinkedPluginConstruction::new(
+                    plugin_type,
+                    false,
+                    super::#name::__lenso_auto_construct,
+                    None,
+                )
+            }
         }
 
         #[doc(hidden)]
         #[derive(Clone, Debug)]
         struct #lifecycle_name {
-            plugin: #name,
+            plugin: ::std::rc::Rc<#name>,
         }
 
         impl #sdk::__private::PluginLifecycle for #lifecycle_name {
@@ -964,9 +1419,12 @@ fn descriptor_affixes(
     plugin_id: &str,
     package_version: &str,
     root_slot: &str,
+    authoring_version: u32,
+    runtime_profile: &str,
 ) -> (String, &'static str, &'static str, &'static str) {
     let prefix = format!(
-        "{{\"plugin_id\":{},\"release_version\":{},\"root_slot\":{},\"runtime_package_id\":{},\"runtime_package_revision\":{},\"entrypoint\":\"default\",\"configuration_schema\":",
+        "{{\"authoring_version\":{authoring_version},\"runtime_profile\":{},\"plugin_id\":{},\"release_version\":{},\"root_slot\":{},\"runtime_package_id\":{},\"runtime_package_revision\":{},\"entrypoint\":\"default\",\"configuration_schema\":",
+        serde_json::to_string(runtime_profile).expect("runtime profile serializes"),
         serde_json::to_string(plugin_id).expect("Plugin ID serializes"),
         serde_json::to_string(package_version).expect("package version serializes"),
         serde_json::to_string(root_slot).expect("root Slot serializes"),
@@ -1091,6 +1549,31 @@ struct StructFields {
     ports: Vec<(syn::Ident, Path, PortCardinality)>,
     tasks: Vec<syn::Ident>,
     initializers: Vec<proc_macro2::TokenStream>,
+    construction_fields: Vec<ConstructionField>,
+}
+
+struct ConstructionField {
+    name: syn::Ident,
+    ty: Type,
+    kind: ConstructionFieldKind,
+}
+
+enum ConstructionFieldKind {
+    Config,
+    Dependency {
+        id: LitStr,
+        client: Box<Type>,
+        cardinality: DependencyCardinality,
+    },
+    Private,
+    Legacy,
+}
+
+#[derive(Clone, Copy)]
+enum DependencyCardinality {
+    One,
+    Optional,
+    Many,
 }
 
 #[derive(Clone, Copy)]
@@ -1099,7 +1582,11 @@ enum PortCardinality {
     Many,
 }
 
-fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
+#[allow(clippy::too_many_lines)]
+fn analyze_struct_fields(
+    plugin: &mut ItemStruct,
+    sdk: &proc_macro2::TokenStream,
+) -> syn::Result<StructFields> {
     let Fields::Named(fields) = &mut plugin.fields else {
         return Err(syn::Error::new_spanned(
             &plugin.fields,
@@ -1111,15 +1598,22 @@ fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
     let mut tasks = Vec::new();
     let mut resources = None;
     let mut initializers = Vec::new();
+    let mut construction_fields = Vec::new();
     for field in &mut fields.named {
         let name = field.ident.as_ref().expect("named fields have identifiers");
         let is_config = take_marker(&mut field.attrs, "config");
         let is_tasks = take_marker(&mut field.attrs, "tasks");
         let is_resources = take_marker(&mut field.attrs, "resources");
-        if usize::from(is_config) + usize::from(is_tasks) + usize::from(is_resources) > 1 {
+        let dependency = take_dependency(&mut field.attrs)?;
+        if usize::from(is_config)
+            + usize::from(is_tasks)
+            + usize::from(is_resources)
+            + usize::from(dependency.is_some())
+            > 1
+        {
             return Err(syn::Error::new_spanned(
                 field,
-                "a Plugin field can have only one of `#[config]`, `#[tasks]`, or `#[resources]`",
+                "a Plugin field can have only one construction marker",
             ));
         }
         if is_config {
@@ -1130,6 +1624,27 @@ fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
                 ));
             }
             initializers.push(quote!(#name: configuration));
+            construction_fields.push(ConstructionField {
+                name: name.clone(),
+                ty: field.ty.clone(),
+                kind: ConstructionFieldKind::Config,
+            });
+        } else if let Some(id) = dependency {
+            let (client, cardinality) = dependency_client(&field.ty)?;
+            initializers.push(quote! {
+                #name: return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                    detail: concat!("dependency field `", stringify!(#name), "` requires authoring version 2").to_owned(),
+                })
+            });
+            construction_fields.push(ConstructionField {
+                name: name.clone(),
+                ty: field.ty.clone(),
+                kind: ConstructionFieldKind::Dependency {
+                    id,
+                    client: Box::new(client),
+                    cardinality,
+                },
+            });
         } else if is_tasks {
             if !is_named_type(&field.ty, "ManagedTasks") {
                 return Err(syn::Error::new_spanned(
@@ -1145,6 +1660,11 @@ fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
             }
             tasks.push(name.clone());
             initializers.push(quote!(#name: ::core::default::Default::default()));
+            construction_fields.push(ConstructionField {
+                name: name.clone(),
+                ty: field.ty.clone(),
+                kind: ConstructionFieldKind::Legacy,
+            });
         } else if is_resources {
             if !is_named_type(&field.ty, "InstanceResources") {
                 return Err(syn::Error::new_spanned(
@@ -1159,11 +1679,26 @@ fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
                 ));
             }
             initializers.push(quote!(#name: context.resources().clone()));
+            construction_fields.push(ConstructionField {
+                name: name.clone(),
+                ty: field.ty.clone(),
+                kind: ConstructionFieldKind::Legacy,
+            });
         } else if let Some((client, cardinality)) = port_client(&field.ty)? {
             ports.push((name.clone(), client, cardinality));
             initializers.push(quote!(#name: ::core::default::Default::default()));
+            construction_fields.push(ConstructionField {
+                name: name.clone(),
+                ty: field.ty.clone(),
+                kind: ConstructionFieldKind::Legacy,
+            });
         } else {
-            initializers.push(quote!(#name: ::core::default::Default::default()));
+            initializers.push(legacy_default_initializer(name, &field.ty, sdk));
+            construction_fields.push(ConstructionField {
+                name: name.clone(),
+                ty: field.ty.clone(),
+                kind: ConstructionFieldKind::Private,
+            });
         }
     }
     Ok(StructFields {
@@ -1171,7 +1706,305 @@ fn analyze_struct_fields(plugin: &mut ItemStruct) -> syn::Result<StructFields> {
         ports,
         tasks,
         initializers,
+        construction_fields,
     })
+}
+
+fn take_dependency(attributes: &mut Vec<Attribute>) -> syn::Result<Option<LitStr>> {
+    let mut id = None;
+    let mut seen = false;
+    let mut retained = Vec::with_capacity(attributes.len());
+    for attribute in attributes.drain(..) {
+        if !attribute.path().is_ident("dependency") {
+            retained.push(attribute);
+            continue;
+        }
+        if seen {
+            return Err(syn::Error::new_spanned(
+                attribute,
+                "duplicate `dependency` marker",
+            ));
+        }
+        seen = true;
+        attribute.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("id") {
+                return Err(meta.error("expected `id = \"public_requirement_id\"`"));
+            }
+            id = Some(meta.value()?.parse()?);
+            Ok(())
+        })?;
+    }
+    *attributes = retained;
+    if seen {
+        id.map(Some).ok_or_else(|| {
+            syn::Error::new(proc_macro2::Span::call_site(), "dependency id is required")
+        })
+    } else {
+        Ok(None)
+    }
+}
+
+fn dependency_client(ty: &Type) -> syn::Result<(Type, DependencyCardinality)> {
+    let Type::Path(path) = ty else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "dependency type must be a generated client",
+        ));
+    };
+    let segment = path.path.segments.last().expect("type paths are non-empty");
+    if segment.ident == "Option" {
+        return Ok((
+            single_type_argument(segment, ty)?.clone(),
+            DependencyCardinality::Optional,
+        ));
+    }
+    if segment.ident == "Vec" {
+        let bound = single_type_argument(segment, ty)?;
+        let Type::Path(bound_path) = bound else {
+            return Err(syn::Error::new_spanned(
+                bound,
+                "many dependency must contain a generated client",
+            ));
+        };
+        let bound_segment = bound_path
+            .path
+            .segments
+            .last()
+            .expect("type paths are non-empty");
+        if bound_segment.ident != "BoundCapabilityClient" {
+            return Err(syn::Error::new_spanned(
+                bound,
+                "many dependency must be `Vec<BoundCapabilityClient<Client>>`",
+            ));
+        }
+        return Ok((
+            single_type_argument(bound_segment, bound)?.clone(),
+            DependencyCardinality::Many,
+        ));
+    }
+    Ok((ty.clone(), DependencyCardinality::One))
+}
+
+fn single_type_argument<'a>(segment: &'a syn::PathSegment, ty: &Type) -> syn::Result<&'a Type> {
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "dependency wrapper requires one type",
+        ));
+    };
+    let [GenericArgument::Type(inner)] = arguments.args.iter().collect::<Vec<_>>().as_slice()
+    else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "dependency wrapper requires one type",
+        ));
+    };
+    Ok(inner)
+}
+
+fn legacy_default_initializer(
+    name: &syn::Ident,
+    ty: &Type,
+    sdk: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    quote! {
+        #name: {
+            trait __LensoMaybeDefault<T> {
+                fn __lenso_default(self) -> Option<T>;
+            }
+            impl<T: Default> __LensoMaybeDefault<T> for &&::std::marker::PhantomData<T> {
+                fn __lenso_default(self) -> Option<T> {
+                    Some(T::default())
+                }
+            }
+            impl<T> __LensoMaybeDefault<T> for &::std::marker::PhantomData<T> {
+                fn __lenso_default(self) -> Option<T> {
+                    None
+                }
+            }
+            let marker = ::std::marker::PhantomData::<#ty>;
+            (&&marker).__lenso_default().ok_or_else(|| {
+                #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                    detail: concat!(
+                        "Plugin field `",
+                        stringify!(#name),
+                        "` has no default; use authoring version 2 with #[create]",
+                    )
+                    .to_owned(),
+                }
+            })?
+        }
+    }
+}
+
+fn construct_v2_configuration(
+    plugin_id: &str,
+    config_type: Option<&Type>,
+    validate: Option<&Path>,
+    sdk: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if let Some(config_type) = config_type {
+        let validate = validate.map(|path| quote!(#path(&configuration)?;));
+        quote! {
+            let configuration = #sdk::__private::serde_json::from_str::<#config_type>(
+                context.configuration(),
+            )
+            .map_err(|error| #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("invalid {} configuration: {error}", #plugin_id),
+            })?;
+            #validate
+        }
+    } else {
+        quote! {
+            let configuration = #sdk::__private::serde_json::from_str::<
+                #sdk::__private::serde_json::Value,
+            >(context.configuration())
+            .map_err(|error| #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("invalid {} configuration: {error}", #plugin_id),
+            })?;
+            if !configuration.as_object().is_some_and(|object| object.is_empty()) {
+                return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!("{} does not accept configuration", #plugin_id),
+                });
+            }
+        }
+    }
+}
+
+fn v2_field_initializer(
+    field: &ConstructionField,
+    sdk: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let name = &field.name;
+    let ty = &field.ty;
+    match &field.kind {
+        ConstructionFieldKind::Config => quote!(#name: configuration),
+        ConstructionFieldKind::Dependency {
+            id,
+            client,
+            cardinality: DependencyCardinality::One,
+        } => quote! {
+            #name: {
+                let dependency = context.dependencies().requirement(#id)?;
+                <#client as #sdk::__private::CapabilityClient>::from_dependencies(&dependency)?
+            }
+        },
+        ConstructionFieldKind::Dependency {
+            id,
+            client,
+            cardinality: DependencyCardinality::Optional,
+        } => quote! {
+            #name: {
+                let dependency = context.dependencies().requirement(#id)?;
+                if dependency.bindings().is_empty() {
+                    None
+                } else {
+                    Some(<#client as #sdk::__private::CapabilityClient>::from_dependencies(
+                        &dependency,
+                    )?)
+                }
+            }
+        },
+        ConstructionFieldKind::Dependency {
+            id,
+            client,
+            cardinality: DependencyCardinality::Many,
+        } => quote! {
+            #name: {
+                let dependency = context.dependencies().requirement(#id)?;
+                <#client as #sdk::__private::CapabilityClientMany>::many_from_dependencies(
+                    &dependency,
+                )?
+            }
+        },
+        ConstructionFieldKind::Private => quote! {
+            #name: {
+                trait __LensoMaybeDefault<T> {
+                    fn __lenso_default(self) -> Option<T>;
+                }
+                impl<T: Default> __LensoMaybeDefault<T> for &&::std::marker::PhantomData<T> {
+                    fn __lenso_default(self) -> Option<T> {
+                        Some(T::default())
+                    }
+                }
+                impl<T> __LensoMaybeDefault<T> for &::std::marker::PhantomData<T> {
+                    fn __lenso_default(self) -> Option<T> {
+                        None
+                    }
+                }
+                let marker = ::std::marker::PhantomData::<#ty>;
+                (&&marker).__lenso_default().ok_or_else(|| {
+                    #sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                        detail: concat!(
+                            "Plugin field `",
+                            stringify!(#name),
+                            "` has no default; add a #[create] constructor",
+                        )
+                        .to_owned(),
+                    }
+                })?
+            }
+        },
+        ConstructionFieldKind::Legacy => quote! {
+            #name: return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                detail: concat!(
+                    "legacy Plugin field `",
+                    stringify!(#name),
+                    "` cannot use authoring version 2",
+                )
+                .to_owned(),
+            })
+        },
+    }
+}
+
+fn v2_input_initializer(
+    field: &ConstructionField,
+    sdk: &proc_macro2::TokenStream,
+) -> Option<proc_macro2::TokenStream> {
+    let name = &field.name;
+    match &field.kind {
+        ConstructionFieldKind::Config => Some(quote!(#name: configuration)),
+        ConstructionFieldKind::Dependency {
+            id,
+            client,
+            cardinality: DependencyCardinality::One,
+        } => Some(quote! {
+            #name: {
+                let dependency = context.dependencies().requirement(#id)?;
+                <#client as #sdk::__private::CapabilityClient>::from_dependencies(&dependency)?
+            }
+        }),
+        ConstructionFieldKind::Dependency {
+            id,
+            client,
+            cardinality: DependencyCardinality::Optional,
+        } => Some(quote! {
+            #name: {
+                let dependency = context.dependencies().requirement(#id)?;
+                if dependency.bindings().is_empty() {
+                    None
+                } else {
+                    Some(<#client as #sdk::__private::CapabilityClient>::from_dependencies(
+                        &dependency,
+                    )?)
+                }
+            }
+        }),
+        ConstructionFieldKind::Dependency {
+            id,
+            client,
+            cardinality: DependencyCardinality::Many,
+        } => Some(quote! {
+            #name: {
+                let dependency = context.dependencies().requirement(#id)?;
+                <#client as #sdk::__private::CapabilityClientMany>::many_from_dependencies(
+                    &dependency,
+                )?
+            }
+        }),
+        ConstructionFieldKind::Private | ConstructionFieldKind::Legacy => None,
+    }
 }
 
 fn is_named_type(ty: &Type, expected: &str) -> bool {
@@ -1247,10 +2080,41 @@ fn requirement_macro(
     client: &Path,
     cardinality: PortCardinality,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let prefix = match cardinality {
+        PortCardinality::One => "__lenso_required_",
+        PortCardinality::Many => "__lenso_required_many_",
+    };
+    requirement_macro_path(client, prefix, None)
+}
+
+fn named_requirement_macro(
+    client: &Type,
+    cardinality: DependencyCardinality,
+    requirement_id: &LitStr,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let Type::Path(client) = client else {
+        return Err(syn::Error::new_spanned(
+            client,
+            "dependency client must be a namespace-qualified generated client",
+        ));
+    };
+    let prefix = match cardinality {
+        DependencyCardinality::One => "__lenso_required_",
+        DependencyCardinality::Optional => "__lenso_required_optional_",
+        DependencyCardinality::Many => "__lenso_required_many_",
+    };
+    requirement_macro_path(&client.path, prefix, Some(requirement_id))
+}
+
+fn requirement_macro_path(
+    client: &Path,
+    prefix: &str,
+    requirement_id: Option<&LitStr>,
+) -> syn::Result<proc_macro2::TokenStream> {
     if client.segments.len() < 2 {
         return Err(syn::Error::new_spanned(
             client,
-            "a Port client must be namespace-qualified, for example `model::ModelClient`",
+            "a Capability client must be namespace-qualified, for example `model::ModelClient`",
         ));
     }
     let mut namespace = client.clone();
@@ -1261,12 +2125,11 @@ fn requirement_macro(
         .into_value()
         .ident;
     namespace.segments.pop_punct();
-    let prefix = match cardinality {
-        PortCardinality::One => "__lenso_required_",
-        PortCardinality::Many => "__lenso_required_many_",
-    };
     let macro_name = format_ident!("{}{}", prefix, snake(&client_name.to_string()));
-    Ok(quote!(#namespace::#macro_name!()))
+    Ok(requirement_id.map_or_else(
+        || quote!(#namespace::#macro_name!()),
+        |requirement_id| quote!(#namespace::#macro_name!(#requirement_id)),
+    ))
 }
 
 fn intersperse_commas(values: Vec<proc_macro2::TokenStream>) -> Vec<proc_macro2::TokenStream> {
@@ -1787,6 +2650,49 @@ mod tests {
     }
 
     #[test]
+    fn named_dependency_fields_determine_cardinality_without_type_only_matching() {
+        let mut plugin: ItemStruct = parse_quote! {
+            struct Consumer {
+                #[dependency(id = "source")]
+                source: store::StoreClient,
+                #[dependency(id = "fallback")]
+                fallback: Option<store::StoreClient>,
+                #[dependency(id = "replicas")]
+                replicas: Vec<BoundCapabilityClient<store::StoreClient>>,
+            }
+        };
+        let fields = analyze_struct_fields(&mut plugin, &quote!(::lenso)).unwrap();
+
+        assert_eq!(fields.construction_fields.len(), 3);
+        let ids = fields
+            .construction_fields
+            .iter()
+            .map(|field| match &field.kind {
+                ConstructionFieldKind::Dependency {
+                    id, cardinality, ..
+                } => (
+                    id.value(),
+                    match cardinality {
+                        DependencyCardinality::One => "one",
+                        DependencyCardinality::Optional => "optional",
+                        DependencyCardinality::Many => "many",
+                    },
+                ),
+                _ => panic!("expected dependency field"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                ("source".to_owned(), "one"),
+                ("fallback".to_owned(), "optional"),
+                ("replicas".to_owned(), "many"),
+            ]
+        );
+        assert!(plugin.fields.iter().all(|field| field.attrs.is_empty()));
+    }
+
+    #[test]
     fn managed_tasks_fields_are_initialized_and_connected_on_activate() {
         let mut plugin: ItemStruct = parse_quote! {
             struct Worker {
@@ -1794,7 +2700,7 @@ mod tests {
                 tasks: ManagedTasks,
             }
         };
-        let fields = analyze_struct_fields(&mut plugin).unwrap();
+        let fields = analyze_struct_fields(&mut plugin, &quote!(::lenso)).unwrap();
 
         let task_field: syn::Ident = parse_quote!(tasks);
         assert_eq!(fields.tasks, vec![task_field]);

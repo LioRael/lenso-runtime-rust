@@ -17,11 +17,11 @@ inventory.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
 lenso-native-adapter-macros = { version = "0.2.1", path = "../lenso-native-adapter-macros" }
+lenso-plugin-authoring.workspace = true
 lenso-runtime-codec = { version = "0.3.0", path = "../lenso-runtime-codec" }
 serde_json.workspace = true
 
 [dev-dependencies]
-lenso-plugin-authoring.workspace = true
 serde.workspace = true
 
 [lints]

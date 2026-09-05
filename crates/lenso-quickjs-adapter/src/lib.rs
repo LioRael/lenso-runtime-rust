@@ -34,6 +34,8 @@ use serde_json::Value;
 
 /// Stable open execution-class identity.
 pub const EXECUTION_CLASS: &str = "lenso.quickjs@1";
+/// Exact runtime profile implemented by this Adapter release.
+pub const RUNTIME_PROFILE: &str = "lenso.quickjs@1";
 
 /// Bounded `QuickJS` generation limits supplied by host policy.
 #[derive(Clone, Debug)]
@@ -118,6 +120,12 @@ impl QuickJsAdapter {
         &self,
         instance: &PluginInstancePlan,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.runtime_profile() != RUNTIME_PROFILE {
+            return invalid(format!(
+                "QuickJS Adapter does not support runtime profile `{}`",
+                instance.runtime_profile()
+            ));
+        }
         if instance.entrypoint().is_empty() || instance.entrypoint() == "default" {
             return invalid(format!(
                 "QuickJS Instance `{}` needs an ES module entrypoint",

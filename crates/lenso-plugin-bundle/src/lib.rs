@@ -12,7 +12,6 @@ use std::{
 
 use lenso_app_plan::{
     CapabilityEndpointPlan, CapabilityOperationKind, CapabilityRequirementPlan, ExecutionClassId,
-    PLUGIN_AUTHORING_V2_RUNTIME_PROFILE,
     authoring::{PluginContract, PluginDescriptor, PluginImplementation},
 };
 pub use model::*;
@@ -82,7 +81,7 @@ pub struct SourceProcessPluginBuild {
     pub output: PathBuf,
 }
 
-/// Source-only input for one V3 Plugin Release containing multiple implementations.
+/// Source-only input for one V4 Plugin Release containing multiple implementations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourcePluginReleaseBuild {
     pub contract: PluginContract,
@@ -90,7 +89,7 @@ pub struct SourcePluginReleaseBuild {
     pub output: PathBuf,
 }
 
-/// One already-built implementation Artifact admitted to a V3 Plugin Release.
+/// One already-built implementation Artifact admitted to a V4 Plugin Release.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourcePluginImplementation {
     pub id: String,
@@ -101,6 +100,7 @@ pub struct SourcePluginImplementation {
     pub target: String,
     pub entrypoint: String,
     pub execution_class: ExecutionClassId,
+    pub runtime_profile: String,
 }
 
 #[derive(Clone, Debug)]
@@ -128,23 +128,93 @@ impl ManifestDocument {
                 serde_json::from_value(value)
                     .map_err(|error| BundleError::InvalidManifest(error.to_string()))?,
             ),
-            3 => PluginManifest::V3(
-                serde_json::from_value(value)
-                    .map_err(|error| BundleError::InvalidManifest(error.to_string()))?,
-            ),
+            3 => {
+                validate_profile_wire_shape(&value, false)?;
+                PluginManifest::V3(
+                    serde_json::from_value(value)
+                        .map_err(|error| BundleError::InvalidManifest(error.to_string()))?,
+                )
+            }
+            4 => {
+                validate_profile_wire_shape(&value, true)?;
+                PluginManifest::V4(
+                    serde_json::from_value(value)
+                        .map_err(|error| BundleError::InvalidManifest(error.to_string()))?,
+                )
+            }
             _ => return invalid_manifest("unsupported schema version"),
         };
         validate_manifest(&value)?;
-        let canonical = match &value {
-            PluginManifest::V2(value) => serde_json::to_vec(value),
-            PluginManifest::V3(value) => serde_json::to_vec(value),
-        }
-        .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+        let canonical = canonical_manifest_bytes(&value)?;
         Ok(Self {
             value,
             digest: sha256_digest(&canonical),
         })
     }
+}
+
+fn canonical_manifest_bytes(manifest: &PluginManifest) -> Result<Vec<u8>, BundleError> {
+    let mut value = match manifest {
+        PluginManifest::V2(value) => serde_json::to_value(value),
+        PluginManifest::V3(value) => serde_json::to_value(value),
+        PluginManifest::V4(value) => serde_json::to_value(value),
+    }
+    .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
+    if matches!(manifest, PluginManifest::V3(_)) {
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| BundleError::InvalidManifest("Manifest must be an object".to_owned()))?;
+        object
+            .get_mut("contract")
+            .and_then(Value::as_object_mut)
+            .and_then(|contract| contract.remove("authoring_version"));
+        if let Some(implementations) = object
+            .get_mut("implementations")
+            .and_then(Value::as_array_mut)
+        {
+            for implementation in implementations {
+                implementation
+                    .get_mut("runtime")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|runtime| runtime.remove("runtime_profile"));
+            }
+        }
+    }
+    serde_json::to_vec(&value).map_err(|error| BundleError::InvalidManifest(error.to_string()))
+}
+
+fn validate_profile_wire_shape(value: &Value, require_profiles: bool) -> Result<(), BundleError> {
+    let contract = value
+        .get("contract")
+        .and_then(Value::as_object)
+        .ok_or_else(|| BundleError::InvalidManifest("contract is required".to_owned()))?;
+    let authoring = contract.get("authoring_version");
+    if require_profiles != authoring.is_some() {
+        return invalid_manifest(if require_profiles {
+            "V4 contract requires authoring_version"
+        } else {
+            "V3 contract cannot contain authoring_version"
+        });
+    }
+    let implementations = value
+        .get("implementations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| BundleError::InvalidManifest("implementations are required".to_owned()))?;
+    for implementation in implementations {
+        let runtime = implementation
+            .get("runtime")
+            .and_then(Value::as_object)
+            .ok_or_else(|| BundleError::InvalidManifest("runtime is required".to_owned()))?;
+        let profile = runtime.get("runtime_profile");
+        if require_profiles {
+            if !matches!(profile.and_then(Value::as_str), Some(value) if !value.trim().is_empty()) {
+                return invalid_manifest("V4 implementation requires a non-empty runtime_profile");
+            }
+        } else if profile.is_some() {
+            return invalid_manifest("V3 implementation cannot contain runtime_profile");
+        }
+    }
+    Ok(())
 }
 
 impl SourceManifestDocument {
@@ -380,7 +450,7 @@ pub fn build_source_process_plugin_bundle(
     verify_bundle_directory(&build.output)
 }
 
-/// Materializes a V3 Plugin Bundle from one contract and built implementation Artifacts.
+/// Materializes a V4 Plugin Bundle from one contract and built implementation Artifacts.
 pub fn build_source_plugin_release_bundle(
     build: &SourcePluginReleaseBuild,
 ) -> Result<VerifiedBundle, BundleError> {
@@ -403,32 +473,27 @@ pub fn build_source_plugin_release_bundle(
             media_type: source.media_type.clone(),
             target: source.target.clone(),
         };
-        let runtime = PluginImplementation::new(
-            build.contract.plugin_id(),
-            digest,
-            &source.entrypoint,
-            source.execution_class.clone(),
-        );
-        let runtime = if build.contract.authoring_version() == 2 {
-            runtime.with_runtime_profile(PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-        } else {
-            runtime
-        };
-        implementations.push(PluginImplementationV3 {
+        implementations.push(PluginImplementationV4 {
             id: source.id.clone(),
             host_targets: source.host_targets.clone(),
             artifact,
-            runtime,
+            runtime: PluginImplementation::new(
+                build.contract.plugin_id(),
+                digest,
+                &source.entrypoint,
+                source.execution_class.clone(),
+            )
+            .with_runtime_profile(&source.runtime_profile),
         });
         files.push((source, bytes));
     }
     implementations.sort_by(|left, right| left.id.cmp(&right.id));
-    let manifest = PluginManifestV3 {
-        schema_version: 3,
+    let manifest = PluginManifestV4 {
+        schema_version: 4,
         contract: build.contract.clone(),
         implementations,
     };
-    validate_v3_manifest(&manifest)?;
+    validate_v4_manifest(&manifest)?;
     let bytes = serde_json::to_vec(&manifest)
         .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
 
@@ -534,6 +599,9 @@ fn verify_manifest_bundle_files(
         PluginManifest::V3(value) => {
             verify_v3_bundle_files(root, value, &manifest.digest, files, limits)
         }
+        PluginManifest::V4(value) => {
+            verify_v4_bundle_files(root, value, &manifest.digest, files, limits)
+        }
     }
 }
 
@@ -544,51 +612,98 @@ fn verify_v3_bundle_files(
     files: &BTreeMap<String, BundleFileSummary>,
     limits: &BundleVerificationLimits,
 ) -> Result<VerifiedBundle, BundleError> {
-    if files.len() != manifest.implementations.len() {
-        return invalid_bundle("V3 Bundle closure does not equal its implementation Artifacts");
+    verify_profiled_bundle_files(
+        root,
+        &manifest.contract,
+        manifest
+            .implementations
+            .iter()
+            .map(|implementation| (&implementation.artifact, &implementation.runtime)),
+        manifest.implementations.len(),
+        manifest_digest,
+        files,
+        limits,
+        "V3",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_profiled_bundle_files<'a>(
+    root: &Path,
+    contract: &PluginContract,
+    implementations: impl Iterator<Item = (&'a PluginArtifactV2, &'a PluginImplementation)>,
+    implementation_count: usize,
+    manifest_digest: &str,
+    files: &BTreeMap<String, BundleFileSummary>,
+    limits: &BundleVerificationLimits,
+    schema: &str,
+) -> Result<VerifiedBundle, BundleError> {
+    if files.len() != implementation_count {
+        return invalid_bundle(format!(
+            "{schema} Bundle closure does not equal its implementation Artifacts"
+        ));
     }
-    let mut artifact_digests = Vec::with_capacity(manifest.implementations.len());
-    for implementation in &manifest.implementations {
-        let artifact = &implementation.artifact;
+    let mut artifact_digests = Vec::with_capacity(implementation_count);
+    for (artifact, runtime) in implementations {
         let Some(summary) = files.get(&artifact.path) else {
-            return invalid_bundle(format!("V3 Bundle is missing `{}`", artifact.path));
+            return invalid_bundle(format!("{schema} Bundle is missing `{}`", artifact.path));
         };
         if artifact.size != summary.size || artifact.digest != summary.digest {
             return Err(BundleError::DigestMismatch(artifact.path.clone()));
         }
-        if implementation.runtime.runtime_package_revision() != artifact.digest {
+        if runtime.runtime_package_revision() != artifact.digest {
             return invalid_manifest("implementation revision must equal its Artifact digest");
         }
         if artifact.media_type == "application/wasm" {
             let bytes = read_verified_bundle_artifact(root, artifact, limits)?;
             let encoded = extract_plugin_descriptor(&bytes)?;
             let derived = portable_plugin_descriptor(
-                manifest.contract.plugin_id(),
-                manifest.contract.release_version(),
-                manifest.contract.root_slot(),
+                contract.plugin_id(),
+                contract.release_version(),
+                contract.root_slot(),
                 &artifact.digest,
                 &encoded,
-                implementation.runtime.execution_class().as_str(),
+                runtime.execution_class().as_str(),
             )?;
             let derived = serde_json::from_value::<PluginDescriptor>(derived)
                 .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
-            if derived.contract() != manifest.contract
-                || derived.implementation() != implementation.runtime
-            {
-                return invalid_bundle(
-                    "Wasm source descriptor does not match its V3 Contract and implementation",
-                );
+            if derived.contract() != *contract || derived.implementation() != *runtime {
+                return invalid_bundle(format!(
+                    "Wasm source descriptor does not match its {schema} Contract and implementation"
+                ));
             }
         }
         artifact_digests.push(artifact.digest.clone());
     }
     Ok(VerifiedBundle {
-        plugin_id: manifest.contract.plugin_id().to_owned(),
-        release_version: manifest.contract.release_version().to_owned(),
+        plugin_id: contract.plugin_id().to_owned(),
+        release_version: contract.release_version().to_owned(),
         manifest_digest: manifest_digest.to_owned(),
         artifact_digests,
         product_metadata_digests: Vec::new(),
     })
+}
+
+fn verify_v4_bundle_files(
+    root: &Path,
+    manifest: &PluginManifestV4,
+    manifest_digest: &str,
+    files: &BTreeMap<String, BundleFileSummary>,
+    limits: &BundleVerificationLimits,
+) -> Result<VerifiedBundle, BundleError> {
+    verify_profiled_bundle_files(
+        root,
+        &manifest.contract,
+        manifest
+            .implementations
+            .iter()
+            .map(|implementation| (&implementation.artifact, &implementation.runtime)),
+        manifest.implementations.len(),
+        manifest_digest,
+        files,
+        limits,
+        "V4",
+    )
 }
 
 fn verify_source_bundle_files(
@@ -794,7 +909,81 @@ fn validate_manifest(manifest: &PluginManifest) -> Result<(), BundleError> {
     match manifest {
         PluginManifest::V2(value) => validate_source_manifest(value),
         PluginManifest::V3(value) => validate_v3_manifest(value),
+        PluginManifest::V4(value) => validate_v4_manifest(value),
     }
+}
+
+fn validate_v4_manifest(manifest: &PluginManifestV4) -> Result<(), BundleError> {
+    if manifest.schema_version != 4 || manifest.contract.authoring_version() != 2 {
+        return invalid_manifest("V4 requires authoring_version 2");
+    }
+    validate_profiled_manifest(
+        &manifest.contract,
+        manifest.implementations.iter().map(|implementation| {
+            (
+                &implementation.id,
+                &implementation.host_targets,
+                &implementation.artifact,
+                &implementation.runtime,
+            )
+        }),
+        "V4",
+    )
+}
+
+fn validate_profiled_manifest<'a>(
+    contract: &PluginContract,
+    implementations: impl Iterator<
+        Item = (
+            &'a String,
+            &'a Vec<String>,
+            &'a PluginArtifactV2,
+            &'a PluginImplementation,
+        ),
+    >,
+    schema: &str,
+) -> Result<(), BundleError> {
+    if contract.plugin_id().is_empty()
+        || semver::Version::parse(contract.release_version()).is_err()
+        || contract.root_slot().is_empty()
+    {
+        return invalid_manifest(format!("{schema} Contract is invalid"));
+    }
+    let mut ids = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    let mut count = 0_usize;
+    for (id, host_targets, artifact, runtime) in implementations {
+        count += 1;
+        if id.trim().is_empty() || !ids.insert(id) {
+            return invalid_manifest(format!(
+                "{schema} implementation ids must be non-empty and unique"
+            ));
+        }
+        if host_targets.is_empty() || host_targets.iter().any(|target| target.trim().is_empty()) {
+            return invalid_manifest(format!(
+                "{schema} implementation host targets must be non-empty"
+            ));
+        }
+        validate_artifact(artifact)?;
+        if !paths.insert(&artifact.path) {
+            return invalid_manifest(format!(
+                "{schema} implementation Artifact paths must be unique"
+            ));
+        }
+        if runtime.runtime_package_id() != contract.plugin_id()
+            || runtime.runtime_package_revision() != artifact.digest
+            || runtime.entrypoint().is_empty()
+            || runtime.runtime_profile().trim().is_empty()
+        {
+            return invalid_manifest(format!(
+                "{schema} implementation does not close Plugin authority"
+            ));
+        }
+    }
+    if count == 0 {
+        return invalid_manifest(format!("{schema} implementation set is empty"));
+    }
+    Ok(())
 }
 
 fn validate_v3_manifest(manifest: &PluginManifestV3) -> Result<(), BundleError> {
@@ -1480,6 +1669,7 @@ root-slot = "tools"
                     target: "test-host".to_owned(),
                     entrypoint: "plugin".to_owned(),
                     execution_class: ExecutionClassId::new("lenso.process@1"),
+                    runtime_profile: "lenso.process-authoring@2".to_owned(),
                 },
                 SourcePluginImplementation {
                     id: "quickjs".to_owned(),
@@ -1490,6 +1680,7 @@ root-slot = "tools"
                     target: "javascript-es2023".to_owned(),
                     entrypoint: "plugin.js".to_owned(),
                     execution_class: ExecutionClassId::new("lenso.quickjs@1"),
+                    runtime_profile: "lenso.quickjs-authoring@2".to_owned(),
                 },
             ],
             output: output.clone(),
@@ -1501,9 +1692,15 @@ root-slot = "tools"
             &manifest,
             &ImplementationPolicy {
                 host_target: "test-host".to_owned(),
-                execution_classes: vec![
-                    ExecutionClassId::new("lenso.quickjs@1"),
-                    ExecutionClassId::new("lenso.process@1"),
+                runtimes: vec![
+                    RuntimeAdmission {
+                        execution_class: ExecutionClassId::new("lenso.quickjs@1"),
+                        runtime_profile: "lenso.quickjs-authoring@2".to_owned(),
+                    },
+                    RuntimeAdmission {
+                        execution_class: ExecutionClassId::new("lenso.process@1"),
+                        runtime_profile: "lenso.process-authoring@2".to_owned(),
+                    },
                 ],
             },
         )
@@ -1516,19 +1713,139 @@ root-slot = "tools"
         assert_eq!(selected.descriptor.authoring_version(), 2);
         assert_eq!(
             selected.descriptor.runtime_profile(),
-            PLUGIN_AUTHORING_V2_RUNTIME_PROFILE
+            "lenso.quickjs-authoring@2"
         );
         assert_eq!(
             selected.descriptor.contract(),
             match manifest {
-                PluginManifest::V3(value) => value.contract,
-                PluginManifest::V2(_) => panic!("expected V3 manifest"),
+                PluginManifest::V4(value) => value.contract,
+                PluginManifest::V2(_) | PluginManifest::V3(_) => {
+                    panic!("expected V4 manifest")
+                }
             }
+        );
+
+        let manifest_bytes = fs::read(output.join(MANIFEST_FILE)).unwrap();
+        let manifest_json: Value = serde_json::from_slice(&manifest_bytes).unwrap();
+        assert_eq!(manifest_json["schema_version"], 4);
+        assert_eq!(manifest_json["contract"]["authoring_version"], 2);
+        assert_eq!(
+            manifest_json["implementations"][0]["runtime"]["runtime_profile"],
+            "lenso.process-authoring@2"
         );
     }
 
     #[test]
-    fn v3_release_accepts_a_providerless_lifecycle_implementation() {
+    fn v3_wire_shape_and_digest_remain_stable_after_core_upgrade() {
+        let artifact = PluginArtifactV2 {
+            path: "plugin.js".to_owned(),
+            digest: sha256_digest(b"plugin"),
+            size: 6,
+            media_type: "application/javascript".to_owned(),
+            target: "javascript-es2023".to_owned(),
+        };
+        let manifest = PluginManifest::V3(PluginManifestV3 {
+            schema_version: 3,
+            contract: PluginContract::new("example.v3", "1.0.0", "tools").with_capability(
+                CapabilityEndpointPlan::new("example.echo@1", "1.0.0", ["echo"]),
+            ),
+            implementations: vec![PluginImplementationV3 {
+                id: "quickjs".to_owned(),
+                host_targets: vec!["*".to_owned()],
+                artifact: artifact.clone(),
+                runtime: PluginImplementation::new(
+                    "example.v3",
+                    &artifact.digest,
+                    "plugin.js",
+                    ExecutionClassId::new("lenso.quickjs@1"),
+                ),
+            }],
+        });
+        let old_wire = canonical_manifest_bytes(&manifest).unwrap();
+        let parsed = ManifestDocument::parse(&old_wire).unwrap();
+
+        assert_eq!(parsed.digest, sha256_digest(&old_wire));
+        assert!(
+            !String::from_utf8(old_wire.clone())
+                .unwrap()
+                .contains("authoring_version")
+        );
+        assert!(
+            !String::from_utf8(old_wire.clone())
+                .unwrap()
+                .contains("runtime_profile")
+        );
+
+        let mut extended: Value = serde_json::from_slice(&old_wire).unwrap();
+        extended["contract"]["authoring_version"] = Value::from(1);
+        assert!(matches!(
+            ManifestDocument::parse(&serde_json::to_vec(&extended).unwrap()),
+            Err(BundleError::InvalidManifest(detail)) if detail.contains("V3 contract")
+        ));
+    }
+
+    #[test]
+    fn v4_requires_explicit_versions_and_exact_host_admission() {
+        let artifact = PluginArtifactV2 {
+            path: "plugin.js".to_owned(),
+            digest: sha256_digest(b"plugin"),
+            size: 6,
+            media_type: "application/javascript".to_owned(),
+            target: "javascript-es2023".to_owned(),
+        };
+        let manifest = PluginManifest::V4(PluginManifestV4 {
+            schema_version: 4,
+            contract: PluginContract::new("example.v4", "1.0.0", "tools")
+                .with_authoring_version(2)
+                .with_capability(CapabilityEndpointPlan::new(
+                    "example.echo@1",
+                    "1.0.0",
+                    ["echo"],
+                )),
+            implementations: vec![PluginImplementationV4 {
+                id: "quickjs".to_owned(),
+                host_targets: vec!["*".to_owned()],
+                artifact,
+                runtime: PluginImplementation::new(
+                    "example.v4",
+                    sha256_digest(b"plugin"),
+                    "plugin.js",
+                    ExecutionClassId::new("lenso.quickjs@1"),
+                )
+                .with_runtime_profile("lenso.quickjs-authoring@2"),
+            }],
+        });
+        let wire = canonical_manifest_bytes(&manifest).unwrap();
+        ManifestDocument::parse(&wire).unwrap();
+
+        let unsupported = resolve_implementation(
+            &manifest,
+            &ImplementationPolicy {
+                host_target: "test-host".to_owned(),
+                runtimes: vec![RuntimeAdmission {
+                    execution_class: ExecutionClassId::new("lenso.quickjs@1"),
+                    runtime_profile: "lenso.quickjs-authoring@1".to_owned(),
+                }],
+            },
+        );
+        assert!(matches!(
+            unsupported,
+            Err(BundleError::InvalidBundle(detail)) if detail.contains("no implementation admitted")
+        ));
+
+        let mut missing_profile: Value = serde_json::from_slice(&wire).unwrap();
+        missing_profile["implementations"][0]["runtime"]
+            .as_object_mut()
+            .unwrap()
+            .remove("runtime_profile");
+        assert!(matches!(
+            ManifestDocument::parse(&serde_json::to_vec(&missing_profile).unwrap()),
+            Err(BundleError::InvalidManifest(detail)) if detail.contains("runtime_profile")
+        ));
+    }
+
+    #[test]
+    fn v4_release_accepts_a_providerless_lifecycle_implementation() {
         let root = tempfile::tempdir().unwrap();
         let script = root.path().join("plugin.js");
         fs::write(&script, b"export default {};\n").unwrap();
@@ -1551,6 +1868,7 @@ root-slot = "tools"
                 target: "javascript-bun".to_owned(),
                 entrypoint: "plugin.js".to_owned(),
                 execution_class: ExecutionClassId::new("lenso.bun-process@1"),
+                runtime_profile: "lenso.bun-authoring@2".to_owned(),
             }],
             output: output.clone(),
         })
@@ -1562,7 +1880,10 @@ root-slot = "tools"
             &manifest,
             &ImplementationPolicy {
                 host_target: "test-host".to_owned(),
-                execution_classes: vec![ExecutionClassId::new("lenso.bun-process@1")],
+                runtimes: vec![RuntimeAdmission {
+                    execution_class: ExecutionClassId::new("lenso.bun-process@1"),
+                    runtime_profile: "lenso.bun-authoring@2".to_owned(),
+                }],
             },
         )
         .unwrap();

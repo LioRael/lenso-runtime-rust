@@ -9,7 +9,8 @@ mod typed_extension;
 pub mod host;
 
 pub use lenso_native_adapter::{
-    Lifecycle, ManagedTasks, ManagedTasksError, PluginConfig, plugin, provides,
+    Lifecycle, LifecycleContext, ManagedTasks, ManagedTasksError, PluginConfig, plugin,
+    plugin_impl, provides,
 };
 use lenso_plugin_authoring::PluginError as AuthoringPluginError;
 pub use lenso_plugin_authoring::{
@@ -40,10 +41,11 @@ pub type PluginEventResult = Result<(), RuntimeFailure>;
 pub mod prelude {
     pub use crate::{
         ActivateContext, BoundCapabilityClient, CancellationToken, CapabilityClient,
-        CapabilityClientMany, Ctx, CtxExt, DeactivateContext, Lifecycle, ManagedTaskScope,
-        ManagedTasks, ManagedTasksError, ManyPort, PluginConfig, PluginError, PluginEventResult,
-        PluginFuture, PluginResult, Port, PrepareContext, ProviderStream, ProviderStreamChannel,
-        RuntimeFailure, StreamInput, TypedExtension, TypedExtensionError, plugin, provides,
+        CapabilityClientMany, Ctx, CtxExt, DeactivateContext, Lifecycle, LifecycleContext,
+        ManagedTaskScope, ManagedTasks, ManagedTasksError, ManyPort, PluginConfig, PluginError,
+        PluginEventResult, PluginFuture, PluginResult, Port, PrepareContext, ProviderStream,
+        ProviderStreamChannel, RuntimeFailure, StreamInput, TypedExtension, TypedExtensionError,
+        plugin, plugin_impl, provides,
     };
 }
 

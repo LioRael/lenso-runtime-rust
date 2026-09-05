@@ -11,23 +11,32 @@ description = "Trusted child-process Execution Adapter for Lenso Plugins."
 test-fixture = []
 
 [dependencies]
+base64.workspace = true
 futures.workspace = true
+hex.workspace = true
 lenso-app-plan.workspace = true
 lenso-kernel.workspace = true
+lenso-process-protocol = "0.2.0"
 lenso-process-sdk = { version = "0.1.0", path = "../lenso-process-sdk" }
 lenso-runtime-codec = { version = "0.3.0", path = "../lenso-runtime-codec" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
-hex.workspace = true
+lenso-native-adapter = { version = "0.3.1", path = "../lenso-native-adapter" }
 lenso-process-sdk = { version = "0.1.0", path = "../lenso-process-sdk" }
-sha2.workspace = true
 tempfile = "3"
 
 [[bin]]
 name = "lenso-process-test-fixture"
 path = "src/bin/test_fixture.rs"
+required-features = ["test-fixture"]
+test = false
+
+[[bin]]
+name = "lenso-process-v2-test-fixture"
+path = "src/bin/test_fixture_v2.rs"
 required-features = ["test-fixture"]
 test = false
 

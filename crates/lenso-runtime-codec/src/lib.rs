@@ -454,6 +454,14 @@ pub trait JsonCapabilityCodec: std::fmt::Debug + 'static {
     fn capability_id(&self) -> &'static str;
     /// Exact Descriptor version.
     fn descriptor_version(&self) -> &'static str;
+    /// Canonical digest of the exact generated Descriptor.
+    ///
+    /// Codecs generated before this method existed return an empty value and
+    /// remain usable by legacy profiles. Authoring V2 profiles must reject an
+    /// empty or malformed digest before readiness.
+    fn descriptor_digest(&self) -> &'static str {
+        ""
+    }
     /// Exact request Operation table.
     fn request_operations(&self) -> &'static [&'static str];
     /// Exact bidirectional stream Operation table.
@@ -919,6 +927,8 @@ pub struct JsonHostBindingDescriptor {
     pub provider_instance: String,
     pub capability_id: String,
     pub descriptor_version: String,
+    #[serde(skip_serializing)]
+    pub descriptor_digest: String,
     pub request_operations: Vec<String>,
     pub stream_operations: Vec<String>,
 }
@@ -1013,6 +1023,7 @@ impl JsonHostImports {
                     provider_instance: dependency.provider_instance().to_owned(),
                     capability_id: dependency.capability_id().to_owned(),
                     descriptor_version: codec.descriptor_version().to_owned(),
+                    descriptor_digest: codec.descriptor_digest().to_owned(),
                     request_operations: request.as_ref().map_or_else(Vec::new, |handle| {
                         handle
                             .operations()
@@ -1543,7 +1554,7 @@ pub fn codecs_for_requirements(
     instance: &PluginInstancePlan,
     codecs: &BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
 ) -> Result<Vec<Rc<dyn JsonCapabilityCodec>>, RuntimeFailure> {
-    let mut selected = Vec::with_capacity(instance.required_capabilities().len());
+    let mut selected = BTreeMap::new();
     for requirement in instance.required_capabilities() {
         let codec = codecs.get(requirement.capability_id()).ok_or_else(|| {
             RuntimeFailure::InvalidResolvedPlan {
@@ -1558,9 +1569,11 @@ pub fn codecs_for_requirements(
                 capability: codec.capability_id(),
             });
         }
-        selected.push(codec.clone());
+        selected
+            .entry(requirement.capability_id().to_owned())
+            .or_insert_with(|| codec.clone());
     }
-    Ok(selected)
+    Ok(selected.into_values().collect())
 }
 
 /// Builds exact request bindings from Adapter-prepared Plugin generations.
