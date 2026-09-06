@@ -176,6 +176,11 @@ impl WasmComponentAdapter {
         &self,
         instance: &PluginInstancePlan,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.authoring_version() == 2 && !instance.required_capabilities().is_empty() {
+            return invalid(
+                "Wasm Component authoring v2 currently requires a dependency-free Contract".to_owned(),
+            );
+        }
         if instance.runtime_profile() != RUNTIME_PROFILE {
             return invalid(format!(
                 "Wasm Component Adapter does not support runtime profile `{}`",
@@ -220,6 +225,10 @@ impl WasmComponentAdapter {
 }
 
 impl ExecutionAdapter for WasmComponentAdapter {
+    fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
+        matches!(authoring_version, 1 | 2) && profile == RUNTIME_PROFILE
+    }
+
     fn execution_class(&self) -> ExecutionClassId {
         ExecutionClassId::new(EXECUTION_CLASS)
     }

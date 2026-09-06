@@ -680,6 +680,45 @@ fn real_component_stream_preserves_messages_half_close_terminal_and_open_error()
 }
 
 #[test]
+fn dependency_free_authoring_v2_uses_the_same_wasm_request_profile() {
+    let component = wit_component::ComponentEncoder::default()
+        .module(rust_guest())
+        .unwrap()
+        .validate(true)
+        .encode()
+        .unwrap();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), &component).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&component)));
+    let artifact = ArtifactHandle::open(file.path(), &digest, component.len() as u64).unwrap();
+    let adapter = WasmComponentAdapter::new(
+        ArtifactCatalog::new()
+            .with_artifact("plugin", artifact)
+            .unwrap(),
+    )
+    .with_codec(EchoCodec);
+    assert!(adapter.supports_runtime_profile(2, EXECUTION_CLASS));
+    assert!(!adapter.supports_runtime_profile(3, EXECUTION_CLASS));
+    let instance = plan().plugin_instances()[0]
+        .clone()
+        .with_authoring(2, EXECUTION_CLASS);
+    let modern = ResolvedAppPlan::new(vec![instance.clone()], Vec::new());
+    let generation = adapter.recreate(&modern, "plugin").unwrap();
+    let context = InvocationContext::new(1, None, CancellationToken::new());
+    let response = futures::executor::block_on(generation.endpoints()[0].invoke(
+        "echo",
+        Box::new(7_u64),
+        context,
+    ));
+    assert!(matches!(response, Ok(Ok(_))));
+    let dependent = instance.with_requirement(
+        CapabilityRequirementPlan::one("test.store@1", "1.0.0").with_requirement_id("store"),
+    );
+    let dependent = ResolvedAppPlan::new(vec![dependent], Vec::new());
+    assert!(adapter.recreate(&dependent, "plugin").is_err());
+}
+
+#[test]
 fn real_component_runs_without_wasi_and_retires_on_trap_or_cancellation() {
     let component = wit_component::ComponentEncoder::default()
         .module(rust_guest())
