@@ -178,7 +178,8 @@ impl WasmComponentAdapter {
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
         if instance.authoring_version() == 2 && !instance.required_capabilities().is_empty() {
             return invalid(
-                "Wasm Component authoring v2 currently requires a dependency-free Contract".to_owned(),
+                "Wasm Component authoring v2 currently requires a dependency-free Contract"
+                    .to_owned(),
             );
         }
         if instance.runtime_profile() != RUNTIME_PROFILE {
