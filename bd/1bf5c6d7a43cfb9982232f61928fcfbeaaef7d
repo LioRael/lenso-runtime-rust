@@ -1,0 +1,21 @@
+crates/lenso-plugin-bundle/src/lib.rs
+  s_3724267b9ee00e::t_d4eed45dd01c57 185-186,912-913,1486-1510
+crates/lenso-plugin-bundle/tests/fixtures/process-manifest.json
+  s_3724267b9ee00e::t_f5b167d912f10d 1-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bd1bf5c6d7a43cfb9982232f61928fcfbeaaef7d",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
