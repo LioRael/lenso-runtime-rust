@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "plugin_id": "lenso.marketplace.proof",
+  "release_version": "0.1.0",
+  "artifact": {
+    "path": "plugin",
+    "digest": "sha256:ed3e33aa1e6bc29e16979d8df926544bdc3fbb6605bfa722d142b3167d522a24",
+    "size": 1592208,
+    "media_type": "application/vnd.lenso.process",
+    "target": "aarch64-apple-darwin"
+  },
+  "entry": {
+    "descriptor": {
+      "authoring_version": 2,
+      "runtime_profile": "lenso.process-stdio@2",
+      "plugin_id": "lenso.marketplace.proof",
+      "release_version": "0.1.0",
+      "root_slot": "tool-providers",
+      "runtime_package_id": "lenso.marketplace.proof",
+      "runtime_package_revision": "sha256:ed3e33aa1e6bc29e16979d8df926544bdc3fbb6605bfa722d142b3167d522a24",
+      "entrypoint": "plugin",
+      "provided_capabilities": [
+        {
+          "capability_id": "lenso.agent.tool-provider@2",
+          "descriptor_version": "2.1.0",
+          "operations": [
+            "catalog",
+            "execute"
+          ],
+          "operation_kinds": {},
+          "default_admission": null,
+          "operation_admissions": {},
+          "event_admission": null,
+          "cross_lane_transfer": false
+        }
+      ],
+      "required_capabilities": [],
+      "execution_class": "lenso.process@1",
+      "restart_policy": {
+        "mode": "never",
+        "max_attempts": 0,
+        "window": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "backoff": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "jitter": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "stability": {
+          "secs": 0,
+          "nanos": 0
+        }
+      },
+      "criticality": "non_critical"
+    }
+  }
+}

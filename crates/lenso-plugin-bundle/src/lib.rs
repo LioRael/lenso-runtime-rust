@@ -182,6 +182,8 @@ fn canonical_manifest_bytes(manifest: &PluginManifest) -> Result<Vec<u8>, Bundle
             }
         }
     }
+    // Feature unification must not alter immutable release identity.
+    value.sort_all_objects();
     serde_json::to_vec(&value).map_err(|error| BundleError::InvalidManifest(error.to_string()))
 }
 
@@ -907,7 +909,8 @@ pub fn extract_plugin_descriptor(component: &[u8]) -> Result<Vec<u8>, BundleErro
             "Plugin Component contains duplicate source-derived descriptors"
         });
     };
-    let value = strict_json::<Value>(descriptor)?;
+    let mut value = strict_json::<Value>(descriptor)?;
+    value.sort_all_objects();
     let canonical = serde_json::to_vec(&value)
         .map_err(|error| BundleError::InvalidManifest(error.to_string()))?;
     if canonical != *descriptor {
@@ -1479,6 +1482,31 @@ mod tests {
     use std::borrow::Cow;
 
     use super::*;
+
+    // Registry consumers unify serde_json features differently. This digest is a
+    // release contract, so both default and preserve_order builds use one vector.
+    #[test]
+    fn manifest_digest_is_independent_of_json_map_feature_unification() {
+        let manifest =
+            ManifestDocument::parse(include_bytes!("../tests/fixtures/process-manifest.json"))
+                .unwrap();
+        assert_eq!(
+            manifest.digest,
+            "sha256:d80af441efcc7ed99145d4087019e80d376026527309f6f9fe91e39fcb5da692"
+        );
+    }
+
+    #[test]
+    fn nested_descriptor_keys_must_be_canonical_under_every_feature_set() {
+        assert!(extract_plugin_descriptor(&wasm_with_descriptors(&[br#"{"z":0,"a":1}"#])).is_err());
+        assert!(
+            extract_plugin_descriptor(&wasm_with_descriptors(&[br#"{"a":{"z":0,"a":1}}"#]))
+                .is_err()
+        );
+        assert!(
+            extract_plugin_descriptor(&wasm_with_descriptors(&[br#"{"a":{"a":1,"z":0}}"#])).is_ok()
+        );
+    }
 
     #[cfg(unix)]
     #[test]
