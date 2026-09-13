@@ -1,0 +1,21 @@
+crates/lenso-process-adapter/src/v2.rs
+  s_3724267b9ee00e::t_dde4b26f1409bd 146,294,470-482
+crates/lenso-process-adapter/tests/process_v2_host.rs
+  s_3724267b9ee00e::t_fd833d3739624c 311-341
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a78f1f399825f152708ad091cf6196e5670383f5",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
