@@ -308,6 +308,37 @@ fn process_v2_calls_two_named_native_store_dependencies_and_stops_cleanly() {
     ));
 }
 
+// A caller context is allowed to issue multiple calls. Wire identities must
+// remain unique after a previous call has settled, even with the same request ID.
+#[test]
+fn process_v2_repeated_caller_request_id_uses_distinct_wire_invocations() {
+    let source = Arc::new(Mutex::new(BTreeMap::from([(
+        "guide".to_owned(),
+        "object".to_owned(),
+    )])));
+    let destination = Arc::new(Mutex::new(BTreeMap::new()));
+    let source_calls = Arc::new(AtomicUsize::new(0));
+    let destination_calls = Arc::new(AtomicUsize::new(0));
+    let (driver, app) = start_process_app(&source, &destination, &source_calls, &destination_calls);
+    let handle = app.handle::<Sync>("consumer").unwrap();
+    for _ in 0..3 {
+        let result = driver
+            .run(handle.invoke_with_context(
+                "sync",
+                InvocationContext::new(40, None, CancellationToken::new()),
+                json!({"document":"guide"}),
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["text"], "object");
+    }
+    assert_eq!(source_calls.load(Ordering::Relaxed), 3);
+    assert!(matches!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        lenso_kernel::ShutdownOutcome::Clean
+    ));
+}
+
 #[test]
 fn process_v2_lifecycle_scopes_can_call_declared_dependencies() {
     let source = Arc::new(Mutex::new(BTreeMap::from([(

@@ -143,6 +143,7 @@ struct ProcessGenerationV2 {
     constructed: LifecycleSlot<lenso_process_protocol::authoring::ConstructedResult>,
     stopped_result: LifecycleSlot<lenso_process_protocol::authoring::StoppedResult>,
     pending: PendingInvocations,
+    next_invocation: AtomicU64,
     failed: Arc<AtomicBool>,
     stop_started: AtomicBool,
     stopped: AtomicBool,
@@ -290,6 +291,7 @@ impl ProcessGenerationV2 {
             constructed,
             stopped_result,
             pending,
+            next_invocation: AtomicU64::new(1),
             failed,
             stop_started: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
@@ -465,8 +467,19 @@ impl JsonRequestTransport for ProcessGenerationV2 {
                     capability: self.execution_class,
                 }
             })?;
-            let correlation_id = context.request_id().to_string();
-            let scope = invocation_scope(&context, self.execution_class)?;
+            // Kernel request IDs identify caller contexts, which can be reused
+            // across nested calls and generations. The wire session owns its IDs.
+            let correlation_id = self
+                .next_invocation
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_add(1)
+                })
+                .map_err(|_| RuntimeFailure::Internal {
+                    detail: "Process V2 invocation IDs exhausted".into(),
+                })?
+                .to_string();
+            let mut scope = invocation_scope(&context, self.execution_class)?;
+            scope.scope_id = format!("invoke-{correlation_id}");
             let params = lenso_process_protocol::authoring::InvokeParams {
                 session: self.identity.session.clone(),
                 correlation_id: correlation_id.clone(),
