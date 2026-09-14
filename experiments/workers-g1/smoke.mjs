@@ -41,6 +41,12 @@ healthy(await read('after-failure'), 'after-failure');
 const lifecycle = await read('lifecycle', 'lifecycle');
 assert.equal(lifecycle.lifecycle, 'passed');
 assert.deepEqual(lifecycle.cases, ['normal', 'prepare-failure', 'activate-failure', 'deactivate-failure', 'release-failure', 'shutdown-timeout', 'supervision']);
+for (const [mode, suite, count] of [['named-dependencies', 'named_dependencies', 2], ['diagnostics', 'diagnostics', 7]]) {
+  const result = await read(mode, mode);
+  assert.equal(result.suite, suite);
+  assert.equal(result.passed, true);
+  assert.equal(result.cases.length, count);
+}
 const contract = await read('conformance', 'conformance');
 assert.equal(contract.conformance, 'passed');
 assert.equal(contract.providers, 2);
@@ -59,4 +65,4 @@ for (const mode of ['task-trap', 'async-panic']) {
   assert.equal(failure.shutdown, 'unconfirmed');
   healthy(await read(`after-${mode}`), `after-${mode}`);
 }
-console.log(JSON.stringify({ base, passed: true, concurrent_requests: inputs.length, checks: ['static registration', 'Ready', 'bound Capability invocation', 'event state isolation', 'timer', 'task cancellation', 'missing factory', 'prepare failure', 'clean shutdown', 'recreation', 'bounded tasks', 'shutdown wakes parked lane', 'cancelled invocation', 'expired invocation', 'synchronous Wasm trap rejection', 'upstream request conformance vectors', 'lifecycle rollback and exactly-once cleanup', 'shutdown admission and timeout', 'stable handle after restart and restart exhaustion', 'async trap deadline', 'spawned task trap', 'async Plugin panic', 'same-event instance recreation', 'in-flight generation rejection'] }));
+console.log(JSON.stringify({ base, passed: true, concurrent_requests: inputs.length, checks: ['static registration', 'Ready', 'bound Capability invocation', 'event state isolation', 'timer', 'task cancellation', 'missing factory', 'prepare failure', 'clean shutdown', 'recreation', 'bounded tasks', 'shutdown wakes parked lane', 'cancelled invocation', 'expired invocation', 'synchronous Wasm trap rejection', 'upstream request conformance vectors', 'named dependency selection and shared provider capacity', 'bounded diagnostics and shutdown timing', 'lifecycle rollback and exactly-once cleanup', 'shutdown admission and timeout', 'stable handle after restart and restart exhaustion', 'async trap deadline', 'spawned task trap', 'async Plugin panic', 'same-event instance recreation', 'in-flight generation rejection'] }));

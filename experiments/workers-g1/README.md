@@ -166,3 +166,20 @@ CPU quantiles retain API-native units and must not be averaged across rows.
 Neither script measures total isolate peak memory. See the
 [load evidence](../../docs/evidence/workers-g1/load-and-coverage.md) and
 [upstream coverage inventory](../../docs/evidence/workers-g1/conformance-matrix.md).
+
+## Named dependency and diagnostics vectors
+
+The regular smoke now includes `/probe?mode=named-dependencies` (two upstream
+vectors, including all three optional-destination configurations) and
+`/probe?mode=diagnostics` (seven upstream vectors). The fixtures are ported from
+`lenso-runtime-conformance` 0.3.2 with real Workers scheduling and explicit cleanup.
+
+Deterministic `run` calls become awaited operations. Shutdown timestamp checks
+use a real 10 ms timer, event ordering and cleanup-relative elapsed time;
+successful invocation duration must fit within the surrounding measured interval.
+A retained execution lease continues to consume provider capacity after a reply;
+dropping an unsettled lease still produces Timeout rather than a clean completion.
+
+Fixture assertions abort Wasm on regression; the existing Runner abandonment
+boundary rejects the probe. An assertion failure is never a passing conformance
+result. See [named dependency and diagnostics evidence](../../docs/evidence/workers-g1/named-and-diagnostics.md).

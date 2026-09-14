@@ -6,16 +6,16 @@ Pinned source: `lenso-runtime-conformance` 0.3.2, registry `tests/*.rs`. This in
 | --- | --- | --- |
 | `deterministic_schedules.rs` | `cancellation_and_completion_interleavings_preserve_one_terminal_outcome` | Pending |
 | `deterministic_schedules.rs` | `deadline_and_completion_interleavings_remain_deterministic` | Pending |
-| `diagnostics.rs` | `diagnostics_filter_sources_and_drop_overflow_without_affecting_shutdown` | Pending |
-| `diagnostics.rs` | `observer_can_await_the_next_record` | Pending |
-| `diagnostics.rs` | `zero_observers_do_not_change_empty_app_behavior` | Pending |
-| `diagnostics.rs` | `observer_disconnect_and_zero_capacity_are_non_fatal` | Pending |
-| `diagnostics.rs` | `shutdown_records_the_actual_admission_and_cleanup_boundaries` | Pending |
-| `diagnostics.rs` | `diagnostics_do_not_treat_unresolved_caller_text_as_structural_identity` | Pending |
-| `diagnostics.rs` | `request_diagnostics_expose_timing_and_failure_categories_without_domain_bodies` | Pending |
+| `diagnostics.rs` | `diagnostics_filter_sources_and_drop_overflow_without_affecting_shutdown` | Covered by diagnostics probe; real-clock timing adaptation |
+| `diagnostics.rs` | `observer_can_await_the_next_record` | Covered by diagnostics probe; real-clock timing adaptation |
+| `diagnostics.rs` | `zero_observers_do_not_change_empty_app_behavior` | Covered by diagnostics probe; real-clock timing adaptation |
+| `diagnostics.rs` | `observer_disconnect_and_zero_capacity_are_non_fatal` | Covered by diagnostics probe; real-clock timing adaptation |
+| `diagnostics.rs` | `shutdown_records_the_actual_admission_and_cleanup_boundaries` | Covered by diagnostics probe; real-clock timing adaptation |
+| `diagnostics.rs` | `diagnostics_do_not_treat_unresolved_caller_text_as_structural_identity` | Covered by diagnostics probe; real-clock timing adaptation |
+| `diagnostics.rs` | `request_diagnostics_expose_timing_and_failure_categories_without_domain_bodies` | Covered by diagnostics probe; real-clock timing adaptation |
 | `interactions.rs` | `conformance_adapter_exercises_stream_event_and_shutdown_through_one_interface` | Pending |
-| `named_dependencies.rs` | `generated_clients_use_named_views_without_changing_their_interface` | Pending |
-| `named_dependencies.rs` | `two_named_handles_cannot_bypass_provider_capacity_after_a_terminal_reply` | Pending |
+| `named_dependencies.rs` | `generated_clients_use_named_views_without_changing_their_interface` | Covered by named dependencies probe |
+| `named_dependencies.rs` | `two_named_handles_cannot_bypass_provider_capacity_after_a_terminal_reply` | Covered by named dependencies probe |
 | `native_request.rs` | `typed_client_invokes_a_prepared_provider` | Covered by request/registration probes |
 | `native_request.rs` | `typed_client_preserves_domain_errors` | Covered by request/registration probes |
 | `native_request.rs` | `kernel_rejects_an_unknown_operation_as_a_runtime_failure` | Covered by request/registration probes |
@@ -37,6 +37,6 @@ Pinned source: `lenso-runtime-conformance` 0.3.2, registry `tests/*.rs`. This in
 | `native_request.rs` | `replacing_the_provider_changes_composition_and_plan_but_not_the_consumer_binding` | Pending |
 | `native_request.rs` | `conformance_adapter_recreates_a_generation_through_the_supervision_seam` | Covered by lifecycle supervision probe |
 
-The real Driver timer/cancellation checks cover selected outcomes, not the full deterministic interleaving permutations. Diagnostics, named dependency capacity, and stream/event interactions remain explicit gaps. They must either gain real-host evidence or be excluded by an enforced and documented supported-target profile; silence is not an exclusion.
+The real Driver timer/cancellation checks cover selected outcomes, not the full deterministic interleaving permutations. Named dependencies and diagnostics are now exercised by dedicated real-host probes. Stream/event interactions remain an explicit gap. They must either gain real-host evidence or be excluded by an enforced and documented supported-target profile; silence is not an exclusion.
 
 Lifecycle rollback, cleanup errors, bounded shutdown, restart exhaustion and Wasm generation abandonment have additional experiment-specific probes described in the adjacent evidence reports.
