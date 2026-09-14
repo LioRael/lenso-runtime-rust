@@ -1,0 +1,59 @@
+docs/design/cloudflare-workers-target.md
+  s_3724267b9ee00e::t_ea592c63326c64 128-143
+docs/evidence/workers-g1/README.md
+  s_3724267b9ee00e::t_122a191dbc29b0 3-6
+docs/evidence/workers-g1/local-profile.json
+  s_3724267b9ee00e::t_90f77501057ebb 1-22
+docs/evidence/workers-g1/local-recovery-smoke.json
+  s_3724267b9ee00e::t_80287c0259fac8 1
+docs/evidence/workers-g1/recovery.md
+  s_3724267b9ee00e::t_013b22b9547151 1-99
+docs/evidence/workers-g1/remote-recovery-smoke.json
+  s_3724267b9ee00e::t_daab5761e8bfc6 1
+experiments/workers-g1/Cargo.lock
+  s_3724267b9ee00e::t_7ff9e7ce4279c2 442-452,482
+experiments/workers-g1/README.md
+  s_3724267b9ee00e::t_277eeb4fb9a2c6 47-48,54-79
+experiments/workers-g1/build.sh
+  s_3724267b9ee00e::t_9d94c62514478f 25
+experiments/workers-g1/clock.mjs
+  s_3724267b9ee00e::t_8fedec75980627 1-16
+experiments/workers-g1/echo/src/lib.rs
+  s_3724267b9ee00e::t_a7f0bb64c0902c 44-53
+experiments/workers-g1/host/Cargo.toml
+  s_3724267b9ee00e::t_92adfd05fbf45e 19
+experiments/workers-g1/host/src/conformance.rs
+  s_3724267b9ee00e::t_7c9211372b4ec9 1-102
+experiments/workers-g1/host/src/driver.rs
+  s_3724267b9ee00e::t_f56b6b3a9882ab 20,22-33,102,110,274
+experiments/workers-g1/host/src/lib.rs
+  s_3724267b9ee00e::t_19f2353eec352b 1,93-102,112
+experiments/workers-g1/package.json
+  s_3724267b9ee00e::t_80bd5bdda085b3 1-13
+experiments/workers-g1/pnpm-lock.yaml
+  s_3724267b9ee00e::t_00b734bb115da7 14-16
+experiments/workers-g1/profile.mjs
+  s_3724267b9ee00e::t_595aab07ba7e0a 1-76
+experiments/workers-g1/runner.mjs
+  s_3724267b9ee00e::t_86f64cce3ceaab 1-79
+experiments/workers-g1/smoke.mjs
+  s_3724267b9ee00e::t_a9407aa22de989 41-58
+experiments/workers-g1/worker.mjs
+  s_3724267b9ee00e::t_36ebc1d328c664 1,8,10-11,13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "20af2380eda980bfe9c5b6b26596cf411dbe7889",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
