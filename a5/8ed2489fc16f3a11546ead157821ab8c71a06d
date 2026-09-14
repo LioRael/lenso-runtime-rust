@@ -1,0 +1,41 @@
+docs/evidence/workers-g1/README.md
+  s_3724267b9ee00e::t_bc32feead7f5c2 11-12
+docs/evidence/workers-g1/conformance-matrix.md
+  s_3724267b9ee00e::t_af02976f9e3732 9-15,17-18,40
+docs/evidence/workers-g1/local-named-diagnostics-smoke.json
+  s_3724267b9ee00e::t_2a598a918f8b86 1
+docs/evidence/workers-g1/named-and-diagnostics.md
+  s_3724267b9ee00e::t_43ad2c306c2c21 1-64
+docs/evidence/workers-g1/remote-named-diagnostics-smoke.json
+  s_3724267b9ee00e::t_2eaed75dbfcdab 1
+experiments/workers-g1/README.md
+  s_3724267b9ee00e::t_b5c2a993eb1713 169-185
+experiments/workers-g1/host/src/diagnostics_proof.rs
+  s_3724267b9ee00e::t_15ae7ef53dd9c1 1-378
+experiments/workers-g1/host/src/lib.rs
+  s_3724267b9ee00e::t_80a179b8982bf8 2,5
+experiments/workers-g1/host/src/named_dependencies_proof.rs
+  s_3724267b9ee00e::t_413e25b64c8dc4 1-225
+experiments/workers-g1/runner.mjs
+  s_3724267b9ee00e::t_06ac383e35612f 1,52
+experiments/workers-g1/smoke.mjs
+  s_3724267b9ee00e::t_41ee2ac1bbec01 44-49,68
+experiments/workers-g1/worker.mjs
+  s_3724267b9ee00e::t_31ece17fd92dfe 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a58ed2489fc16f3a11546ead157821ab8c71a06d",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
