@@ -440,6 +440,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-runtime-conformance"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "888fbe854b9ffed30d9240b173d5aa64e01bffbdd2725d37b6b357eb331f22e6"
+dependencies = [
+ "futures",
+ "lenso-app-plan",
+ "lenso-kernel",
+]
+
+[[package]]
 name = "lenso-workers-g1-caller"
 version = "0.1.0"
 dependencies = [
@@ -468,6 +479,7 @@ dependencies = [
  "lenso-capability-http-endpoint",
  "lenso-kernel",
  "lenso-native-adapter",
+ "lenso-runtime-conformance",
  "lenso-workers-g1-caller",
  "lenso-workers-g1-echo",
  "serde_json",

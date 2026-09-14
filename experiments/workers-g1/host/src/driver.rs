@@ -17,13 +17,20 @@ use futures::{
 use lenso_kernel::{DriverTask, LocalTask, RuntimeDriver, TaskOutcome};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-#[wasm_bindgen::prelude::wasm_bindgen(
-    inline_js = "export function hostNow(){return performance.now()} export function hostTimer(f,ms){return setTimeout(f,ms)} export function hostClear(id){clearTimeout(id)}"
-)]
+#[wasm_bindgen::prelude::wasm_bindgen(raw_module = "../clock.mjs")]
 extern "C" {
-    fn hostNow() -> f64;
-    fn hostTimer(f: &wasm_bindgen::JsValue, ms: i32) -> i32;
-    fn hostClear(id: i32);
+    fn clock(operation: u32, callback: &wasm_bindgen::JsValue, value: i32) -> f64;
+}
+
+fn host_timer(callback: &wasm_bindgen::JsValue, delay: i32) -> i32 {
+    // The host returns an integer timer ID in the signed 32-bit range.
+    #[allow(clippy::cast_possible_truncation)]
+    let id = clock(1, callback, delay) as i32;
+    id
+}
+
+fn host_clear(id: i32) {
+    clock(2, &wasm_bindgen::JsValue::NULL, id);
 }
 
 #[derive(Debug)]
@@ -92,7 +99,7 @@ impl WorkersTimer {
                 let _ = wakeup.send(());
             }
         });
-        let timer_id = hostTimer(callback.as_ref(), milliseconds);
+        let timer_id = host_timer(callback.as_ref(), milliseconds);
         self.receiver = Some(receiver);
         self.timer_id = Some(timer_id);
         self.callback = Some(callback);
@@ -100,7 +107,7 @@ impl WorkersTimer {
 
     fn cancel_timer(&mut self) {
         if let Some(timer_id) = self.timer_id.take() {
-            hostClear(timer_id);
+            host_clear(timer_id);
         }
         self.receiver.take();
         self.callback.take();
@@ -264,7 +271,7 @@ impl RuntimeDriver for WorkersDriver {
 }
 
 fn performance_now() -> f64 {
-    hostNow()
+    clock(0, &wasm_bindgen::JsValue::NULL, 0)
 }
 
 #[allow(

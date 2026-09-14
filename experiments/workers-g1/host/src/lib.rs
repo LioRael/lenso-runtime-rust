@@ -1,3 +1,4 @@
+mod conformance;
 mod driver;
 use driver::WorkersDriver;
 use lenso_app_plan::authoring::{
@@ -89,6 +90,16 @@ pub async fn probe(input: String, mode: String) -> Result<String, JsValue> {
     }
     let app = startup.map_err(error)?;
     let ready = app.is_ready() && app.is_accepting();
+    if mode == "task-trap" {
+        let task = driver
+            .spawn_root(Box::pin(async {
+                core::arch::wasm32::unreachable();
+            }))
+            .map_err(error)?;
+        let outcome = task.await;
+        app.shutdown(Duration::from_secs(1)).await;
+        return Err(error(format!("trap unexpectedly completed: {outcome:?}")));
+    }
     let request = http::HandleRequest {
         body: input.clone().into_bytes().into(),
         credential: None,
@@ -98,7 +109,7 @@ pub async fn probe(input: String, mode: String) -> Result<String, JsValue> {
         path_parameters: vec![],
         query: None,
         request_id: input.clone(),
-        route_id: "probe".into(),
+        route_id: mode.clone(),
     };
     let cancelled = CancellationToken::new();
     cancelled.cancel();

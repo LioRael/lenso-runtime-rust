@@ -1,6 +1,9 @@
 # Workers G1 prototype evidence — 2026-09-14
 
-Status: local and deployed generic runtime prototype passed. **G1 qualification
+This is the initial prototype report. See the [recovery follow-up](recovery.md)
+for the later async fault fix, conformance subset, and resource observations.
+
+Initial status: local and deployed generic runtime prototype passed. **G1 qualification
 remains open** for asynchronous traps, forced termination/recreation, full Runtime
 conformance, CPU measurement, and peak memory measurement. G2 HTTP parity and
 product migrations are not approved by these results.

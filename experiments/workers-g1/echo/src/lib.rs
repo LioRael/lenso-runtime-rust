@@ -41,6 +41,16 @@ impl http::EndpointProvider for Echo {
         self.count.set(self.count.get() + 1);
         let count = self.count.get();
         Box::pin(async move {
+            if request.route_id == "async-pending" {
+                std::future::pending::<()>().await;
+            }
+            assert!(
+                request.route_id != "async-panic",
+                "intentional async Plugin panic"
+            );
+            if request.route_id == "async-trap" {
+                core::arch::wasm32::unreachable();
+            }
             Ok(Ok(http::HandleResponse {
                 status: 200,
                 headers: vec![http::HandleResponseHeadersItem {

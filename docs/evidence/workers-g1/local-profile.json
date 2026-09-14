@@ -1,0 +1,22 @@
+{
+  "requests": 240,
+  "concurrency": 12,
+  "profile_duration_us": 306011,
+  "sampled_nonidle_us": 286447,
+  "sampled_idle_us": 2796,
+  "heap_samples": 20,
+  "max_observed_heap_used": 3232692,
+  "first": {
+    "usedSize": 1488036,
+    "totalSize": 3670016,
+    "embedderHeapUsedSize": 257936,
+    "backingStorageSize": 0
+  },
+  "last": {
+    "usedSize": 3232692,
+    "totalSize": 5767168,
+    "embedderHeapUsedSize": 386896,
+    "backingStorageSize": 0
+  },
+  "note": "Local workerd V8 CPU samples and batch-boundary heap observations; not remote billed CPU or absolute peak process memory."
+}

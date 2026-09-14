@@ -22,4 +22,4 @@ for line in open(sys.argv[1]):
 PY
 )"
 [[ -f "$artifact" ]]
-"$WASM_BINDGEN" "$artifact" --target web --out-dir "$root/pkg"
+"$WASM_BINDGEN" "$artifact" --target web --experimental-reset-state-function --out-dir "$root/pkg"

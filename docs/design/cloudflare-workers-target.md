@@ -125,6 +125,22 @@ Kernel contract. Do not fabricate elapsed time to satisfy conformance. A proven
 semantic mismatch is a design gate, not a test to weaken. Wasm trapping may abort
 the event rather than yield a recoverable task failure; document that distinction.
 
+### G1 failure-boundary revision
+
+The experiment reproduced an async Wasm trap leaving the exported Promise
+unsettled. Rust `catch_unwind` on the pinned abort build does not close this gap.
+The JS Runner therefore bounds pending events and owns a wall-time deadline
+outside Rust. A failed/expired generation rejects all its in-flight requests,
+clears host timers, and replaces the Wasm instance using generated reset support.
+No event from that generation may report Clean shutdown without evidence.
+Failed reset leaves admission closed. This is generation-wide failure, not
+per-Plugin trap recovery, and does not reverse any durable writes.
+
+The independent event timer is cooperative with JavaScript and cannot preempt a
+CPU loop. Platform termination remains distinct. Same-fetch Wasm recreation
+is now tested; V8 isolate eviction and forced CPU termination are still unproven.
+This change is experimental until the remaining G1 qualification gates pass.
+
 ## HTTP consistency contract
 
 Create one corpus in the Web owner and execute it against native ingress and
