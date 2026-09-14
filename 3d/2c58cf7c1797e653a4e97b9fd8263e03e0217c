@@ -1,0 +1,49 @@
+docs/evidence/workers-g1/README.md
+  s_3724267b9ee00e::t_4615aec0d428e3 9-10
+docs/evidence/workers-g1/conformance-matrix.md
+  s_3724267b9ee00e::t_279865d3e74af8 1-42
+docs/evidence/workers-g1/load-and-coverage.md
+  s_3724267b9ee00e::t_a66ccda5247c95 1-35
+docs/evidence/workers-g1/local-coverage-smoke.json
+  s_3724267b9ee00e::t_29e4cbe2bf66bf 1
+docs/evidence/workers-g1/local-load.json
+  s_3724267b9ee00e::t_2757d150bf3dc7 1-1703
+docs/evidence/workers-g1/remote-coverage-smoke.json
+  s_3724267b9ee00e::t_de437b142573ce 1
+docs/evidence/workers-g1/remote-io-load-metrics.json
+  s_3724267b9ee00e::t_e3c533975aedd1 1-26
+docs/evidence/workers-g1/remote-io-load.json
+  s_3724267b9ee00e::t_a5877f84949285 1-1703
+docs/evidence/workers-g1/remote-load-metrics.json
+  s_3724267b9ee00e::t_876f1a5c6a78a4 1-26
+docs/evidence/workers-g1/remote-load.json
+  s_3724267b9ee00e::t_cc82feed28311c 1-1703
+experiments/workers-g1/README.md
+  s_3724267b9ee00e::t_7bfe21046bb376 142-168
+experiments/workers-g1/host/src/conformance.rs
+  s_3724267b9ee00e::t_f7257427b5946d 5,14-70,158
+experiments/workers-g1/load.mjs
+  s_3724267b9ee00e::t_e0b4125d808c33 1-48
+experiments/workers-g1/metrics.py
+  s_3724267b9ee00e::t_7b1ee42ca73e40 1-48
+experiments/workers-g1/package.json
+  s_3724267b9ee00e::t_b2b659992f0d8e 8-9
+experiments/workers-g1/smoke.mjs
+  s_3724267b9ee00e::t_cb0b6e290e5870 47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3d2c58cf7c1797e653a4e97b9fd8263e03e0217c",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
