@@ -1,7 +1,9 @@
 # Workers G1 prototype evidence — 2026-09-14
 
 This is the initial prototype report. See the [recovery follow-up](recovery.md)
-for the later async fault fix, conformance subset, and resource observations.
+for the async fault fix, conformance subset, and resource observations.
+The subsequent [I/O and platform report](io-and-termination.md) records real
+subrequests and CPU-limit termination.
 
 Initial status: local and deployed generic runtime prototype passed. **G1 qualification
 remains open** for asynchronous traps, forced termination/recreation, full Runtime

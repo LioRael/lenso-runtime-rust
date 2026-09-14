@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "smoke": "node smoke.mjs",
-    "profile": "node profile.mjs"
+    "profile": "node profile.mjs",
+    "smoke:io": "node io-smoke.mjs"
   },
   "devDependencies": {
     "wrangler": "4.107.0",

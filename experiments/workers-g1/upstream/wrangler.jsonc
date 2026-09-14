@@ -1,0 +1,8 @@
+{
+  "name": "lenso-workers-g1-upstream",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-07-08",
+  "workers_dev": true,
+  "preview_urls": false,
+  "limits": { "cpu_ms": 10 }
+}

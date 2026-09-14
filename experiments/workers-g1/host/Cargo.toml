@@ -17,3 +17,6 @@ futures.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 lenso-runtime-conformance = "=0.3.2"
+
+[features]
+cpu-probe = []

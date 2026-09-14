@@ -77,3 +77,52 @@ The script checks 240 requests at concurrency 12 and writes a CPU profile to
 reports batch-boundary heap observations and CPU samples, not remote billed CPU
 or an absolute peak process memory measurement. See the
 [recovery follow-up](../../docs/evidence/workers-g1/recovery.md) for evidence.
+
+## Request-owned I/O proof
+
+The Rust Host receives an explicit JS I/O scope while its App is Ready. The scope
+owns its fetch controller and bounded response reader; the Runner aborts it on
+cancellation, completion, or generation abandonment. It is an experimental Host
+facility, not a new Plugin Capability or an Auth transport implementation.
+
+Run the separate stateless upstream in one terminal:
+
+```sh
+pnpm exec wrangler dev --config upstream/wrangler.jsonc --port 63734 --inspector-port 9230
+```
+
+Start the main experiment in another:
+
+```sh
+pnpm exec wrangler dev --port 63733 --var UPSTREAM_BASE:http://127.0.0.1:63734
+```
+
+Then run `WORKERS_G1_URL=http://127.0.0.1:63733 pnpm run smoke:io`.
+The deployed upstream is `lenso-workers-g1-upstream`; the main experiment pins
+its URL in `UPSTREAM_BASE` and enables `global_fetch_strictly_public` for public
+Worker-to-Worker subrequests. Redirects are handled manually and non-success
+responses are rejected. Upstream data is bounded to 4096 bytes.
+
+Modes `io-exchange`, `io-delayed`, and `io-slow` exercise real response bodies.
+`io-cancel` tests both pre-cancellation and cancellation after headers;
+`io-recovery` tests an abandoned generation with I/O in progress. The I/O smoke
+also issues distinct HTTP requests and requires matching isolate boot IDs for
+the cross-request interruption assertion. These probes prove client-side abort
+and draining, not rollback of an upstream side effect or remote destructor execution.
+Incoming client-disconnect propagation is not certified by the controlled signal test.
+
+## Disposable CPU-termination proof
+
+The default build excludes the CPU loop. To reproduce the separately authorized
+platform fault experiment, build with `WORKERS_G1_CPU_PROBE=1`, deploy using
+`termination/wrangler.jsonc`, and install a fresh `PROBE_KEY` with Wrangler's
+`secret put`. Keep the matching key in a private local file, outside the repository.
+Run `termination/smoke.mjs` with `WORKERS_G1_TERMINATION_URL` and
+`WORKERS_G1_KEY_FILE` set. The script verifies unauthenticated access is denied,
+triggers the 10 ms platform CPU limit after Kernel Ready, then checks another
+healthy request. It requires resource error 1102 and a server-error HTTP status.
+
+Delete the temporary Worker with `wrangler delete --config termination/wrangler.jsonc`,
+remove the private key file, and rebuild without `WORKERS_G1_CPU_PROBE` before
+updating the regular experiment. The recorded temporary deployment was deleted.
+See [I/O and platform evidence](../../docs/evidence/workers-g1/io-and-termination.md).

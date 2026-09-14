@@ -19,6 +19,7 @@ function abandon(cause) {
   unavailable = true;
   for (const event of pending) {
     clearTimeout(event.timer);
+    event.dispose();
     event.reject(failure);
   }
   pending.clear();
@@ -35,17 +36,20 @@ function abandon(cause) {
   }
 }
 
-export function run(input, mode) {
+export function run(input, mode, { scope, signal } = {}) {
   if (unavailable) return Promise.reject(new Error('Wasm instance unavailable'));
   if (pending.size >= 32) return Promise.reject(new Error('Event capacity exceeded'));
   const admitted = generation;
   return new Promise((resolve, reject) => {
-    const event = { reject, timer: setTimeout(() => abandon('event deadline exceeded'), eventLimitMs) };
+    const onAbort = () => scope?.abort();
+    const event = { reject, dispose() { scope?.abort(); signal?.removeEventListener('abort', onAbort); }, timer: setTimeout(() => abandon('event deadline exceeded'), eventLimitMs) };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     pending.add(event);
     let operation;
     try {
       if (mode === 'trap') trap_probe();
-      operation = mode === 'conformance' ? conformance_probe() : mode === 'driver' ? driver_probe() : probe(input, mode);
+      operation = mode === 'conformance' ? conformance_probe() : mode === 'driver' ? driver_probe() : probe(input, mode, scope);
     } catch (error) {
       abandon(String(error));
       return;
@@ -53,6 +57,7 @@ export function run(input, mode) {
     Promise.resolve(operation).then(value => {
       if (!pending.delete(event) || admitted !== generation) return;
       clearTimeout(event.timer);
+      event.dispose();
       try {
         resolve({ ...JSON.parse(value), generation: admitted, wasm_memory_bytes: exports.memory.buffer.byteLength });
       } catch (error) { reject(error); }

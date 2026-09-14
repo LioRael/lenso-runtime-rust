@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict';
+const base = process.env.WORKERS_G1_URL;
+assert.ok(base, 'Set WORKERS_G1_URL');
+async function read(mode, input = 'probe') {
+  const url = new URL('/probe', base);
+  url.search = new URLSearchParams({ mode, input });
+  const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  const body = await response.text();
+  assert.equal(response.status, 200, body);
+  return JSON.parse(body);
+}
+const inputs = Array.from({ length: 12 }, (_, index) => `io-${index}-你好`);
+const results = await Promise.all(inputs.map((input, index) => read(index % 2 ? 'io-delayed' : 'io-exchange', input)));
+results.forEach((result, index) => {
+  assert.equal(result.body, inputs[index]);
+  assert.equal(result.invocations, '1');
+  assert.equal(result.shutdown, 'clean');
+});
+const cancelled = await read('io-cancel');
+assert.equal(cancelled.io_cancellation, 'passed');
+assert.equal(cancelled.pre_cancelled, 'no-fetch');
+assert.equal(cancelled.headers, 1);
+assert.equal(cancelled.aborted, 1);
+assert.equal(cancelled.completed, 0);
+assert.equal(cancelled.pending, 0);
+assert.equal(cancelled.shutdown, 'clean');
+const recovered = await read('io-recovery');
+assert.equal(recovered.io_recovery, 'passed');
+assert.equal(recovered.headers, 1);
+assert.equal(recovered.aborted, 1);
+assert.equal(recovered.completed, 0);
+assert.equal(recovered.pending, 0);
+assert.equal(recovered.abandoned_shutdown, 'unconfirmed');
+assert.equal((await read('io-exchange', 'after-io-failure')).body, 'after-io-failure');
+// Distinct HTTP requests; matching boot IDs prove they shared the isolate.
+const slow = fetch(new URL('/probe?mode=io-slow&input=cross-request', base), { signal: AbortSignal.timeout(10000) });
+await new Promise(resolve => setTimeout(resolve, 200));
+const fault = await fetch(new URL('/probe?mode=trap', base), { signal: AbortSignal.timeout(10000) });
+const interrupted = await slow;
+assert.equal(fault.status, 500);
+assert.equal(interrupted.status, 500);
+assert.ok(fault.headers.get('x-probe-boot'));
+assert.equal(interrupted.headers.get('x-probe-boot'), fault.headers.get('x-probe-boot'), 'Cross-request failure requires a shared isolate');
+const interruptedBody = await interrupted.json();
+assert.equal(interruptedBody.code, 'instance_abandoned');
+assert.equal(interruptedBody.io.headers, 1);
+assert.equal(interruptedBody.io.aborted, 1);
+assert.equal(interruptedBody.io.completed, 0);
+assert.equal(interruptedBody.io.pending, 0);
+assert.equal((await read('io-exchange', 'after-cross-request-failure')).body, 'after-cross-request-failure');
+console.log(JSON.stringify({ base, passed: true, concurrent_requests: 12, checks: ['real upstream identity isolation', 'overlapping short and delayed HTTP requests', 'abort after upstream headers', 'response body cancellation', 'pre-cancelled scope leaves concurrent I/O healthy', 'in-flight I/O generation abandonment', 'same-event fresh generation network request', 'separate HTTP requests share isolate and abort pending I/O'] }));

@@ -1,5 +1,7 @@
 # G1 async fault recovery follow-up — 2026-09-14
 
+Later evidence: [request-owned I/O and CPU termination](io-and-termination.md).
+
 The initial prototype had a real failure-boundary defect: an async Endpoint
 `unreachable` left its exported Promise unsettled. Local workerd returned 500
 because it detected a hung request, rather than the Runner reporting the failure.

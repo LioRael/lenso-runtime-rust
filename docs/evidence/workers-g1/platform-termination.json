@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "platform_error": 1102,
+  "cpu_limit_ms": 10,
+  "before_boot": "f5846e02-650b-41a3-a394-6abab54e8c73",
+  "after_boot": "1d259aec-f601-4e15-b1c3-10a111d407cb",
+  "following_request": "healthy",
+  "forced_shutdown": "unconfirmed",
+  "note": "Boot IDs are observations across HTTP requests, not proof that the same isolate was selected or evicted.",
+  "http_status": 503,
+  "temporary_worker_deleted": true
+}

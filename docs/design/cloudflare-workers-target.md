@@ -138,8 +138,17 @@ per-Plugin trap recovery, and does not reverse any durable writes.
 
 The independent event timer is cooperative with JavaScript and cannot preempt a
 CPU loop. Platform termination remains distinct. Same-fetch Wasm recreation
-is now tested; V8 isolate eviction and forced CPU termination are still unproven.
+is tested. A later remote probe verified CPU-limit error 1102 and a healthy
+subsequent request; explicit V8 isolate eviction is still unproven.
 This change is experimental until the remaining G1 qualification gates pass.
+
+Request-owned host I/O is now exercised through a scope passed explicitly to
+the Rust Host. Abandonment aborts its fetch/reader before Wasm reset, and the
+response path waits for that scope to settle. Separate HTTP requests with matching
+isolate boot IDs verify cross-request interruption; a pre-cancelled scope performs
+no fetch and does not abandon another healthy event. These are experimental Host
+probes, not a public network Capability or proof of client-disconnect propagation.
+No upstream side-effect rollback follows from local cancellation.
 
 ## HTTP consistency contract
 

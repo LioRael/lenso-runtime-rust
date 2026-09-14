@@ -3,7 +3,9 @@
   "name": "lenso-workers-g1-proof",
   "main": "worker.mjs",
   "compatibility_date": "2026-07-08",
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "workers_dev": true,
+  "vars": { "UPSTREAM_BASE": "https://lenso-workers-g1-upstream.lenso.workers.dev" },
   "preview_urls": false,
   "limits": { "cpu_ms": 1000 },
   "observability": { "enabled": true }

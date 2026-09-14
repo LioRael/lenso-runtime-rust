@@ -22,8 +22,14 @@ fn error(value: impl std::fmt::Debug) -> JsValue {
     JsValue::from_str(&format!("{value:?}"))
 }
 
+#[wasm_bindgen(raw_module = "../io.mjs")]
+extern "C" {
+    #[wasm_bindgen(catch)]
+    async fn exchange(scope: JsValue, value: String) -> Result<JsValue, JsValue>;
+}
+
 #[wasm_bindgen]
-pub async fn probe(input: String, mode: String) -> Result<String, JsValue> {
+pub async fn probe(input: String, mode: String, io_scope: JsValue) -> Result<String, JsValue> {
     if input.len() > 4096 {
         return Err(error("input too large"));
     }
@@ -90,6 +96,40 @@ pub async fn probe(input: String, mode: String) -> Result<String, JsValue> {
     }
     let app = startup.map_err(error)?;
     let ready = app.is_ready() && app.is_accepting();
+    #[cfg(feature = "cpu-probe")]
+    if mode == "cpu-limit" {
+        // Only built for the private, disposable platform-termination probe.
+        loop {
+            std::hint::black_box(1_u64);
+        }
+    }
+    if mode.starts_with("io-") {
+        let io_result = exchange(io_scope, input.clone()).await;
+        let value = match io_result {
+            Ok(value) => value,
+            Err(reason) => {
+                app.shutdown(Duration::from_secs(1)).await;
+                return Err(reason);
+            }
+        };
+        let value: serde_json::Value = serde_json::from_str(
+            &value
+                .as_string()
+                .ok_or_else(|| error("I/O response must be a string"))?,
+        )
+        .map_err(error)?;
+        if value["state"] == "aborted" {
+            let shutdown = app.shutdown(Duration::from_secs(1)).await;
+            if shutdown != ShutdownOutcome::Clean {
+                return Err(error(shutdown));
+            }
+            return Ok(serde_json::json!({"io":"aborted","shutdown":"clean"}).to_string());
+        }
+        if value["state"] != "ok" || value["value"] != input {
+            app.shutdown(Duration::from_secs(1)).await;
+            return Err(error("I/O identity mismatch"));
+        }
+    }
     if mode == "task-trap" {
         let task = driver
             .spawn_root(Box::pin(async {

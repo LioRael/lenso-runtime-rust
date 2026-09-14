@@ -9,9 +9,13 @@ if [[ "$("$WASM_BINDGEN" --version)" != 'wasm-bindgen 0.2.127' ]]; then
 fi
 receipt="$(mktemp)"
 trap 'rm -f "$receipt"' EXIT
+features=(--no-default-features)
+if [[ "${WORKERS_G1_CPU_PROBE:-0}" == 1 ]]; then
+  features+=(--features lenso-workers-g1-host/cpu-probe)
+fi
 "$CARGO" +1.94.0 rustc --locked --manifest-path "$root/Cargo.toml" \
   --target wasm32-unknown-unknown -p lenso-workers-g1-host --release \
-  --message-format=json -- -C link-arg=--export=__wasm_call_ctors > "$receipt"
+  --message-format=json "${features[@]}" -- -C link-arg=--export=__wasm_call_ctors > "$receipt"
 artifact="$(python3 - "$receipt" <<'PY'
 import json,sys
 for line in open(sys.argv[1]):
