@@ -1,0 +1,873 @@
+{
+  "source_repository": "LioRael/lenso-auth-plugin",
+  "source_head": "f9c50f5eb32ab53cd4ffd2e7588f8fdc8a8b134f",
+  "scope": "Auth workspace direct production dependencies; excludes dev-dependencies and does not prove transitive portability",
+  "packages": [
+    {
+      "package": "lenso-auth-account-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-account-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "base64": "0.22",
+        "futures": "0.3",
+        "getrandom": "0.4",
+        "hmac": "0.12",
+        "lenso-auth-sdk": {
+          "path": "../lenso-auth-sdk",
+          "version": "0.2.3"
+        },
+        "lenso-capability-account-admin": {
+          "path": "../lenso-capability-account-admin"
+        },
+        "lenso-capability-auth": {
+          "path": "../lenso-capability-auth",
+          "version": "0.2.0"
+        },
+        "lenso-capability-credential-issuer": {
+          "path": "../lenso-capability-credential-issuer",
+          "version": "0.3.0"
+        },
+        "lenso-capability-identity-directory": {
+          "path": "../lenso-capability-identity-directory",
+          "version": "0.3.0"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "lenso-postgres-kit": "0.1.0",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sha2": "0.10",
+        "sqlx": {
+          "version": "0.9",
+          "default-features": false,
+          "features": [
+            "runtime-tokio",
+            "tls-rustls-ring-webpki",
+            "postgres",
+            "json",
+            "time"
+          ]
+        },
+        "thiserror": "2.0",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-account-admin-agent-tools-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-account-admin-agent-tools-plugin/Cargo.toml",
+      "production_dependencies": {
+        "futures": "0.3",
+        "lenso": "0.5.17",
+        "lenso-capability-account-admin": {
+          "path": "../lenso-capability-account-admin"
+        },
+        "lenso-capability-agent-tool-provider": "0.2.2",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-anonymous-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-anonymous-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "base64": "0.22",
+        "futures": "0.3",
+        "getrandom": "0.4",
+        "lenso-capability-anonymous-auth": {
+          "path": "../lenso-capability-anonymous-auth"
+        },
+        "lenso-capability-credential-issuer": {
+          "path": "../lenso-capability-credential-issuer"
+        },
+        "lenso-capability-identity-directory": {
+          "path": "../lenso-capability-identity-directory"
+        },
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        }
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-api-token-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-api-token-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "base64": "0.22",
+        "futures": "0.3",
+        "getrandom": "0.4",
+        "hmac": "0.12",
+        "lenso-auth-sdk": {
+          "path": "../lenso-auth-sdk",
+          "version": "0.2.3"
+        },
+        "lenso-capability-auth": {
+          "path": "../lenso-capability-auth",
+          "version": "0.2.0"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "lenso-postgres-kit": "0.1.0",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sha2": "0.10",
+        "sqlx": {
+          "version": "0.9",
+          "default-features": false,
+          "features": [
+            "runtime-tokio",
+            "tls-rustls-ring-webpki",
+            "postgres",
+            "json",
+            "time"
+          ]
+        },
+        "thiserror": "2.0",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-device-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-device-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "lenso-capability-device-auth": {
+          "path": "../lenso-capability-device-auth"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "lenso-postgres-kit": "0.1.0",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sqlx": {
+          "version": "0.9",
+          "default-features": false,
+          "features": [
+            "runtime-tokio",
+            "tls-rustls-ring-webpki",
+            "postgres",
+            "json",
+            "time"
+          ]
+        },
+        "thiserror": "2.0",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-federated-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-federated-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "base64": "0.22",
+        "futures": "0.3",
+        "lenso-capability-credential-issuer": {
+          "path": "../lenso-capability-credential-issuer"
+        },
+        "lenso-capability-federated-auth": {
+          "path": "../lenso-capability-federated-auth"
+        },
+        "lenso-capability-http-client": "0.3.0",
+        "lenso-capability-identity-directory": {
+          "path": "../lenso-capability-identity-directory"
+        },
+        "lenso-capability-oauth-flow": {
+          "path": "../lenso-capability-oauth-flow"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "url": "2.5",
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-oauth-flow-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-oauth-flow-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "aes-gcm": "0.10",
+        "base64": "0.22",
+        "getrandom": "0.4",
+        "hmac": "0.12",
+        "lenso-capability-oauth-flow": {
+          "path": "../lenso-capability-oauth-flow"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "lenso-postgres-kit": "0.1.0",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sha2": "0.10",
+        "sqlx": {
+          "version": "0.9",
+          "default-features": false,
+          "features": [
+            "runtime-tokio",
+            "tls-rustls-ring-webpki",
+            "postgres",
+            "json",
+            "time"
+          ]
+        },
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "thiserror": "2.0",
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-oidc-client-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-oidc-client-plugin/Cargo.toml",
+      "production_dependencies": {
+        "hmac": "0.12",
+        "jsonwebtoken": {
+          "version": "10",
+          "features": [
+            "rust_crypto"
+          ]
+        },
+        "lenso": "0.5.17",
+        "lenso-capability-credential-issuer": {
+          "path": "../lenso-capability-credential-issuer"
+        },
+        "lenso-capability-federated-auth": {
+          "path": "../lenso-capability-federated-auth"
+        },
+        "lenso-capability-http-client": "0.3.0",
+        "lenso-capability-identity-directory": {
+          "path": "../lenso-capability-identity-directory"
+        },
+        "lenso-capability-oauth-flow": {
+          "path": "../lenso-capability-oauth-flow"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sha2": "0.10",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "url": "2.5",
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-oidc-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-oidc-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "base64": "0.22",
+        "getrandom": "0.4",
+        "hmac": "0.12",
+        "jsonwebtoken": {
+          "version": "10",
+          "features": [
+            "rust_crypto"
+          ]
+        },
+        "lenso-capability-credential-issuer": {
+          "path": "../lenso-capability-credential-issuer"
+        },
+        "lenso-capability-identity-directory": {
+          "path": "../lenso-capability-identity-directory"
+        },
+        "lenso-capability-oidc-provider": {
+          "path": "../lenso-capability-oidc-provider"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "lenso-postgres-kit": "0.1.0",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sha2": "0.10",
+        "sqlx": {
+          "version": "0.9",
+          "default-features": false,
+          "features": [
+            "runtime-tokio",
+            "tls-rustls-ring-webpki",
+            "postgres",
+            "json",
+            "time"
+          ]
+        },
+        "thiserror": "2.0",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-password-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-password-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "argon2": "0.5",
+        "getrandom": "0.4",
+        "lenso-capability-credential-issuer": {
+          "path": "../lenso-capability-credential-issuer",
+          "version": "0.3.0"
+        },
+        "lenso-capability-identity-directory": {
+          "path": "../lenso-capability-identity-directory",
+          "version": "0.3.0"
+        },
+        "lenso-capability-password-auth": {
+          "path": "../lenso-capability-password-auth",
+          "version": "0.3.0"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "lenso-postgres-kit": "0.1.0",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sqlx": {
+          "version": "0.9",
+          "default-features": false,
+          "features": [
+            "runtime-tokio",
+            "tls-rustls-ring-webpki",
+            "postgres",
+            "json",
+            "time"
+          ]
+        },
+        "thiserror": "2.0",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "tokio": {
+          "version": "1.52",
+          "features": [
+            "rt",
+            "sync"
+          ]
+        },
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-phone-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-phone-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "argon2": "0.5",
+        "base64": "0.22",
+        "getrandom": "0.4",
+        "hmac": "0.12",
+        "lenso-capability-credential-issuer": {
+          "path": "../lenso-capability-credential-issuer"
+        },
+        "lenso-capability-identity-directory": {
+          "path": "../lenso-capability-identity-directory"
+        },
+        "lenso-capability-phone-auth": {
+          "path": "../lenso-capability-phone-auth"
+        },
+        "lenso-capability-secrets": "0.1.4",
+        "lenso-capability-sms-delivery": {
+          "path": "../lenso-capability-sms-delivery"
+        },
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "lenso-postgres-kit": "0.1.0",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sha2": "0.10",
+        "sqlx": {
+          "version": "0.9",
+          "default-features": false,
+          "features": [
+            "runtime-tokio",
+            "tls-rustls-ring-webpki",
+            "postgres",
+            "json",
+            "time"
+          ]
+        },
+        "thiserror": "2.0",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "tokio": {
+          "version": "1.52",
+          "features": [
+            "rt",
+            "sync"
+          ]
+        },
+        "zeroize": "1.9"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-router-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-router-plugin/Cargo.toml",
+      "production_dependencies": {
+        "lenso": "0.5.17",
+        "futures": "0.3",
+        "lenso-capability-auth": {
+          "path": "../lenso-capability-auth"
+        },
+        "lenso-kernel": "0.3.5",
+        "lenso-native-adapter": "0.3.13",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-sdk",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-sdk/Cargo.toml",
+      "production_dependencies": {
+        "base64": "0.22",
+        "ed25519-dalek": "3.0",
+        "lenso-capability-auth": {
+          "path": "../lenso-capability-auth",
+          "version": "0.2.0"
+        },
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0",
+        "sha2": "0.10",
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        }
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-auth-web-session-plugin",
+      "manifest": "lenso-auth-plugin/crates/lenso-auth-web-session-plugin/Cargo.toml",
+      "production_dependencies": {
+        "base64": "0.22",
+        "getrandom": "0.4",
+        "lenso": "0.5.17",
+        "lenso-capability-credential-issuer": {
+          "path": "../lenso-capability-credential-issuer"
+        },
+        "lenso-capability-federated-auth": {
+          "path": "../lenso-capability-federated-auth"
+        },
+        "lenso-capability-http-endpoint": "0.3.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "time": {
+          "version": "0.3",
+          "features": [
+            "formatting",
+            "parsing",
+            "serde"
+          ]
+        },
+        "url": "2.5"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-auth",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-auth/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-account-admin",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-account-admin/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-anonymous-auth",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-anonymous-auth/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-credential-issuer",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-credential-issuer/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-identity-directory",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-identity-directory/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-device-auth",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-device-auth/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-federated-auth",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-federated-auth/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-oauth-flow",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-oauth-flow/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-oidc-provider",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-oidc-provider/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-password-auth",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-password-auth/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-phone-auth",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-phone-auth/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    },
+    {
+      "package": "lenso-capability-sms-delivery",
+      "manifest": "lenso-auth-plugin/crates/lenso-capability-sms-delivery/Cargo.toml",
+      "production_dependencies": {
+        "schemars": "1.2",
+        "lenso-plugin-authoring": "0.2.0",
+        "lenso-contract-authoring": "0.1.1",
+        "futures": "0.3",
+        "lenso-contract-runtime": "0.2.0",
+        "lenso-kernel": "0.3.5",
+        "serde": {
+          "version": "1.0",
+          "features": [
+            "derive"
+          ]
+        },
+        "serde_json": "1.0"
+      },
+      "validation": "manifest inspection only; no target compile or Workers execution proof"
+    }
+  ]
+}
