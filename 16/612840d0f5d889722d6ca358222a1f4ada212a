@@ -1,0 +1,67 @@
+docs/design/cloudflare-workers-target.md
+  s_3724267b9ee00e::t_3cba1eefcdf605 141-142,145-152
+docs/evidence/workers-g1/README.md
+  s_3724267b9ee00e::t_c91e9878497425 4-6
+docs/evidence/workers-g1/io-and-termination.md
+  s_3724267b9ee00e::t_b73a1313f2ef1e 1-111
+docs/evidence/workers-g1/local-io-smoke.json
+  s_3724267b9ee00e::t_a349a07adb55df 1
+docs/evidence/workers-g1/platform-termination.json
+  s_3724267b9ee00e::t_c783d5c0c78901 1-12
+docs/evidence/workers-g1/recovery.md
+  s_3724267b9ee00e::t_28e92dc264632d 3-4
+docs/evidence/workers-g1/remote-io-regression.json
+  s_3724267b9ee00e::t_b95c2dfa6870a8 1
+docs/evidence/workers-g1/remote-io-smoke.json
+  s_3724267b9ee00e::t_432f718300085c 1
+experiments/workers-g1/.gitignore
+  s_3724267b9ee00e::t_98e9ab33a91ad9 3
+experiments/workers-g1/README.md
+  s_3724267b9ee00e::t_c2a5bf90dda277 80-128
+experiments/workers-g1/build.sh
+  s_3724267b9ee00e::t_066a7729326246 12-15,18
+experiments/workers-g1/host/Cargo.toml
+  s_3724267b9ee00e::t_445f281faf3a3a 20-22
+experiments/workers-g1/host/src/lib.rs
+  s_3724267b9ee00e::t_07dae6b63771b4 25-30,32,99-132
+experiments/workers-g1/io-proof.mjs
+  s_3724267b9ee00e::t_b8f1abac33ec6c 1-48
+experiments/workers-g1/io-smoke.mjs
+  s_3724267b9ee00e::t_381a6436f127cc 1-51
+experiments/workers-g1/io.mjs
+  s_3724267b9ee00e::t_7a832aa09d7a46 1-66
+experiments/workers-g1/package.json
+  s_3724267b9ee00e::t_80647f200f1a6e 7-8
+experiments/workers-g1/runner.mjs
+  s_3724267b9ee00e::t_3ac1143dba3f58 22,39,44-47,52,60
+experiments/workers-g1/termination/smoke.mjs
+  s_3724267b9ee00e::t_3d8bc9cc500aa3 1-23
+experiments/workers-g1/termination/worker.mjs
+  s_3724267b9ee00e::t_488cbdfde583d9 1-12
+experiments/workers-g1/termination/wrangler.jsonc
+  s_3724267b9ee00e::t_f6b271504f9580 1-9
+experiments/workers-g1/upstream/worker.mjs
+  s_3724267b9ee00e::t_c9d30d66eafa70 1-22
+experiments/workers-g1/upstream/wrangler.jsonc
+  s_3724267b9ee00e::t_39c23ab113df93 1-8
+experiments/workers-g1/worker.mjs
+  s_3724267b9ee00e::t_6995210cf4f70b 2-4,6-7,12-13,15-19,21-22
+experiments/workers-g1/wrangler.jsonc
+  s_3724267b9ee00e::t_6d9e0f48407c0e 6,8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "16612840d0f5d889722d6ca358222a1f4ada212a",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
