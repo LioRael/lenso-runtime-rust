@@ -1,0 +1,33 @@
+docs/design/cloudflare-workers-target.md
+  s_3724267b9ee00e::t_d1a904fb53381a 27-29
+docs/evidence/workers-g0/README.md
+  s_3724267b9ee00e::t_cb9222a45822c9 1-84
+docs/evidence/workers-g0/auth-random-path.txt
+  s_3724267b9ee00e::t_d24156fdcc0e23 1-14
+docs/evidence/workers-g0/cli-random-path.txt
+  s_3724267b9ee00e::t_0d92e8bf613c98 1-7
+docs/evidence/workers-g0/ingress-mio-path.txt
+  s_3724267b9ee00e::t_03063409dda3c5 1-12
+docs/evidence/workers-g0/oidc-random-path.txt
+  s_3724267b9ee00e::t_911f47510558b7 1-37
+docs/evidence/workers-g0/results.json
+  s_3724267b9ee00e::t_9dc7b4ebe7f487 1-214
+scripts/audit-workers-target.py
+  s_3724267b9ee00e::t_b73111738f6abc 1-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1de9b1c5bfce23d6a3716db0acd0b21e2bffd81f",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
