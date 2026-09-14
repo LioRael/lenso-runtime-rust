@@ -1,0 +1,105 @@
+docs/design/cloudflare-workers-target.md
+  s_3724267b9ee00e::t_23108ce4d7b2de 276-285
+docs/evidence/workers-g1/README.md
+  s_3724267b9ee00e::t_6ad18b2a0f6070 3-5
+docs/evidence/workers-g1/acceptance.json
+  s_3724267b9ee00e::t_63225e6ee4ed7f 1-15
+docs/evidence/workers-g1/acceptance.md
+  s_3724267b9ee00e::t_7531f522ad3268 1-122
+docs/evidence/workers-g1/conformance-matrix.md
+  s_3724267b9ee00e::t_a2822d459164d9 3,7-8,16,26-35,37,40
+docs/evidence/workers-g1/final-io-metrics.json
+  s_3724267b9ee00e::t_26a8313771e48e 1-40
+docs/evidence/workers-g1/final-load-io.json
+  s_3724267b9ee00e::t_62a296a6eb9f5a 1
+docs/evidence/workers-g1/final-load-normal.json
+  s_3724267b9ee00e::t_3eeb5d23408dc9 1
+docs/evidence/workers-g1/final-local-io.json
+  s_3724267b9ee00e::t_385f9e92d428a3 1
+docs/evidence/workers-g1/final-local-profile.json
+  s_3724267b9ee00e::t_4675693d1f9a90 1-22
+docs/evidence/workers-g1/final-local-smoke.json
+  s_3724267b9ee00e::t_36177f6dd73c55 1
+docs/evidence/workers-g1/final-normal-metrics.json
+  s_3724267b9ee00e::t_95df4b16c869f2 1-40
+docs/evidence/workers-g1/final-remote-io.json
+  s_3724267b9ee00e::t_4918a79cb6adca 1
+docs/evidence/workers-g1/final-remote-smoke.json
+  s_3724267b9ee00e::t_673df815fa99cc 1
+docs/evidence/workers-g1/known-test-limitations.json
+  s_3724267b9ee00e::t_d1edf733c6e8c8 1-13
+docs/evidence/workers-g1/memory-termination-status.json
+  s_3724267b9ee00e::t_1068f35b7e3745 1-41
+docs/evidence/workers-g1/memory-termination.json
+  s_3724267b9ee00e::t_b53552a8f982c2 1-15
+docs/evidence/workers-g1/native-regression.json
+  s_3724267b9ee00e::t_0349709b98f34c 1-7
+docs/evidence/workers-g1/pre-retirement-growth.json
+  s_3724267b9ee00e::t_556567f4ca3365 1-130
+docs/evidence/workers-g1/remote-disconnect.json
+  s_3724267b9ee00e::t_417197a1df2943 1
+docs/evidence/workers-g1/resource-schema.json
+  s_3724267b9ee00e::t_e3225236754b76 1-587
+docs/evidence/workers-g1/retirement-local-24-load.json
+  s_3724267b9ee00e::t_49b9c7305db9db 1
+docs/evidence/workers-g1/retirement-local-24.json
+  s_3724267b9ee00e::t_d695cba6c8aadc 1
+docs/evidence/workers-g1/retirement-local-load.json
+  s_3724267b9ee00e::t_4ff6498a8bfc87 1
+docs/evidence/workers-g1/retirement-local.json
+  s_3724267b9ee00e::t_5ea9345e7d9b69 1
+docs/evidence/workers-g1/retirement-remote-io.json
+  s_3724267b9ee00e::t_90b5ade67bd722 1-10
+docs/evidence/workers-g1/retirement-remote-normal.json
+  s_3724267b9ee00e::t_0aaf8cc333e6fe 1-10
+experiments/workers-g1/README.md
+  s_3724267b9ee00e::t_bac6ccfdc21460 186-251
+experiments/workers-g1/disconnect-proof.mjs
+  s_3724267b9ee00e::t_d0df4654ef378f 1-34
+experiments/workers-g1/disconnect-smoke.mjs
+  s_3724267b9ee00e::t_6a982566358c58 1-34
+experiments/workers-g1/host/src/bindings_proof.rs
+  s_3724267b9ee00e::t_dd4ced6528c4ce 1-529
+experiments/workers-g1/host/src/interactions_proof.rs
+  s_3724267b9ee00e::t_4979be6a0dd59e 1-254
+experiments/workers-g1/host/src/lib.rs
+  s_3724267b9ee00e::t_9a05e5a3800c55 1,5,8
+experiments/workers-g1/host/src/schedules_proof.rs
+  s_3724267b9ee00e::t_6d2e593bf568c3 1-205
+experiments/workers-g1/load.mjs
+  s_3724267b9ee00e::t_0676355fa6403b 20-21,25
+experiments/workers-g1/metrics.py
+  s_3724267b9ee00e::t_b03f5277c18116 15-17,49-50
+experiments/workers-g1/retirement-smoke.mjs
+  s_3724267b9ee00e::t_b2ef3adc04d607 1-25
+experiments/workers-g1/runner.mjs
+  s_3724267b9ee00e::t_84e53a6f1bb06d 1,12-32,34,44,49-69,72-74,76,83,89,98-106,113,119,122
+experiments/workers-g1/smoke.mjs
+  s_3724267b9ee00e::t_566b05cb4278e9 7,44
+experiments/workers-g1/termination/memory-smoke.mjs
+  s_3724267b9ee00e::t_589d2f6ae5363c 1-23
+experiments/workers-g1/termination/memory-worker.mjs
+  s_3724267b9ee00e::t_52e8f1ccced7b8 1-26
+experiments/workers-g1/termination/memory.jsonc
+  s_3724267b9ee00e::t_844cc45ad2d201 1-9
+experiments/workers-g1/worker.mjs
+  s_3724267b9ee00e::t_1f18c878b6f88c 1,7,10,14
+experiments/workers-g1/wrangler.jsonc
+  s_3724267b9ee00e::t_fc5ba4838542ea 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c72ed033db2221acb9be9329c1e0e1a45042a625",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
