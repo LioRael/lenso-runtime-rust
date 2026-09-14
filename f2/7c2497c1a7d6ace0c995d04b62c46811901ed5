@@ -1,0 +1,43 @@
+docs/evidence/workers-g1/README.md
+  s_3724267b9ee00e::t_ea7b125d602ba6 7-8
+docs/evidence/workers-g1/lifecycle.md
+  s_3724267b9ee00e::t_0f37bd20549480 1-74
+docs/evidence/workers-g1/local-lifecycle-smoke.json
+  s_3724267b9ee00e::t_14012504833d3e 1
+docs/evidence/workers-g1/remote-lifecycle-io-smoke.json
+  s_3724267b9ee00e::t_849cc75ef013b7 1
+docs/evidence/workers-g1/remote-lifecycle-metrics.json
+  s_3724267b9ee00e::t_403680d130f083 1-30
+docs/evidence/workers-g1/remote-lifecycle-smoke.json
+  s_3724267b9ee00e::t_9f86e902ddbebe 1
+experiments/workers-g1/README.md
+  s_3724267b9ee00e::t_72b488b8c2eaa4 129-141
+experiments/workers-g1/build.sh
+  s_3724267b9ee00e::t_5e8ea92b989980 16,18-27
+experiments/workers-g1/host/src/lib.rs
+  s_3724267b9ee00e::t_f074ed2816ad43 3
+experiments/workers-g1/host/src/lifecycle_proof.rs
+  s_3724267b9ee00e::t_a3b18e18433fce 1-341
+experiments/workers-g1/runner.mjs
+  s_3724267b9ee00e::t_68ddae12ea8d10 1,52
+experiments/workers-g1/smoke.mjs
+  s_3724267b9ee00e::t_74e3cf8b81228d 41-43,61
+experiments/workers-g1/worker.mjs
+  s_3724267b9ee00e::t_9fbcf3f4440496 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f27c2497c1a7d6ace0c995d04b62c46811901ed5",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
