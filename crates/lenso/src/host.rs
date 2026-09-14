@@ -15,8 +15,8 @@ pub use lenso_plugin_control_plane::{
 use lenso_plugin_control_plane::{DurableGenerationSupervisor, GenerationController};
 
 pub use lenso_plugin_control_plane::{
-    CatalogFactory, FileControlStateStore, KernelGenerationRuntime, MemoryControlStateStore,
-    MultiExecutionCatalogFactory,
+    CatalogFactory, CoreExecutionCatalogFactory, FileControlStateStore, KernelGenerationRuntime,
+    MemoryControlStateStore, MultiExecutionCatalogFactory,
 };
 
 const DEFAULT_MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);

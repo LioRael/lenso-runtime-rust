@@ -25,6 +25,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets --features lenso/host,lenso-runner/process-owner -- -D warnings
       - run: cargo test --locked --workspace --features lenso/host,lenso-runner/process-owner
+      - run: cargo test --locked -p lenso-plugin-control-plane --no-default-features
       - name: Check browser Driver
         run: cargo check --locked -p lenso-browser-driver --all-targets --target wasm32-unknown-unknown
       - name: Check WASIp2 Driver

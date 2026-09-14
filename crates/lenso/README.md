@@ -2,6 +2,12 @@
 
 The stable Rust authoring facade for Lenso vNext Plugins.
 
+The `host` feature exposes both `CoreExecutionCatalogFactory` and
+`MultiExecutionCatalogFactory`. The core factory composes native/base, Process,
+QuickJS, and Wasm Adapters while the full factory also composes remote HTTP and
+native dylib Adapters. This catalog choice does not remove Adapter dependencies
+from the crate's build closure.
+
 Plugin packages depend on `lenso` plus the generated Capability crates they
 provide or require. The facade intentionally keeps Native Adapter factories,
 Kernel lifecycle implementations, endpoint construction, inventory

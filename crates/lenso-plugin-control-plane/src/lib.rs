@@ -23,7 +23,7 @@ pub use durable_supervisor::{
 };
 pub use kernel_runtime::{CatalogFactory, KernelGenerationHandle, KernelGenerationRuntime};
 pub use model::*;
-pub use multi_execution::MultiExecutionCatalogFactory;
+pub use multi_execution::{CoreExecutionCatalogFactory, MultiExecutionCatalogFactory};
 pub use replicated_runtime::{
     ReplicatedCatalogFactory, ReplicatedGenerationHandle, ReplicatedGenerationRuntime,
 };
