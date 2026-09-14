@@ -1,0 +1,31 @@
+crates/lenso/README.md
+  s_f20b1a187f6c7e::t_372c41aaf71a0f 5-9
+  s_f20b1a187f6c7e::t_599f116bf9fd6f 10
+.github/workflows/ci.yml
+  s_f20b1a187f6c7e::t_372c41aaf71a0f 28
+crates/lenso-plugin-control-plane/src/multi_execution.rs
+  s_f20b1a187f6c7e::t_dec2504d619714 368
+  s_f20b1a187f6c7e::t_372c41aaf71a0f 416-423,426
+  s_f20b1a187f6c7e::t_e53cb5909832db 13-17,28-29,50-56,64-70,85-87,90-132,136-155,160-228,267,292-294,312-313,340,345-353,477
+  s_f20b1a187f6c7e::t_6f78059633e945 88-89,133-135,156-159,279-282,301,362-366,378-404,409-415,427-476
+crates/lenso/src/host.rs
+  s_f20b1a187f6c7e::t_7a1e5cf5e6f1e9 18-19
+crates/lenso-plugin-control-plane/src/lib.rs
+  s_f20b1a187f6c7e::t_7a1e5cf5e6f1e9 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5c0d23b2be2472cf6a0dec8ff85db23a6d3a384f",
+  "prompts": {},
+  "sessions": {
+    "s_f20b1a187f6c7e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a028-3805-7c23-9c30-83f6f3a6ec47",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
