@@ -139,3 +139,30 @@ App readiness remains open during an individual Plugin restart; the initial
 activation readiness assertion is restricted to the first generation. Explicit
 `report_plugin_failure` tests supervision; it does not establish recoverable
 Wasm panic semantics. See [lifecycle evidence](../../docs/evidence/workers-g1/lifecycle.md).
+
+## Bounded load and remote metrics
+
+```sh
+WORKERS_G1_URL=https://lenso-workers-g1-proof.lenso.workers.dev node load.mjs > /tmp/g1-load.json
+# Run separately, with at least two seconds between measurement windows:
+WORKERS_G1_URL=https://lenso-workers-g1-proof.lenso.workers.dev WORKERS_G1_LOAD_MODE=io-delayed node load.mjs > /tmp/g1-io-load.json
+# After analytics ingestion, using your existing credential environment:
+WORKERS_G1_SCRIPT=lenso-workers-g1-proof python3 metrics.py /tmp/g1-load.json
+```
+
+The load script defaults to 240 requests at concurrency 12. It caps requests at
+2400 and concurrency at 24, and accepts only normal, io-exchange or io-delayed.
+Each response must echo the unique input, report one invocation and Clean shutdown.
+The receipt keeps individual latency, isolate boot identity, generation and Wasm
+capacity samples. This is a closed-loop diagnostic workload, not Marketplace traffic.
+Do not run fault probes or other workloads in its measurement window.
+
+The metrics reader requires `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in
+the environment. It performs one read-only official GraphQL query, does not store
+credentials, and reports absent/partial metrics with `count_matches: false`.
+It expands query boundaries to whole seconds and records those boundaries. Leave
+other suites outside that expanded window; wait for ingestion before re-querying.
+CPU quantiles retain API-native units and must not be averaged across rows.
+Neither script measures total isolate peak memory. See the
+[load evidence](../../docs/evidence/workers-g1/load-and-coverage.md) and
+[upstream coverage inventory](../../docs/evidence/workers-g1/conformance-matrix.md).

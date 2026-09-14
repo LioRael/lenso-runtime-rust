@@ -44,6 +44,7 @@ assert.deepEqual(lifecycle.cases, ['normal', 'prepare-failure', 'activate-failur
 const contract = await read('conformance', 'conformance');
 assert.equal(contract.conformance, 'passed');
 assert.equal(contract.providers, 2);
+for (const vector of ['unsupported schema', 'operation table mismatch', 'missing binding']) assert.ok(contract.vectors.includes(vector), vector);
 const recovered = await read('recovery', 'recovery');
 assert.equal(recovered.recovery, 'passed');
 assert.equal(recovered.rejected_events, 2);

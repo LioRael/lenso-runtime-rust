@@ -6,6 +6,8 @@ The subsequent [I/O and platform report](io-and-termination.md) records real
 subrequests and CPU-limit termination.
 The [lifecycle follow-up](lifecycle.md) adds rollback, shutdown, supervision,
 and an initial remote analytics sample.
+The [load and coverage follow-up](load-and-coverage.md) adds rejection vectors,
+a complete upstream test inventory, and bounded load receipts.
 
 Initial status: local and deployed generic runtime prototype passed. **G1 qualification
 remains open** for asynchronous traps, forced termination/recreation, full Runtime

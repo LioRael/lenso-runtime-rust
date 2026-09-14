@@ -1,0 +1,26 @@
+{
+  "run": "0bbc2906-1c9b-4e95-b863-c80a089f2dde",
+  "sampled_at": "2026-09-14T13:45:40.793253+00:00",
+  "script": "lenso-workers-g1-proof",
+  "started": "2026-09-14T13:43:05.954Z",
+  "ended": "2026-09-14T13:43:13.396Z",
+  "query_start": "2026-09-14T13:43:05+00:00",
+  "query_end": "2026-09-14T13:43:14+00:00",
+  "expected_requests": 240,
+  "observed_requests": 167,
+  "count_matches": false,
+  "rows": [
+    {
+      "quantiles": {
+        "cpuTimeP50": 2754,
+        "cpuTimeP99": 7901
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 167,
+        "subrequests": 167
+      }
+    }
+  ],
+  "note": "API-native CPU units. Counts may reflect delayed ingestion or adaptive sampling. A matching count alone cannot exclude unrelated traffic. Never average row quantiles."
+}
