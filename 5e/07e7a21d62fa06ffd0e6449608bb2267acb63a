@@ -1,0 +1,21 @@
+docs/design/cloudflare-workers-target.md
+  s_3724267b9ee00e::t_889a1bc99207b6 1-247
+docs/design/workers-auth-inventory.json
+  s_3724267b9ee00e::t_015c9735809d83 1-873
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5e07e7a21d62fa06ffd0e6449608bb2267acb63a",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
