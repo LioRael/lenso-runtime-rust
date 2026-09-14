@@ -1,0 +1,55 @@
+.gitignore
+  s_3724267b9ee00e::t_153189394a1378 2
+experiments/workers-g1/README.md
+  s_3724267b9ee00e::t_153189394a1378 1-54
+docs/evidence/workers-g1/README.md
+  s_3724267b9ee00e::t_153189394a1378 1-85
+experiments/workers-g1/smoke.mjs
+  s_3724267b9ee00e::t_153189394a1378 1-41
+experiments/workers-g1/.gitignore
+  s_3724267b9ee00e::t_82952d599988a7 1-3
+experiments/workers-g1/Cargo.toml
+  s_3724267b9ee00e::t_079644133acac1 1-15
+experiments/workers-g1/build.sh
+  s_3724267b9ee00e::t_4ae787c691fd7d 1-25
+experiments/workers-g1/caller/Cargo.toml
+  s_3724267b9ee00e::t_646ba803177c80 1-13
+experiments/workers-g1/caller/src/lib.rs
+  s_3724267b9ee00e::t_40810f38714c2b 1-9
+experiments/workers-g1/echo/Cargo.toml
+  s_3724267b9ee00e::t_c271e0485a3a51 1-13
+experiments/workers-g1/echo/config.schema.json
+  s_3724267b9ee00e::t_b6a48f7121a14c 1
+experiments/workers-g1/echo/src/lib.rs
+  s_3724267b9ee00e::t_964b1f30b93041 1-57
+experiments/workers-g1/host/Cargo.toml
+  s_3724267b9ee00e::t_5560f3ff685a0b 1-18
+experiments/workers-g1/host/src/driver.rs
+  s_3724267b9ee00e::t_6ad53b747bd5ac 1-285
+experiments/workers-g1/host/src/lib.rs
+  s_3724267b9ee00e::t_58f98a92758f47 1-199
+experiments/workers-g1/package.json
+  s_3724267b9ee00e::t_3f434d9825a58a 1
+experiments/workers-g1/pnpm-lock.yaml
+  s_3724267b9ee00e::t_44e43de3e612b0 1-869
+experiments/workers-g1/worker.mjs
+  s_3724267b9ee00e::t_fc2fd74ec4b896 1-22
+experiments/workers-g1/wrangler.jsonc
+  s_3724267b9ee00e::t_bd6ed7be8d1957 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "322003fa98d1bb91861e0426e4c4d3b3a1af48a9",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
