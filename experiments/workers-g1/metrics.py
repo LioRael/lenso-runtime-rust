@@ -12,7 +12,9 @@ query = '''query GetWorkersAnalytics($accountTag: string, $datetimeStart: string
  viewer { accounts(filter: {accountTag: $accountTag}) {
  workersInvocationsAdaptive(limit: 100, filter: {scriptName: $scriptName,
  datetime_geq: $datetimeStart, datetime_leq: $datetimeEnd}) {
- sum { requests errors subrequests } quantiles { cpuTimeP50 cpuTimeP99 }
+ sum { requests errors subrequests } avg { sampleInterval }
+ max { cpuTime memoryUsageBytes wasmMemoryBytes }
+ quantiles { cpuTimeP50 cpuTimeP99 memoryUsageBytesP50 memoryUsageBytesP999 }
  } } } }'''
 # Query whole-second boundaries so subsecond client timestamps do not exclude
 # invocations whose analytics timestamp has only second precision. Keep other
@@ -44,5 +46,6 @@ print(json.dumps({
     'query_start': variables['datetimeStart'], 'query_end': variables['datetimeEnd'],
     'expected_requests': load['requests'], 'observed_requests': observed,
     'count_matches': observed == load['requests'], 'rows': rows,
-    'note': 'API-native CPU units. Counts may reflect delayed ingestion or adaptive sampling. A matching count alone cannot exclude unrelated traffic. Never average row quantiles.',
+    'units': {'cpu': 'microseconds', 'memory': 'bytes'},
+    'note': 'Platform-reported maxima over observed invocations, not an unsampled continuous process high-water mark. Counts may reflect delayed ingestion or adaptive sampling. A matching count alone cannot exclude unrelated traffic. Never average row quantiles.',
 }, indent=2))

@@ -1,0 +1,7 @@
+{
+  "command": "lenso-cargo +1.94.0 test --locked -p lenso-native-adapter -p lenso-native-adapter-macros -p lenso-runner",
+  "passed": 53,
+  "failed": 0,
+  "ignored": 5,
+  "ignored_reason": "Five native replicated-lane/routing performance benchmarks; no lane scheduling changes in this experiment."
+}

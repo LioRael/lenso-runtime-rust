@@ -273,3 +273,13 @@ G2); storage and crypto budget (Auth G0/G4); signed snapshot persistence and ren
 
 Platform behavior was consulted during the design conversation. Recheck it for
 the implementation's selected compatibility date and pinned tool versions.
+
+## G1 qualification evidence (2026-09-14)
+
+The bounded generic-runtime prototype is evaluated in
+[the G1 acceptance report](../evidence/workers-g1/acceptance.md), with an explicit
+32-vector upstream mapping, fault/cleanup semantics, real request cancellation,
+platform CPU/memory observations, and resource-limit failure evidence. This does
+not promote the experimental files to supported Runtime packages or authorize
+Marketplace/Auth migration. G2 still owns the existing HTTP Capability's transport
+parity and common native/Workers corpus.

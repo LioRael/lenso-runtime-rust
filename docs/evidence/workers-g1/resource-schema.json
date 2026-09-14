@@ -1,0 +1,587 @@
+[
+  {
+    "fields": [
+      {
+        "description": "",
+        "name": "sampleInterval",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float64"
+          }
+        }
+      }
+    ],
+    "name": "AccountWorkersInvocationsAdaptiveAvg"
+  },
+  {
+    "fields": [
+      {
+        "description": "Maximum CPU time for one request - microseconds",
+        "name": "cpuTime",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float64"
+          }
+        }
+      },
+      {
+        "description": "Maximum duration of one request - GB*s",
+        "name": "duration",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float64"
+          }
+        }
+      },
+      {
+        "description": "Maximum V8 isolate memory usage across Worker invocations - bytes",
+        "name": "memoryUsageBytes",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float64"
+          }
+        }
+      },
+      {
+        "description": "Maximum Request Duration in microseconds",
+        "name": "requestDuration",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float64"
+          }
+        }
+      },
+      {
+        "description": "Maximum response body size for one request - bytes",
+        "name": "responseBodySize",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float64"
+          }
+        }
+      },
+      {
+        "description": "Maximum wall time for one request - microseconds",
+        "name": "wallTime",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float64"
+          }
+        }
+      },
+      {
+        "description": "Maximum WebAssembly linear memory usage across Worker invocations - bytes",
+        "name": "wasmMemoryBytes",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float64"
+          }
+        }
+      }
+    ],
+    "name": "AccountWorkersInvocationsAdaptiveMax"
+  },
+  {
+    "fields": [
+      {
+        "description": "CPU time 25th percentile - microseconds",
+        "name": "cpuTimeP25",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "CPU time 50th percentile - microseconds",
+        "name": "cpuTimeP50",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "CPU time 75th percentile - microseconds",
+        "name": "cpuTimeP75",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "CPU time 90th percentile - microseconds",
+        "name": "cpuTimeP90",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "CPU time 95th percentile - microseconds",
+        "name": "cpuTimeP95",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "CPU time 99th percentile - microseconds",
+        "name": "cpuTimeP99",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "CPU time 99.9th percentile - microseconds",
+        "name": "cpuTimeP999",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Duration 25th percentile - GB*s",
+        "name": "durationP25",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Duration 50th percentile - GB*s",
+        "name": "durationP50",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Duration 75th percentile - GB*s",
+        "name": "durationP75",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Duration 90th percentile - GB*s",
+        "name": "durationP90",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Duration 95th percentile - GB*s",
+        "name": "durationP95",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Duration 99th percentile - GB*s",
+        "name": "durationP99",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Duration 99.9th percentile - GB*s",
+        "name": "durationP999",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "V8 isolate memory usage 25th percentile across Worker invocations - bytes",
+        "name": "memoryUsageBytesP25",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "V8 isolate memory usage 50th percentile across Worker invocations - bytes",
+        "name": "memoryUsageBytesP50",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "V8 isolate memory usage 75th percentile across Worker invocations - bytes",
+        "name": "memoryUsageBytesP75",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "V8 isolate memory usage 90th percentile across Worker invocations - bytes",
+        "name": "memoryUsageBytesP90",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "V8 isolate memory usage 95th percentile across Worker invocations - bytes",
+        "name": "memoryUsageBytesP95",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "V8 isolate memory usage 99th percentile across Worker invocations - bytes",
+        "name": "memoryUsageBytesP99",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "V8 isolate memory usage 99.9th percentile across Worker invocations - bytes",
+        "name": "memoryUsageBytesP999",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Request duration 25th percentile - microseconds",
+        "name": "requestDurationP25",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Request duration 50th percentile - microseconds",
+        "name": "requestDurationP50",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Request duration 75th percentile - microseconds",
+        "name": "requestDurationP75",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Request duration 90th percentile - microseconds",
+        "name": "requestDurationP90",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Request duration 95th percentile - microseconds",
+        "name": "requestDurationP95",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Request duration 99th percentile - microseconds",
+        "name": "requestDurationP99",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Request duration 99.9th percentile - microseconds",
+        "name": "requestDurationP999",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Response body size 25th percentile - bytes",
+        "name": "responseBodySizeP25",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Response body size 50th percentile - bytes",
+        "name": "responseBodySizeP50",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Response body size 75th percentile - bytes",
+        "name": "responseBodySizeP75",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Response body size 90th percentile - bytes",
+        "name": "responseBodySizeP90",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Response body size 95th percentile - bytes",
+        "name": "responseBodySizeP95",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Response body size 99th percentile - bytes",
+        "name": "responseBodySizeP99",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Response body size 99.9th percentile - bytes",
+        "name": "responseBodySizeP999",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Wall time 25th percentile - microseconds",
+        "name": "wallTimeP25",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Wall time 50th percentile - microseconds",
+        "name": "wallTimeP50",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Wall time 75th percentile - microseconds",
+        "name": "wallTimeP75",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Wall time 90th percentile - microseconds",
+        "name": "wallTimeP90",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Wall time 95th percentile - microseconds",
+        "name": "wallTimeP95",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Wall time 99th percentile - microseconds",
+        "name": "wallTimeP99",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "Wall time 99.9th percentile - microseconds",
+        "name": "wallTimeP999",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "WebAssembly linear memory usage 25th percentile across Worker invocations - bytes",
+        "name": "wasmMemoryBytesP25",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "WebAssembly linear memory usage 50th percentile across Worker invocations - bytes",
+        "name": "wasmMemoryBytesP50",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "WebAssembly linear memory usage 75th percentile across Worker invocations - bytes",
+        "name": "wasmMemoryBytesP75",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "WebAssembly linear memory usage 90th percentile across Worker invocations - bytes",
+        "name": "wasmMemoryBytesP90",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "WebAssembly linear memory usage 95th percentile across Worker invocations - bytes",
+        "name": "wasmMemoryBytesP95",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "WebAssembly linear memory usage 99th percentile across Worker invocations - bytes",
+        "name": "wasmMemoryBytesP99",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      },
+      {
+        "description": "WebAssembly linear memory usage 99.9th percentile across Worker invocations - bytes",
+        "name": "wasmMemoryBytesP999",
+        "type": {
+          "name": "",
+          "ofType": {
+            "name": "float32"
+          }
+        }
+      }
+    ],
+    "name": "AccountWorkersInvocationsAdaptiveQuantiles"
+  }
+]

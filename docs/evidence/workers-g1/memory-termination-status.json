@@ -1,0 +1,41 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "workersInvocationsAdaptive": [
+            {
+              "dimensions": {
+                "status": "exceededMemory"
+              },
+              "max": {
+                "cpuTime": 166213,
+                "memoryUsageBytes": 289519096,
+                "wasmMemoryBytes": 1245184
+              },
+              "sum": {
+                "errors": 1,
+                "requests": 1
+              }
+            },
+            {
+              "dimensions": {
+                "status": "success"
+              },
+              "max": {
+                "cpuTime": 4087,
+                "memoryUsageBytes": 8803832,
+                "wasmMemoryBytes": 1245184
+              },
+              "sum": {
+                "errors": 0,
+                "requests": 1
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}

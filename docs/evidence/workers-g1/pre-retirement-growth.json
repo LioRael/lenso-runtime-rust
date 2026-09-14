@@ -1,0 +1,130 @@
+[
+  {
+    "run": "db23268b-16eb-41f4-acb5-80845ab71122",
+    "mode": "normal",
+    "requests": 1200,
+    "max_wasm_capacity": 7405568,
+    "groups": [
+      {
+        "boot": "ef509aee-2e6a-4967-a118-cadb8bcd0b22",
+        "generation": 1,
+        "responses": 558,
+        "first": 1245184,
+        "last": 6815744,
+        "max": 6815744
+      },
+      {
+        "boot": "cdc963ca-f677-4475-9714-a568034b8ab0",
+        "generation": 5,
+        "responses": 4,
+        "first": 1310720,
+        "last": 1245184,
+        "max": 1310720
+      },
+      {
+        "boot": "410bd885-2ea5-4f7a-9b13-0b0096b624b0",
+        "generation": 1,
+        "responses": 2,
+        "first": 1245184,
+        "last": 1245184,
+        "max": 1245184
+      },
+      {
+        "boot": "e030e113-f037-423f-9d1f-6110b554be0a",
+        "generation": 1,
+        "responses": 1,
+        "first": 1245184,
+        "last": 1245184,
+        "max": 1245184
+      },
+      {
+        "boot": "1af3414b-c951-480d-aaea-8b75b06b7d5a",
+        "generation": 1,
+        "responses": 2,
+        "first": 1310720,
+        "last": 1310720,
+        "max": 1310720
+      },
+      {
+        "boot": "a56a8349-a241-4cc5-a9b6-93eab9a20360",
+        "generation": 1,
+        "responses": 1,
+        "first": 1245184,
+        "last": 1245184,
+        "max": 1245184
+      },
+      {
+        "boot": "9c242adf-8e8f-4ca5-af5a-b69016e74ec9",
+        "generation": 1,
+        "responses": 632,
+        "first": 1245184,
+        "last": 7405568,
+        "max": 7405568
+      }
+    ]
+  },
+  {
+    "run": "520139eb-90ef-43c7-a6a0-e27d5514311e",
+    "mode": "io",
+    "requests": 1200,
+    "max_wasm_capacity": 11993088,
+    "groups": [
+      {
+        "boot": "8058534b-d79a-423a-b43f-8f021ac3881d",
+        "generation": 3,
+        "responses": 1081,
+        "first": 1310720,
+        "last": 11993088,
+        "max": 11993088
+      },
+      {
+        "boot": "01aedba5-b214-4f5e-8b00-535d69801619",
+        "generation": 1,
+        "responses": 3,
+        "first": 1310720,
+        "last": 1310720,
+        "max": 1310720
+      },
+      {
+        "boot": "cdc963ca-f677-4475-9714-a568034b8ab0",
+        "generation": 5,
+        "responses": 3,
+        "first": 1376256,
+        "last": 1376256,
+        "max": 1376256
+      },
+      {
+        "boot": "1af3414b-c951-480d-aaea-8b75b06b7d5a",
+        "generation": 1,
+        "responses": 2,
+        "first": 1310720,
+        "last": 1310720,
+        "max": 1310720
+      },
+      {
+        "boot": "a56a8349-a241-4cc5-a9b6-93eab9a20360",
+        "generation": 1,
+        "responses": 1,
+        "first": 1245184,
+        "last": 1245184,
+        "max": 1245184
+      },
+      {
+        "boot": "1667bf55-3d6d-417f-8b2e-68612553ddb7",
+        "generation": 1,
+        "responses": 69,
+        "first": 1245184,
+        "last": 2031616,
+        "max": 2031616
+      },
+      {
+        "boot": "bae4001d-fec0-40e6-a8c8-eb974cf588bb",
+        "generation": 1,
+        "responses": 41,
+        "first": 1376256,
+        "last": 1703936,
+        "max": 1703936
+      }
+    ]
+  }
+]

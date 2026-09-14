@@ -1,0 +1,15 @@
+{
+  "status": "qualified-bounded-reference-profile",
+  "date": "2026-09-14",
+  "worker_version": "60cb18f5-9b3b-4424-b6f4-9fa53cd9f7d6",
+  "upstream_vectors": 32,
+  "native_tests_passed": 53,
+  "native_benchmarks_ignored": 5,
+  "client_requests_per_remote_workload": 1200,
+  "workloads": [
+    "normal",
+    "io-delayed"
+  ],
+  "memory_measurement": "Platform sampled invocation maxima plus same-isolate Wasm capacity retirement; no continuous unsampled peak claim",
+  "next_gate": "G2 HTTP parity"
+}

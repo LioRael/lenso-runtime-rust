@@ -1,8 +1,11 @@
+mod bindings_proof;
 mod conformance;
 mod diagnostics_proof;
 mod driver;
+mod interactions_proof;
 mod lifecycle_proof;
 mod named_dependencies_proof;
+mod schedules_proof;
 use driver::WorkersDriver;
 use lenso_app_plan::authoring::{
     HostBinding, HostCatalog, HostDefaultPlugin, HostSlot, PluginInstanceId, PluginRootSnapshot,

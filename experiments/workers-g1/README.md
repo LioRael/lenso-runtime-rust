@@ -183,3 +183,69 @@ dropping an unsettled lease still produces Timeout rather than a clean completio
 Fixture assertions abort Wasm on regression; the existing Runner abandonment
 boundary rejects the probe. An assertion failure is never a passing conformance
 result. See [named dependency and diagnostics evidence](../../docs/evidence/workers-g1/named-and-diagnostics.md).
+
+## G1 acceptance and complete suite
+
+The [G1 acceptance report](../../docs/evidence/workers-g1/acceptance.md) is the
+current status; earlier evidence reports remain historical snapshots.
+`smoke.mjs` now includes all 32 mapped upstream behavior vectors, plus the
+experiment's lifecycle, Driver, fault and recovery checks. The schedules probe
+runs 25 cancellation/completion combinations and five deadline/completion cases
+using actual host timers. These assert terminal outcomes, not deterministic
+wall-clock ordering.
+
+Run `smoke.mjs`, `io-smoke.mjs`, and `disconnect-smoke.mjs` **sequentially**.
+Fault probes intentionally abandon a shared Wasm generation and can invalidate
+another suite's in-flight events. The disconnect probe requires
+`enable_request_signal`, explicitly aborts an HTTP fetch after receiving a
+streamed identity, and verifies the same-isolate completion receipt. Receipt
+storage is bounded to 16 entries with lazy 60-second expiration. Missing receipts
+can reflect routing; they are never treated as a pass. A sanitized remote tail
+receipt can additionally establish platform cancellation without relying on
+routing. Wrangler's local HTTP proxy did not reliably propagate this cancellation;
+this specific boundary is qualified on the deployed Worker, while controlled I/O
+cancellation and all conformance vectors also run locally.
+
+The Runner only rejects peer events during generation abandonment. Each event
+cancels its native I/O in its own registered Promise continuation; direct foreign
+request cancellation can throw in workerd and must not be reintroduced.
+
+`load.mjs` permits `WORKERS_G1_INPUT_SIZE` up to 1024 characters and uses a 30-second
+client transport timeout; the Runner still has its independent 1-second deadline.
+`metrics.py` now reports the API sample interval, CPU quantiles and maximum, isolate
+memory maximum, and Wasm memory maximum. Units are verified through live GraphQL
+schema introspection: CPU microseconds and memory bytes. Counts are estimates under
+adaptive sampling, so `count_matches` is informational, not a completeness gate.
+Memory maxima are over observed invocations, not continuous unsampled process peaks.
+
+## Disposable memory-limit experiment
+
+Deploy `termination/memory.jsonc` and set a fresh private `PROBE_KEY`. With
+`WORKERS_G1_TERMINATION_URL` and `WORKERS_G1_KEY_FILE` set, run
+`termination/memory-smoke.mjs`. The separate wrapper starts Kernel, then applies
+bounded 512 MiB pressure through the Host I/O seam. It does not add a production
+mode or require the optional CPU-loop build. Confirm `exceededMemory` in platform
+analytics (1102 alone also describes CPU limits), then delete that Worker and
+remove the key. The recorded experiment and its key were removed after validation.
+
+## Bounded Wasm generation lifetime
+
+Request App shutdown does not imply linear-memory capacity shrinks. The reference
+workload initially showed roughly linear capacity growth inside one generation.
+The Runner therefore retires an idle generation after 64 admissions, with a hard
+96-admission ceiling while it drains. At most 32 requests wait, each on its own
+1 ms timer and a 1-second admission deadline; there is no shared cross-request
+promise. At most 32 events execute at once. Successful requests finish I/O cleanup
+before retirement. The fresh instance runs the static constructors again; logical
+App state remains per request. Failure abandonment remains a separate path.
+
+Run a load of at least 1,000 requests, then:
+
+```sh
+node retirement-smoke.mjs /tmp/g1-load.json
+```
+
+The check requires repeated memory-capacity reductions within the same isolate,
+at most 96 observed requests per generation and an 8 MiB observed Wasm bound for
+this reference workload. It does not claim every arbitrary Plugin graph fits
+that bound or that the portable Kernel's retained-allocation source is resolved.

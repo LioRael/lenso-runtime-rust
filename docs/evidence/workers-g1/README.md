@@ -1,5 +1,8 @@
 # Workers G1 prototype evidence — 2026-09-14
 
+Current qualification: see the [G1 acceptance report](acceptance.md). The reports
+below record earlier milestones and their then-open items.
+
 This is the initial prototype report. See the [recovery follow-up](recovery.md)
 for the async fault fix, conformance subset, and resource observations.
 The subsequent [I/O and platform report](io-and-termination.md) records real

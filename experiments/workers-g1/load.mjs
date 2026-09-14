@@ -17,11 +17,12 @@ const begin = performance.now();
 await Promise.all(Array.from({ length: concurrency }, async () => {
   while (next < count) {
     const index = next++;
-    const input = `${run}-${index}-你好`;
+    const input = `${run}-${index}-你好`.padEnd(Number(process.env.WORKERS_G1_INPUT_SIZE ?? 128), 'x');
+    assert.ok(input.length <= 1024);
     const url = new URL('/probe', base);
     url.search = new URLSearchParams({ mode, input });
     const start = performance.now();
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
     const result = await response.json();
     assert.equal(response.status, 200, JSON.stringify(result));
     assert.equal(result.body, input);

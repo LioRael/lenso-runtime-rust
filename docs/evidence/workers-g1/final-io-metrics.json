@@ -1,0 +1,40 @@
+{
+  "run": "bd6a9b03-8ec3-4990-a1fa-79a300904cb0",
+  "sampled_at": "2026-09-14T14:40:39.777729+00:00",
+  "script": "lenso-workers-g1-proof",
+  "started": "2026-09-14T14:39:10.063Z",
+  "ended": "2026-09-14T14:40:02.897Z",
+  "query_start": "2026-09-14T14:39:10+00:00",
+  "query_end": "2026-09-14T14:40:03+00:00",
+  "expected_requests": 1200,
+  "observed_requests": 1356,
+  "count_matches": false,
+  "rows": [
+    {
+      "avg": {
+        "sampleInterval": 3.6648648648648647
+      },
+      "max": {
+        "cpuTime": 33260,
+        "memoryUsageBytes": 21989464,
+        "wasmMemoryBytes": 4718592
+      },
+      "quantiles": {
+        "cpuTimeP50": 2522,
+        "cpuTimeP99": 8775,
+        "memoryUsageBytesP50": 9122840,
+        "memoryUsageBytesP999": 21989464
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 1356,
+        "subrequests": 1356
+      }
+    }
+  ],
+  "units": {
+    "cpu": "microseconds",
+    "memory": "bytes"
+  },
+  "note": "Platform-reported maxima over observed invocations, not an unsampled continuous process high-water mark. Counts may reflect delayed ingestion or adaptive sampling. A matching count alone cannot exclude unrelated traffic. Never average row quantiles."
+}

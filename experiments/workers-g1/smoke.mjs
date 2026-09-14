@@ -4,7 +4,7 @@ assert.ok(base, 'Set WORKERS_G1_URL');
 async function read(input, mode = 'normal') {
   const url = new URL('/probe', base);
   url.search = new URLSearchParams({ input, mode }).toString();
-  const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  const response = await fetch(url, { signal: AbortSignal.timeout(15000) }).catch(error => { throw new Error(`Probe transport failed: ${mode}`, { cause: error }); });
   const body = await response.text();
   assert.equal(response.status, 200, body);
   return JSON.parse(body);
@@ -41,7 +41,7 @@ healthy(await read('after-failure'), 'after-failure');
 const lifecycle = await read('lifecycle', 'lifecycle');
 assert.equal(lifecycle.lifecycle, 'passed');
 assert.deepEqual(lifecycle.cases, ['normal', 'prepare-failure', 'activate-failure', 'deactivate-failure', 'release-failure', 'shutdown-timeout', 'supervision']);
-for (const [mode, suite, count] of [['named-dependencies', 'named_dependencies', 2], ['diagnostics', 'diagnostics', 7]]) {
+for (const [mode, suite, count] of [['named-dependencies', 'named_dependencies', 2], ['diagnostics', 'diagnostics', 7], ['interactions', 'interactions', 1], ['schedules', 'schedules', 2], ['bindings', 'bindings', 11]]) {
   const result = await read(mode, mode);
   assert.equal(result.suite, suite);
   assert.equal(result.passed, true);

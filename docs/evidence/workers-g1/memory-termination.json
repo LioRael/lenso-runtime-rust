@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "http_status": 503,
+  "platform_error": 1102,
+  "fault": "memory-pressure",
+  "cpu_limit_ms": 1000,
+  "before_boot": "f5f466e8-16ab-4d51-812f-83e32fbcfeb3",
+  "after_boot": "5112531a-b3d3-4e11-9e84-047f607eec12",
+  "following_request": "healthy",
+  "forced_shutdown": "unconfirmed",
+  "note": "Boot IDs are observations across HTTP requests, not proof that the same isolate was selected or evicted.",
+  "worker_deleted": true,
+  "key_deleted": true,
+  "platform_status": "exceededMemory"
+}

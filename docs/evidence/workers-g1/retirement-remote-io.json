@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "run": "bd6a9b03-8ec3-4990-a1fa-79a300904cb0",
+  "requests": 1200,
+  "same_isolate_capacity_reductions": 14,
+  "max_wasm_bytes": 2359296,
+  "generation_soft_limit": 64,
+  "generation_hard_limit": 96,
+  "queue_capacity": 32
+}

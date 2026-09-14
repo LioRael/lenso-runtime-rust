@@ -1,0 +1,13 @@
+{
+  "local_client_disconnect": "Wrangler proxy did not consistently propagate client cancellation; direct deployed Request.signal case passed and is the qualification evidence. Local controlled I/O cancellation passed.",
+  "initial_load_attempt": {
+    "requests_requested": 1200,
+    "concurrency": 24,
+    "client_timeout_seconds": 10,
+    "result": "Client TimeoutError; not a passing load run. Remote tail received 725 events, all outcome ok, maximum recorded CPU 73 ms. This does not exclude failures absent from the tail. Subsequent runs use concurrency 12 and a 30-second client timeout."
+  },
+  "local_io_setup": "First local run using a remote upstream exceeded the 1-second event deadline. Final local I/O proof uses paired local upstream; deployed proof uses the real remote upstream.",
+  "fixed_defect": "Directly aborting another request scope during generation abandonment can throw RefcountedCanceler ownership errors. Cleanup now runs in the owning request Promise continuation; paired local and deployed I/O regression passed.",
+  "bounded_retention": "Before retirement, a single generation showed growing capacity across completed requests. Allocation root cause is not certified; generation retirement now bounds retained Wasm state. Tests require repeated same-isolate capacity drops.",
+  "retirement_waiting": "A shared rotation Promise triggered workerd cross-request resolution/hang diagnostics. Each bounded admission waiter now uses its own timer and deadline."
+}
