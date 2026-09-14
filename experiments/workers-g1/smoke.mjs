@@ -38,6 +38,9 @@ const trap = await fetch(new URL('/probe?mode=trap', base), { signal: AbortSigna
 assert.equal(trap.status, 500);
 assert.equal((await trap.json()).failed, true);
 healthy(await read('after-failure'), 'after-failure');
+const lifecycle = await read('lifecycle', 'lifecycle');
+assert.equal(lifecycle.lifecycle, 'passed');
+assert.deepEqual(lifecycle.cases, ['normal', 'prepare-failure', 'activate-failure', 'deactivate-failure', 'release-failure', 'shutdown-timeout', 'supervision']);
 const contract = await read('conformance', 'conformance');
 assert.equal(contract.conformance, 'passed');
 assert.equal(contract.providers, 2);
@@ -55,4 +58,4 @@ for (const mode of ['task-trap', 'async-panic']) {
   assert.equal(failure.shutdown, 'unconfirmed');
   healthy(await read(`after-${mode}`), `after-${mode}`);
 }
-console.log(JSON.stringify({ base, passed: true, concurrent_requests: inputs.length, checks: ['static registration', 'Ready', 'bound Capability invocation', 'event state isolation', 'timer', 'task cancellation', 'missing factory', 'prepare failure', 'clean shutdown', 'recreation', 'bounded tasks', 'shutdown wakes parked lane', 'cancelled invocation', 'expired invocation', 'synchronous Wasm trap rejection', 'upstream request conformance vectors', 'async trap deadline', 'spawned task trap', 'async Plugin panic', 'same-event instance recreation', 'in-flight generation rejection'] }));
+console.log(JSON.stringify({ base, passed: true, concurrent_requests: inputs.length, checks: ['static registration', 'Ready', 'bound Capability invocation', 'event state isolation', 'timer', 'task cancellation', 'missing factory', 'prepare failure', 'clean shutdown', 'recreation', 'bounded tasks', 'shutdown wakes parked lane', 'cancelled invocation', 'expired invocation', 'synchronous Wasm trap rejection', 'upstream request conformance vectors', 'lifecycle rollback and exactly-once cleanup', 'shutdown admission and timeout', 'stable handle after restart and restart exhaustion', 'async trap deadline', 'spawned task trap', 'async Plugin panic', 'same-event instance recreation', 'in-flight generation rejection'] }));

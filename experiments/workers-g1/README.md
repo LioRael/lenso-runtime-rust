@@ -126,3 +126,16 @@ Delete the temporary Worker with `wrangler delete --config termination/wrangler.
 remove the private key file, and rebuild without `WORKERS_G1_CPU_PROBE` before
 updating the regular experiment. The recorded temporary deployment was deleted.
 See [I/O and platform evidence](../../docs/evidence/workers-g1/io-and-termination.md).
+
+## Lifecycle and supervision checks
+
+`/probe?mode=lifecycle` runs seven product-neutral fixtures using Kernel 0.3.6,
+the existing conformance adapter and Probe contract, and the real Workers Driver.
+The regular `smoke` command includes this probe. Cases cover normal shutdown,
+prepare/activate rollback, deactivate/release errors, shutdown timeout, and a
+finite Plugin restart budget with a stable client across generations.
+
+App readiness remains open during an individual Plugin restart; the initial
+activation readiness assertion is restricted to the first generation. Explicit
+`report_plugin_failure` tests supervision; it does not establish recoverable
+Wasm panic semantics. See [lifecycle evidence](../../docs/evidence/workers-g1/lifecycle.md).

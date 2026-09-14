@@ -1,4 +1,4 @@
-import { initSync, __wbg_reset_state, probe, trap_probe, driver_probe, conformance_probe } from './pkg/lenso_workers_g1_host.js';
+import { initSync, __wbg_reset_state, probe, trap_probe, driver_probe, conformance_probe, lifecycle_probe } from './pkg/lenso_workers_g1_host.js';
 import { clearTimers } from './clock.mjs';
 import module from './pkg/lenso_workers_g1_host_bg.wasm';
 
@@ -49,7 +49,7 @@ export function run(input, mode, { scope, signal } = {}) {
     let operation;
     try {
       if (mode === 'trap') trap_probe();
-      operation = mode === 'conformance' ? conformance_probe() : mode === 'driver' ? driver_probe() : probe(input, mode, scope);
+      operation = mode === 'lifecycle' ? lifecycle_probe() : mode === 'conformance' ? conformance_probe() : mode === 'driver' ? driver_probe() : probe(input, mode, scope);
     } catch (error) {
       abandon(String(error));
       return;
