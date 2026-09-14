@@ -1,0 +1,14 @@
+getrandom v0.2.17
+└── ring v0.17.14
+    ├── rustls v0.23.43
+    │   └── sqlx-core v0.9.0
+    │       ├── sqlx v0.9.0
+    │       │   ├── lenso-auth-account-plugin v0.1.0 ($AUTH_ROOT/crates/lenso-auth-account-plugin)
+    │       │   ├── lenso-auth-password-plugin v0.1.0 ($AUTH_ROOT/crates/lenso-auth-password-plugin)
+    │       │   └── lenso-postgres-kit v0.1.0
+    │       │       ├── lenso-auth-account-plugin v0.1.0 ($AUTH_ROOT/crates/lenso-auth-account-plugin)
+    │       │       └── lenso-auth-password-plugin v0.1.0 ($AUTH_ROOT/crates/lenso-auth-password-plugin)
+    │       └── sqlx-postgres v0.9.0
+    │           └── sqlx v0.9.0 (*)
+    └── rustls-webpki v0.103.15
+        └── rustls v0.23.43 (*)

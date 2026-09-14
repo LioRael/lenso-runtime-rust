@@ -1,0 +1,7 @@
+getrandom v0.2.17
+└── ring v0.17.14
+    ├── rustls v0.23.43
+    │   └── ureq v2.12.1
+    │       └── lenso-cli v0.5.3 ($CLI_ROOT)
+    └── rustls-webpki v0.103.15
+        └── rustls v0.23.43 (*)

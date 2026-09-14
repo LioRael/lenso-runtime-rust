@@ -1,0 +1,214 @@
+{
+  "target": "wasm32-unknown-unknown",
+  "toolchain": "rustc 1.94.0 (4a4ef493e 2026-03-02)\nbinary: rustc\ncommit-hash: 4a4ef493e3a1488c6e321570238084b38948f6db\ncommit-date: 2026-03-02\nhost: aarch64-apple-darwin\nrelease: 1.94.0\nLLVM version: 21.1.8\n",
+  "scope": "Production library check only. No generated binding changes or target compatibility overrides.",
+  "cases": [
+    {
+      "name": "runtime",
+      "owner": "runtime",
+      "head": "5e07e7a21d62fa06ffd0e6449608bb2267acb63a",
+      "lock_sha256": "2d8f17e469238952eddeeeca573a75bba712815821112a04a1fbac2b6f99ecfe",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "lenso-kernel",
+        "-p",
+        "lenso-native-adapter",
+        "-p",
+        "lenso-browser-driver",
+        "--lib"
+      ],
+      "exit_code": 0,
+      "diagnostics": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.34s"
+      ],
+      "log_sha256": "12e0446056fc910e96254e5970a97fea82d8e3612c1a9f665a5438607506db5f",
+      "feature_tree_sha256": "b3368ce840646449e4a99d10395ad5da33a5240fb17e8ed1c9de25a081d8aa0d"
+    },
+    {
+      "name": "http-contract",
+      "owner": "web",
+      "head": "ed4fdc7444d3db2132e30ba22f028500d98fcbd7",
+      "lock_sha256": "6c783459a9cb34047cb09c66949b9df79317bb7abbb856bd21174e20e6552f7a",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "lenso-capability-http-endpoint",
+        "--lib"
+      ],
+      "exit_code": 0,
+      "diagnostics": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.41s"
+      ],
+      "log_sha256": "56cc2964fc1e5c744d83bfb4e273f4d641bd0d2a120aaa04e78ea96ab8948a23",
+      "feature_tree_sha256": "efc33851f9cdc8723ca316e5b100f70538f4adac56c8827ee184dda7b4960d2d"
+    },
+    {
+      "name": "native-ingress",
+      "owner": "web",
+      "head": "ed4fdc7444d3db2132e30ba22f028500d98fcbd7",
+      "lock_sha256": "6c783459a9cb34047cb09c66949b9df79317bb7abbb856bd21174e20e6552f7a",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "lenso-web-ingress-plugin",
+        "--lib"
+      ],
+      "exit_code": 101,
+      "diagnostics": [
+        "error: This wasm target is unsupported by mio. If using Tokio, disable the net feature.",
+        "error: could not compile `mio` (lib) due to 36 previous errors"
+      ],
+      "log_sha256": "debe2aeb58ee1ef6c96dfd720c035f669d64d57badefbb69ded8333bc1c7e0e8",
+      "feature_tree_sha256": "4bbdad71fc28e38bd8bdc95b238bd48041a85fb9102baec7ea9e422793faa9df"
+    },
+    {
+      "name": "auth-router",
+      "owner": "auth",
+      "head": "b68d87654e18910e8d14649e48e3166636fa99a1",
+      "lock_sha256": "dcaba6d666da18a7dcaa9858018fec4807a735381637f5ae3912257a9cdf98e9",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "lenso-auth-router-plugin",
+        "--lib"
+      ],
+      "exit_code": 0,
+      "diagnostics": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.91s"
+      ],
+      "log_sha256": "177c9585843b8891acf1c2bb9c52443c63f34a0e1e2ddd066762344437d913b8",
+      "feature_tree_sha256": "b84dbc2480b18141db1292393ec2cbec290c5bc803218c5f43e277b24de403cd"
+    },
+    {
+      "name": "auth-account",
+      "owner": "auth",
+      "head": "b68d87654e18910e8d14649e48e3166636fa99a1",
+      "lock_sha256": "dcaba6d666da18a7dcaa9858018fec4807a735381637f5ae3912257a9cdf98e9",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "lenso-auth-account-plugin",
+        "--lib"
+      ],
+      "exit_code": 101,
+      "diagnostics": [
+        "error: the wasm*-unknown-unknown targets are not supported by default, you may need to enable the \"js\" feature. For more information see: https://docs.rs/getrandom/#webassembly-support",
+        "error: could not compile `getrandom` (lib) due to 2 previous errors"
+      ],
+      "log_sha256": "f51332733f5e756cb699627e1e050027f4d06eae8d6501ff8bbcaa1d600a61b2",
+      "feature_tree_sha256": "13dc414d5bec6df114bf5d7f6e63d82de806a94f2f71d5e67fc4e48bce9be651"
+    },
+    {
+      "name": "auth-password",
+      "owner": "auth",
+      "head": "b68d87654e18910e8d14649e48e3166636fa99a1",
+      "lock_sha256": "dcaba6d666da18a7dcaa9858018fec4807a735381637f5ae3912257a9cdf98e9",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "lenso-auth-password-plugin",
+        "--lib"
+      ],
+      "exit_code": 101,
+      "diagnostics": [
+        "error: the wasm*-unknown-unknown targets are not supported by default, you may need to enable the \"js\" feature. For more information see: https://docs.rs/getrandom/#webassembly-support",
+        "error: could not compile `getrandom` (lib) due to 2 previous errors"
+      ],
+      "log_sha256": "453086ad9ec0dc9ebbb32bd32dd24f456820dd85089cd8b6f34f1a57342aaf98",
+      "feature_tree_sha256": "56e86c2ce298e553503e10c6b66bcea3b3a91fe25dc9ce63faa69b839f178d48"
+    },
+    {
+      "name": "auth-web-session",
+      "owner": "auth",
+      "head": "b68d87654e18910e8d14649e48e3166636fa99a1",
+      "lock_sha256": "dcaba6d666da18a7dcaa9858018fec4807a735381637f5ae3912257a9cdf98e9",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "lenso-auth-web-session-plugin",
+        "--lib"
+      ],
+      "exit_code": 101,
+      "diagnostics": [
+        "error: The wasm32/64-unknown-unknown are not supported by default; you may need to enable the \"wasm_js\" crate feature. For more information see: https://docs.rs/getrandom/0.4.3/#webassembly-support",
+        "error: could not compile `getrandom` (lib) due to 4 previous errors"
+      ],
+      "log_sha256": "d477936395a103989f6e22a6af841891f07d0c5062ed62899a76206bca3f5e52",
+      "feature_tree_sha256": "9dfa796f97a24179b7bf2306430457db558b104ff01c71baca173b865b7435c4"
+    },
+    {
+      "name": "auth-oidc-client",
+      "owner": "auth",
+      "head": "b68d87654e18910e8d14649e48e3166636fa99a1",
+      "lock_sha256": "dcaba6d666da18a7dcaa9858018fec4807a735381637f5ae3912257a9cdf98e9",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "lenso-auth-oidc-client-plugin",
+        "--lib"
+      ],
+      "exit_code": 101,
+      "diagnostics": [
+        "error: the wasm*-unknown-unknown targets are not supported by default, you may need to enable the \"js\" feature. For more information see: https://docs.rs/getrandom/#webassembly-support",
+        "error: could not compile `getrandom` (lib) due to 2 previous errors"
+      ],
+      "log_sha256": "6c14e4bb885059d51c8c3b20f546aba91537d0638e8e666eaca559a550a3a249",
+      "feature_tree_sha256": "c3b4b5a7237b1e9b6e3e2286431451ce6ed4e5704be98e89fb6a1e2fb498ec13"
+    },
+    {
+      "name": "signature-consumer",
+      "owner": "cli",
+      "head": "9af362dd7f5c6022f06cfde0dd650d9b6b17dfdd",
+      "lock_sha256": "86cecca45190526743a414cc15f62296784e9370c36927d0c0e96c5baebaa023",
+      "check_arguments": [
+        "+1.94.0",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--no-default-features",
+        "--lib"
+      ],
+      "exit_code": 101,
+      "diagnostics": [
+        "error: the wasm*-unknown-unknown targets are not supported by default, you may need to enable the \"js\" feature. For more information see: https://docs.rs/getrandom/#webassembly-support",
+        "error: could not compile `getrandom` (lib) due to 2 previous errors"
+      ],
+      "log_sha256": "aeea977efef652fdc7b90f66fdc8d356624ab984b473367b3be438af899c9680",
+      "feature_tree_sha256": "21223dd807460c4f2505bcfe522cf2d90d38eb38c31ab3768c468bb20bf4011c"
+    }
+  ]
+}

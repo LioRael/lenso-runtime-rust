@@ -24,6 +24,9 @@ slice before claiming the target supports an authenticated Marketplace.
 - Target compatibility is an evidence-backed property of an implementation and
   its feature/dependency closure, not of the Plugin name or programming language.
 
+G0 execution evidence is now available in [the target audit](../evidence/workers-g0/README.md).
+Its pinned source baselines supersede the initial inspection below for the tested components.
+
 ## Evidence baseline
 
 Runtime design starts from the checked-out release main. Auth was inspected at

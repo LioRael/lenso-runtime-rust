@@ -1,0 +1,37 @@
+getrandom v0.2.17
+├── jsonwebtoken v10.4.0
+│   └── lenso-auth-oidc-client-plugin v0.1.0 ($AUTH_ROOT/crates/lenso-auth-oidc-client-plugin)
+└── rand_core v0.6.4
+    ├── crypto-bigint v0.5.5
+    │   └── elliptic-curve v0.13.8
+    │       ├── ecdsa v0.16.9
+    │       │   ├── p256 v0.13.2
+    │       │   │   └── jsonwebtoken v10.4.0 (*)
+    │       │   └── p384 v0.13.1
+    │       │       └── jsonwebtoken v10.4.0 (*)
+    │       ├── p256 v0.13.2 (*)
+    │       ├── p384 v0.13.1 (*)
+    │       └── primeorder v0.13.6
+    │           ├── p256 v0.13.2 (*)
+    │           └── p384 v0.13.1 (*)
+    ├── elliptic-curve v0.13.8 (*)
+    ├── ff v0.13.1
+    │   ├── elliptic-curve v0.13.8 (*)
+    │   └── group v0.13.0
+    │       └── elliptic-curve v0.13.8 (*)
+    ├── group v0.13.0 (*)
+    ├── rand v0.8.8
+    │   ├── jsonwebtoken v10.4.0 (*)
+    │   └── num-bigint-dig v0.8.6
+    │       └── rsa v0.9.10
+    │           └── jsonwebtoken v10.4.0 (*)
+    ├── rand_chacha v0.3.1
+    │   └── rand v0.8.8 (*)
+    ├── rsa v0.9.10 (*)
+    └── signature v2.2.0
+        ├── ecdsa v0.16.9 (*)
+        ├── ed25519 v2.2.3
+        │   └── ed25519-dalek v2.2.0
+        │       └── jsonwebtoken v10.4.0 (*)
+        ├── jsonwebtoken v10.4.0 (*)
+        └── rsa v0.9.10 (*)
