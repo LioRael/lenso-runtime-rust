@@ -1,0 +1,92 @@
+experiments/workers-runtime/http.mjs
+  s_3724267b9ee00e::t_ca7e4079ef77ca 34-35
+  s_3724267b9ee00e::t_f6d0c9bd1aeb4e 1-33,36-40,44-140
+  s_3724267b9ee00e::t_87b6e2be3f91a6 41-43
+experiments/workers-g2/smoke.mjs
+  s_3724267b9ee00e::t_88197f1c4cbf53 1-56
+experiments/workers-runtime/http.test.mjs
+  s_3724267b9ee00e::t_0bc23bc1762f4a 99-119
+  s_3724267b9ee00e::t_ca7e4079ef77ca 29-32
+  s_3724267b9ee00e::t_f6d0c9bd1aeb4e 1-28,33-98,120-133
+experiments/workers-runtime/runner.mjs
+  s_3724267b9ee00e::t_0bc23bc1762f4a 1-124
+experiments/workers-runtime/README.md
+  s_3724267b9ee00e::t_87b6e2be3f91a6 1-80
+  s_3724267b9ee00e::t_a0593b7664e92b 81-82
+docs/evidence/workers-g2/README.md
+  s_3724267b9ee00e::t_6767633e735fe1 1-121
+docs/evidence/workers-g2/deployment.json
+  s_3724267b9ee00e::t_4b53a312c67f66 1-26
+docs/evidence/workers-g2/g1-shared-runner-io.json
+  s_3724267b9ee00e::t_4871207fb3bb4c 1
+docs/evidence/workers-g2/g1-shared-runner.json
+  s_3724267b9ee00e::t_5809d441a09a57 1
+docs/evidence/workers-g2/local-disconnect.json
+  s_3724267b9ee00e::t_060b8913c1483d 1-14
+docs/evidence/workers-g2/local-limits.json
+  s_3724267b9ee00e::t_d5b15710182ccc 1
+docs/evidence/workers-g2/local-transport-limitation.json
+  s_3724267b9ee00e::t_dfc5e5f267d2c4 1-9
+docs/evidence/workers-g2/local.json
+  s_3724267b9ee00e::t_583e08b755ea35 1-340
+docs/evidence/workers-g2/remote-disconnect.json
+  s_3724267b9ee00e::t_1d364156deace3 1
+docs/evidence/workers-g2/remote-limits.json
+  s_3724267b9ee00e::t_bdcf000a3b355c 1
+docs/evidence/workers-g2/remote.json
+  s_3724267b9ee00e::t_7cd6edcb00728b 1-351
+experiments/workers-g1/runner.mjs
+  s_3724267b9ee00e::t_8c20065948d5f5 5-15,22
+experiments/workers-g2/.gitignore
+  s_3724267b9ee00e::t_6a49c8b6d72fdd 1-3
+experiments/workers-g2/Cargo.lock
+  s_3724267b9ee00e::t_658ddf67e136fa 1-995
+experiments/workers-g2/Cargo.toml
+  s_3724267b9ee00e::t_c2dfb7b53beab0 1-17
+experiments/workers-g2/README.md
+  s_3724267b9ee00e::t_56bd65b9962bc2 1-71
+experiments/workers-g2/build.sh
+  s_3724267b9ee00e::t_acf00962c26433 1-35
+experiments/workers-g2/cancellation.mjs
+  s_3724267b9ee00e::t_51d5e5626b70fd 1
+experiments/workers-g2/clock.mjs
+  s_3724267b9ee00e::t_ac0805fecda706 1
+experiments/workers-g2/disconnect-smoke.mjs
+  s_3724267b9ee00e::t_7740d1a7404cb2 1-33
+experiments/workers-g2/host/Cargo.toml
+  s_3724267b9ee00e::t_87400e6907219d 1-21
+experiments/workers-g2/host/src/lib.rs
+  s_3724267b9ee00e::t_b2aa02c88a6276 1-138
+experiments/workers-g2/limits-smoke.mjs
+  s_3724267b9ee00e::t_a65e824cc132a6 1-17
+experiments/workers-g2/package.json
+  s_3724267b9ee00e::t_7eb9d7685eaf4a 1-12
+experiments/workers-g2/pnpm-lock.yaml
+  s_3724267b9ee00e::t_1ebef82d310c14 1-872
+experiments/workers-g2/pnpm-workspace.yaml
+  s_3724267b9ee00e::t_9f6e5344903c5b 1-4
+experiments/workers-g2/runner.mjs
+  s_3724267b9ee00e::t_58a1f95db61f26 1-34
+experiments/workers-g2/transport.mjs
+  s_3724267b9ee00e::t_d30033d892606f 1-38
+experiments/workers-g2/worker.mjs
+  s_3724267b9ee00e::t_63432b799e3c11 1-104
+experiments/workers-g2/wrangler.jsonc
+  s_3724267b9ee00e::t_4777e90ce7998f 1-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e9d74b5edca208e76e6664e5815212d6a66f61b8",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
