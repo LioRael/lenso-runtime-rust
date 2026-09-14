@@ -31,9 +31,9 @@ workerd startup; the selected date is supported by the pinned local toolchain.
 Validated commands (Cargo uses the workspace `lenso-cargo` wrapper):
 
 ```sh
-CARGO=/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo \
+CARGO=${LENSO_CARGO:-cargo} \
   bash experiments/workers-g1/build.sh
-/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo +1.94.0 clippy \
+${LENSO_CARGO:-cargo} +1.94.0 clippy \
   --locked --manifest-path experiments/workers-g1/Cargo.toml \
   --target wasm32-unknown-unknown --workspace --no-deps -- -D warnings
 WORKERS_G1_URL=http://127.0.0.1:63733 node experiments/workers-g1/smoke.mjs
