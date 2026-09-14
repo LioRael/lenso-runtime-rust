@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${CARGO:=cargo}"
+: "${WASM_BINDGEN:=wasm-bindgen}"
+root="$(cd "$(dirname "$0")" && pwd)"
+if [[ "$("$WASM_BINDGEN" --version)" != 'wasm-bindgen 0.2.127' ]]; then
+  echo 'Install the locked wasm-bindgen-cli 0.2.127 first.' >&2
+  exit 1
+fi
+receipt="$(mktemp)"
+trap 'rm -f "$receipt"' EXIT
+features=(--no-default-features)
+if ! "$CARGO" +1.94.0 rustc --locked --manifest-path "$root/Cargo.toml" \
+  --target wasm32-unknown-unknown -p lenso-workers-g2-host --release \
+  --message-format=json "${features[@]}" -- -C link-arg=--export=__wasm_call_ctors > "$receipt"; then
+  python3 - "$receipt" <<'DIAGNOSTICS'
+import json,sys
+for line in open(sys.argv[1]):
+    item=json.loads(line)
+    if item.get('reason')=='compiler-message':
+        sys.stderr.write(item['message'].get('rendered') or item['message']['message'])
+DIAGNOSTICS
+  exit 1
+fi
+artifact="$(python3 - "$receipt" <<'PY'
+import json,sys
+for line in open(sys.argv[1]):
+    item=json.loads(line)
+    if item.get('reason')=='compiler-artifact' and item['target']['name']=='lenso_workers_g2_host':
+        for name in item['filenames']:
+            if name.endswith('.wasm'):print(name)
+PY
+)"
+[[ -f "$artifact" ]]
+"$WASM_BINDGEN" "$artifact" --target web --experimental-reset-state-function --out-dir "$root/pkg"

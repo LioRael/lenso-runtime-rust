@@ -1,0 +1,21 @@
+[package]
+name = "lenso-workers-g2-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bytes = "1"
+http = "1"
+lenso-kernel.workspace = true
+lenso-native-adapter.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+lenso-web-ingress-plugin = { path = "../../../../../lenso-web/feat-workers-http-parity/crates/lenso-web-ingress-plugin", default-features = false }
+lenso-web-http-parity-fixture = { path = "../../../../../lenso-web/feat-workers-http-parity/tests/fixtures/http-parity-plugin" }

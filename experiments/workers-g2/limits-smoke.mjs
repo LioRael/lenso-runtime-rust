@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { send, fetchResponse } from './transport.mjs';
+const base = process.env.WORKERS_G2_URL ?? 'http://127.0.0.1:63737';
+const timeout = await send(base, { method: 'POST', uri: '/bytes', headers: [], body: [97, 98] }, { pauseBodyMs: 1000 });
+assert.ok([200, 408].includes(timeout.status), JSON.stringify(timeout));
+if (timeout.status === 200) assert.deepEqual([...timeout.body], [97, 98]);
+const streamTimeout = await fetchResponse(base, '/_g2/body-timeout');
+assert.equal(streamTimeout.status, 408);
+const head = await send(base, { method: 'GET', uri: '/method', headers: [['x-large', 'x'.repeat(16385)]], body: [] });
+assert.equal(head.status, 431);
+const output = await fetchResponse(base, '/_g2/response-limit');
+assert.equal(output.status, 502);
+assert.equal((await output.json()).error, 'response_body_too_large');
+const healthy = await fetchResponse(base, '/method');
+assert.equal(healthy.status, 200);
+assert.equal(healthy.headers.get('x-g2-shutdown'), 'clean');
+console.log(JSON.stringify({ base, passed: true, external_slow_upload: timeout.status, external_read_deadline_observed: timeout.status === 408, in_worker_stream_timeout: streamTimeout.status, request_head_bound: head.status, response_body_bound: output.status, healthy_after_limits: true }));

@@ -1,0 +1,340 @@
+{
+  "base": "http://127.0.0.1:63737",
+  "at": "2026-09-14T16:05:05.779Z",
+  "corpus_sha256": "da010dc2e55eb14ec2b4aab43c6b90462e8629f66e969a757e992dc1efdbd8ca",
+  "corpus_count": 30,
+  "network": [
+    {
+      "name": "method-GET",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "method-POST",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "method-PUT",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "method-PATCH",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "method-DELETE",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "method-OPTIONS",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "method-HEAD",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "method-TRACE",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "static-precedence",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "raw-query",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "malformed-percent-path",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "empty-query",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "binary",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "empty-body",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "repeated-headers",
+      "passed": true,
+      "status": 200,
+      "observed_request_headers": [
+        {
+          "name": "x-test",
+          "value": "one, two"
+        }
+      ]
+    },
+    {
+      "name": "bearer",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "duplicate-authorization",
+      "passed": true,
+      "status": 400
+    },
+    {
+      "name": "session-cookie",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "csrf-missing",
+      "passed": true,
+      "status": 403
+    },
+    {
+      "name": "csrf-valid",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "cookies",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "head",
+      "passed": true,
+      "status": 200
+    },
+    {
+      "name": "no-content",
+      "passed": true,
+      "status": 204
+    },
+    {
+      "name": "not-modified",
+      "passed": true,
+      "status": 304
+    },
+    {
+      "name": "not-found",
+      "passed": true,
+      "status": 404
+    },
+    {
+      "name": "method-not-allowed",
+      "passed": true,
+      "status": 405
+    },
+    {
+      "name": "domain",
+      "passed": true,
+      "status": 502
+    },
+    {
+      "name": "runtime",
+      "passed": true,
+      "status": 503
+    },
+    {
+      "name": "invalid-response",
+      "passed": true,
+      "status": 502
+    },
+    {
+      "name": "folded-authorization",
+      "passed": true,
+      "status": 400
+    }
+  ],
+  "bridged": {
+    "passed": true,
+    "count": 30,
+    "results": [
+      {
+        "name": "method-GET",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "method-POST",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "method-PUT",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "method-PATCH",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "method-DELETE",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "method-OPTIONS",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "method-HEAD",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "method-TRACE",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "static-precedence",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "raw-query",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "malformed-percent-path",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "empty-query",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "binary",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "empty-body",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "repeated-headers",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "bearer",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "duplicate-authorization",
+        "status": 400,
+        "failures": []
+      },
+      {
+        "name": "session-cookie",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "csrf-missing",
+        "status": 403,
+        "failures": []
+      },
+      {
+        "name": "csrf-valid",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "cookies",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "head",
+        "status": 200,
+        "failures": []
+      },
+      {
+        "name": "no-content",
+        "status": 204,
+        "failures": []
+      },
+      {
+        "name": "not-modified",
+        "status": 304,
+        "failures": []
+      },
+      {
+        "name": "not-found",
+        "status": 404,
+        "failures": []
+      },
+      {
+        "name": "method-not-allowed",
+        "status": 405,
+        "failures": []
+      },
+      {
+        "name": "domain",
+        "status": 502,
+        "failures": []
+      },
+      {
+        "name": "runtime",
+        "status": 503,
+        "failures": []
+      },
+      {
+        "name": "invalid-response",
+        "status": 502,
+        "failures": []
+      },
+      {
+        "name": "folded-authorization",
+        "status": 400,
+        "failures": []
+      }
+    ],
+    "boot": "4b41c180-cc2f-485d-b23d-ed20acfbf1f5",
+    "boundary": "Workers Request/Response through shared Web Ingress and Kernel"
+  },
+  "cancellation": {
+    "passed": true,
+    "cancelled": 503,
+    "cancellation_observed": "true",
+    "healthy": 200,
+    "boot": "4b41c180-cc2f-485d-b23d-ed20acfbf1f5"
+  },
+  "recovery": {
+    "passed": true,
+    "before": 1,
+    "after": 2,
+    "peer_status": 503,
+    "healthy_status": 200
+  },
+  "deadline": 504,
+  "request_body_limit": 413,
+  "healthy_after_limits": false,
+  "health_failure": "Error: Smoke transport deadline"
+}

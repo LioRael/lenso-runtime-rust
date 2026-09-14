@@ -1,0 +1,14 @@
+{
+  "passed": false,
+  "base": "http://127.0.0.1:63737",
+  "receipt": {
+    "id": "4f73b4c2-864b-45b1-baff-7953ed46ed86",
+    "boot": "4376197b-fbd7-492e-9847-7c10905a9492",
+    "status": 504,
+    "cancelled": "false",
+    "shutdown": "clean",
+    "request_aborted": false,
+    "signal": "none",
+    "at": 1789400795614
+  }
+}

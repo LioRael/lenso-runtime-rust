@@ -1,0 +1,12 @@
+{
+  "name": "lenso-workers-g2-proof",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.107.0",
+    "ws": "8.21.0"
+  }
+}

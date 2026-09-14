@@ -1,0 +1,9 @@
+{
+  "passed": false,
+  "boundary": "Wrangler local development proxy after chunked oversized upload",
+  "observed": "Oversized POST returned 413; following GET exceeded independent 10000 ms transport deadline",
+  "repeat_observations": 4,
+  "fresh_process_suite_passed": true,
+  "remote_suite_passed": true,
+  "occurs_after_hot_reload_and_fresh_start": true
+}
