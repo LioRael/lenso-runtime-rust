@@ -1,0 +1,13 @@
+[package]
+name = "lenso-workers-g1-caller"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[package.metadata.lenso]
+plugin-id = "lenso.workers-g1.caller"
+root-slot = "caller"
+[dependencies]
+lenso.workspace = true
+lenso-kernel.workspace = true
+lenso-capability-http-endpoint.workspace = true
+serde.workspace = true

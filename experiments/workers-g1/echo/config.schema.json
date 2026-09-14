@@ -1,0 +1,1 @@
+{"type":"object","properties":{"fail":{"type":"boolean"}},"required":["fail"],"additionalProperties":false}

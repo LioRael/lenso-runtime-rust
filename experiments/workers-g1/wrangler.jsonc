@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lenso-workers-g1-proof",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-07-08",
+  "workers_dev": true,
+  "preview_urls": false,
+  "limits": { "cpu_ms": 1000 },
+  "observability": { "enabled": true }
+}
