@@ -1,0 +1,19 @@
+docs/evidence/workers-g1/README.md
+  s_3724267b9ee00e::t_698e73d8f2b0c7 34,36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fdc9b2cd33233cce4cb1dd730558601060d6c5ec",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
