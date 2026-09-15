@@ -37,8 +37,8 @@ function incoming({ pull, cancel } = {}) {
   };
 }
 
-export function transportAdmissionTests(createHandler, streaming) {
-  const kind = streaming ? "streaming" : "buffered";
+export function transportAdmissionTests(createHandler, streaming, requestBodyEncoding = "numeric-array") {
+  const kind = `${streaming ? "streaming" : "buffered"} ${requestBodyEncoding}`;
   function fixture({ runnerOptions, handlerOptions, handle } = {}) {
     const inputs = [];
     const runner = createEventRunner({
@@ -52,6 +52,7 @@ export function transportAdmissionTests(createHandler, streaming) {
       ...runnerOptions,
     });
     const handler = createHandler({
+      requestBodyEncoding,
       run: runner.run,
       open: runner.open,
       handleHttp: invoke,
@@ -89,7 +90,13 @@ export function transportAdmissionTests(createHandler, streaming) {
     const response = await f.handler(body.request());
     assert.equal(response.status, 200);
     assert.equal(await response.text(), "A");
-    assert.deepEqual(f.inputs.at(-1).body, [65]);
+    if (requestBodyEncoding === "numeric-array")
+      assert.deepEqual(f.inputs.at(-1).body, [65]);
+    else {
+      assert.equal(f.inputs.at(-1).body_encoding, "base64-v1");
+      assert.equal(f.inputs.at(-1).body_base64, "QQ==");
+      assert.equal(Object.hasOwn(f.inputs.at(-1), "body"), false);
+    }
     // A completed reservation cannot remove a later active event's slot.
     const terminal = deferred();
     const active = f.runner.run(() => terminal.promise);
@@ -98,13 +105,18 @@ export function transportAdmissionTests(createHandler, streaming) {
     await active;
   }
 
-  test(`${kind}: overload rejects before acquiring a body reader or invoking Wasm`, async () => {
+  test(`${kind}: overload rejects before acquiring a body reader, encoding, or invoking Wasm`, async (t) => {
     const f = fixture();
     const terminal = deferred();
     const active = f.runner.run(() => terminal.promise);
+    const encode = t.mock.method(globalThis, "btoa");
+    const serialize = t.mock.method(JSON, "stringify");
     try {
       const body = incoming();
       const response = await f.handler(body.request());
+      assert.equal(encode.mock.callCount(), 0);
+      assert.equal(serialize.mock.calls.some(({ arguments: [value] }) =>
+        value?.method === "POST" && value?.uri === "/admission"), false);
       assert.equal(response.status, 503);
       assert.deepEqual(await response.json(), { error: "host_unavailable" });
       assert.deepEqual(body.counts(), { reads: 0, readers: 0, cancels: 1 });
@@ -274,7 +286,7 @@ export function transportAdmissionTests(createHandler, streaming) {
     await response.arrayBuffer();
   });
 
-  if (streaming) test("streaming: response cancellation releases its reservation only after session close", async () => {
+  if (streaming) test(`${kind}: response cancellation releases its reservation only after session close`, async () => {
     const f = fixture();
     const first = await f.handler(incoming().request());
     const overloaded = incoming();

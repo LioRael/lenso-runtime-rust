@@ -5,6 +5,7 @@ import { createEventRunner } from "../runner.mjs";
 import { transportAdmissionTests } from "./transport-admission.mjs";
 
 transportAdmissionTests(createStreamingHttpHandler, true);
+transportAdmissionTests(createStreamingHttpHandler, true, "base64-v1");
 function fixture(read, options = {}) {
   let finish,
     reads = 0;

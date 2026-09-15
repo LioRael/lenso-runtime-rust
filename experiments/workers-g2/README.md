@@ -69,3 +69,35 @@ Do not run another fault suite concurrently against the same proof Worker.
 
 Measured results and limitations are in
 [the G2 evidence report](../../docs/evidence/workers-g2/README.md).
+
+## W06 request body encoding qualification
+
+The proof imports the HTTP transports and W01 Runner from this worktree. Its
+default encoding remains `numeric-array`. To exercise `base64-v1`, start each
+existing buffered/duplex Worker with the build-time option
+`--define 'G2_REQUEST_BODY_ENCODING:"base64-v1"'`. This is not a request header
+or public route option. Run the existing smoke, limits and duplex suites
+sequentially for each encoding; preserve the documented disconnect limitations.
+
+After restoring the pinned G2 dependency cohort and completing a fresh build,
+also run from the repository root:
+
+```sh
+CARGO=/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo \
+  node packages/workers-runtime/build.mjs \
+  --manifest experiments/workers-g2/Cargo.toml \
+  --package lenso-workers-g2-host --out-dir experiments/workers-g2/pkg
+node --test experiments/workers-g2/request-body-wasm.test.mjs
+```
+
+This additional suite loads the actual generated G2 Rust/Wasm module in Node,
+enters the existing Plan-bound byte echo and duplex fixtures through the current
+Runner, tests both encodings, holds a real session during overload, and injects
+malformed envelopes at both Rust entry points. It requires artifacts and fails
+if they are missing. It complements the existing workerd transport suites;
+Node cannot prove Cloudflare disconnect behavior. The duplex fixture has only
+GET `/stream`, so nonempty POST bodies exercise its existing 405 contract; exact
+byte echo uses the buffered fixture and the shared decoder tests.
+
+The [W06 validation record](../../docs/evidence/workers-g2/request-body-encoding.md)
+lists unresolved build/check prerequisites. No fresh G2 pass is claimed yet.

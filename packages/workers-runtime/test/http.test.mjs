@@ -4,6 +4,7 @@ import { createHttpHandler } from "../http.mjs";
 import { transportAdmissionTests } from "./transport-admission.mjs";
 
 transportAdmissionTests(createHttpHandler, false);
+transportAdmissionTests(createHttpHandler, false, "base64-v1");
 
 test("binary response encoding preserves bytes and enforces decoded size and canonical shape", async () => {
   async function handle(payload, limit = 4) {

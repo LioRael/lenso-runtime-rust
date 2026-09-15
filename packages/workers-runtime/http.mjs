@@ -1,5 +1,6 @@
 // Event-owned transport adaptation; routing and authorization stay in Web Ingress.
 import { createEventScope } from "./scope.mjs";
+import { requestBodyFields, validateRequestBodyEncoding } from "./request-body.mjs";
 // Compatibility name; all cancellation and native I/O now share one scope.
 export function createCancellationScope(extra = {}) {
   // Legacy Hosts used mutable finalizer composition. New Hosts use createEventScope.
@@ -134,7 +135,7 @@ async function readBody(request, limit, timeoutMs, signal, scope) {
   }
 }
 
-function prepareRequest(request, uri, headers, limit, timeoutMs, scope) {
+function prepareRequest(request, uri, headers, limit, timeoutMs, scope, encoding) {
   return async (signal = request.signal) => {
     const body = await readBody(request, limit, timeoutMs, signal, scope);
     if (signal.aborted)
@@ -143,7 +144,7 @@ function prepareRequest(request, uri, headers, limit, timeoutMs, scope) {
       method: request.method,
       uri,
       headers,
-      body: [...body],
+      ...requestBodyFields(body, encoding, limit),
     });
   };
 }
@@ -158,6 +159,7 @@ function transportOperation(prepare, handle) {
 export function createHttpHandler({
   run,
   handleHttp,
+  requestBodyEncoding = "numeric-array",
   maxRequestBodyBytes = 1048576,
   maxResponseBodyBytes = 1048576,
   maxRequestHeadBytes = 16384,
@@ -165,6 +167,7 @@ export function createHttpHandler({
   createScope = () => createCancellationScope(),
   onReceipt = () => {},
 }) {
+  validateRequestBodyEncoding(requestBodyEncoding);
   return async function handleRequest(request) {
     let scope;
     try {
@@ -187,6 +190,7 @@ export function createHttpHandler({
         maxRequestBodyBytes,
         bodyReadTimeoutMs,
         scope,
+        requestBodyEncoding,
       );
       const result = await run(
         transportOperation(prepare, (input) => handleHttp(input, scope)),
@@ -242,6 +246,7 @@ export function createHttpHandler({
 export function createStreamingHttpHandler({
   open,
   openHttp,
+  requestBodyEncoding = "numeric-array",
   maxRequestBodyBytes = 1048576,
   maxRequestHeadBytes = 16384,
   maxResponseChunkBytes = 65536,
@@ -250,6 +255,7 @@ export function createStreamingHttpHandler({
   createScope = () => createEventScope(),
   upgradeWebSocket,
 }) {
+  validateRequestBodyEncoding(requestBodyEncoding);
   for (const limit of [
     maxRequestBodyBytes,
     maxRequestHeadBytes,
@@ -287,6 +293,7 @@ export function createStreamingHttpHandler({
         maxRequestBodyBytes,
         bodyReadTimeoutMs,
         scope,
+        requestBodyEncoding,
       );
       session = await open(
         transportOperation(prepare, (input) => openHttp(input, scope)),

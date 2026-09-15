@@ -94,8 +94,8 @@ replacement HTTP success. Route every subsequent Wasm entry through
 A cancellation must settle within `cancellationLimitMs` (default 1 s), after
 which the generation is abandoned.
 
-Both HTTP handlers reserve Runner capacity before reading the incoming body or
-serializing its byte array. Overload returns 503 and cancels the unread body in
+Both HTTP handlers reserve Runner capacity before reading, copying, encoding or
+serializing the incoming body. Overload returns 503 and cancels the unread body in
 the request's owner context. Body preparation uses `bodyReadTimeoutMs` (default
 30 s); the event watchdog starts when Wasm execution begins. A body-read failure
 releases admission after owner cleanup without abandoning healthy peers.
@@ -112,6 +112,38 @@ preparation before scope settlement. The HTTP handlers supply this option
 automatically, including through `createWorkersHttpHost`. Custom `run`/`open`
 wrappers should forward all options to the Runner to retain these guarantees;
 operation-only implementations remain compatible but own their admission policy.
+
+### Request body transport encoding
+
+`createWorkersHttpHost`, `createHttpHandler` and `createStreamingHttpHandler`
+accept `requestBodyEncoding`. Its default, `"numeric-array"`, preserves the exact
+legacy JSON envelope and field order:
+
+```json
+{"method":"POST","uri":"/bytes","headers":[],"body":[0,255,65]}
+```
+
+Set `requestBodyEncoding: "base64-v1"` only with a Rust Host that supports this
+version. The request envelope then uses canonical padded standard base64:
+
+```json
+{"method":"POST","uri":"/bytes","headers":[],"body_encoding":"base64-v1","body_base64":"AP9B"}
+```
+
+There is no negotiation or automatic fallback. Unsupported option values fail
+at handler construction. Encoding runs inside the admitted preparation callback
+for both buffered and streaming handlers. The decoded body limit applies before
+encoding; the encoded length is bounded by `4 * ceil(bodyLimit / 3)`. At G2's
+64 KiB limit this is 87,384 base64 characters. Chunking bounds transient string
+conversion; this is still a buffered request transport, not request streaming.
+
+The G2 Rust Host accepts exactly one representation. It rejects unknown or
+duplicate fields, null body fields, unsupported versions, mixed representations,
+nonstandard alphabets, whitespace, missing/excess padding and nonzero trailing
+bits. The request method, URI, headers and decoded bytes retain their existing
+meaning. Header limits, response encodings, shutdown receipts and HTTP failure
+mappings are unchanged. See the [W06 validation record](../../docs/evidence/workers-g2/request-body-encoding.md)
+for the current qualification status.
 
 Headers keep the original event startup deadline (default 1 s). After opening,
 the session has `sessionLimitMs` (default 5 min). Generation retirement waits for
