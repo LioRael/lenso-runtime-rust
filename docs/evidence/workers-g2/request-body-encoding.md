@@ -90,20 +90,21 @@ network resolution and lock mutation (equivalent to `--frozen`).
 export LENSO_CARGO_CACHE_ROOT="$PWD/experiments/workers-g2/.cargo-targets"
 export RUSTC_WRAPPER=/usr/bin/env
 export CARGO_NET_OFFLINE=true
-export CARGO=/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo
+export LENSO_CARGO="${LENSO_CARGO:-cargo}"
+export CARGO="$LENSO_CARGO"
 
 npm test --prefix packages/workers-runtime
-/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo +1.94.0 \
+"$LENSO_CARGO" +1.94.0 \
   check --locked --manifest-path experiments/workers-g2/Cargo.toml \
   --target wasm32-unknown-unknown
-/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo +1.94.0 \
+"$LENSO_CARGO" +1.94.0 \
   test --frozen --manifest-path experiments/workers-g2/request-body-tests/Cargo.toml
 bash experiments/workers-g2/build.sh
 node --test experiments/workers-g2/request-body-wasm.test.mjs
 node experiments/workers-g2/qualify-request-body-workerd.mjs
-/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo +1.94.0 \
+"$LENSO_CARGO" +1.94.0 \
   fmt --manifest-path experiments/workers-g2/Cargo.toml --all -- --check
-/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo +1.94.0 \
+"$LENSO_CARGO" +1.94.0 \
   fmt --manifest-path experiments/workers-g2/request-body-tests/Cargo.toml -- --check
 git diff --check origin/main
 ```
@@ -126,7 +127,7 @@ contained no `pkg`, `target`, `node_modules`, `.cargo-targets`, `.pnpm-store` or
 or a sibling checkout. With the same environment and original worktree cwd:
 
 ```sh
-/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo +1.94.0 \
+"$LENSO_CARGO" +1.94.0 \
   check --locked \
   --manifest-path /tmp/w06-clean-runtime/experiments/workers-g2/Cargo.toml \
   --target wasm32-unknown-unknown
