@@ -1,17 +1,10 @@
-#[allow(
-    dead_code,
-    reason = "The shared G1 Driver includes probe helpers unused by this HTTP host."
-)]
-#[path = "../../../workers-g1/host/src/driver.rs"]
-mod driver;
-
 use bytes::Bytes;
-use driver::WorkersDriver;
 use http::{HeaderName, HeaderValue, Request};
 use lenso_kernel::{CancellationToken, Kernel, ShutdownOutcome};
 use lenso_native_adapter::NativePluginRegistry;
 use lenso_web_http_parity_fixture::{HttpParityEndpointFactory, plan};
 use lenso_web_ingress_plugin::{SessionCookieConfig, WebIngressConfig, WebIngressEventFactory};
+use lenso_workers_driver::WorkersDriver;
 use serde::Deserialize;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
@@ -135,4 +128,11 @@ pub async fn handle_http(input: String, scope: JsValue) -> Result<String, JsValu
 #[wasm_bindgen]
 pub fn trap_probe() {
     core::arch::wasm32::unreachable();
+}
+
+mod sessions;
+
+#[wasm_bindgen]
+pub fn parity_corpus() -> String {
+    lenso_web_http_parity_fixture::CORPUS.to_owned()
 }

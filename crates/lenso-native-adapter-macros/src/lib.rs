@@ -736,6 +736,9 @@ fn expand_plugin_function(
             const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
         }
 
+        /// Retains this package's generated Plugin descriptor and default factory.
+        pub fn link_plugin() { #link_function(); }
+
         /// Explicit Host linkage anchor generated for this Plugin factory.
         #[doc(hidden)]
         pub fn #link_function() {
@@ -1015,9 +1018,22 @@ fn expand_provides(
                             lifecycle,
                         ));
                     }
-                    let plugin = ::std::rc::Rc::new(
-                        super::#plugin_ident::__lenso_construct(context)?,
-                    );
+                    instantiate_with(context, &|_| Ok(()))
+                }
+            }
+
+            pub(super) fn instantiate_with(
+                context: #sdk::__private::NativePluginFactoryContext<'_>,
+                initialize: &dyn Fn(&mut super::#plugin_ident) -> Result<(), #sdk::__private::RuntimeFailure>,
+            ) -> Result<#sdk::__private::NativePluginInstance, #sdk::__private::RuntimeFailure> {
+                if super::#plugin_ident::__LENSO_AUTHORING_VERSION != 1 {
+                    return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                        detail: "synchronous Host initialization requires struct authoring v1".into(),
+                    });
+                }
+                    let mut value = super::#plugin_ident::__lenso_construct(context)?;
+                    initialize(&mut value)?;
+                    let plugin = ::std::rc::Rc::new(value);
                     let lifecycle = super::#lifecycle { plugin: plugin.clone() };
                     let plugin = #sdk::__private::PluginObject::from_value(plugin);
                     let mut request_endpoints = Vec::new();
@@ -1030,7 +1046,6 @@ fn expand_provides(
                         event_endpoints,
                         lifecycle,
                     ))
-                }
             }
 
             pub(super) fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
@@ -1044,6 +1059,22 @@ fn expand_provides(
                 )
             }
         }
+
+        impl #sdk::__private::NativePluginDefinition for #plugin_ident {
+            const PACKAGE_ID: &'static str = PACKAGE_ID;
+            const PACKAGE_VERSION: &'static str = PACKAGE_VERSION;
+            const RUNTIME_PROFILE: &'static str = Self::__LENSO_RUNTIME_PROFILE;
+            fn link() { #link_function(); }
+            fn instantiate_with(
+                context: #sdk::__private::NativePluginFactoryContext<'_>,
+                initialize: &dyn Fn(&mut Self) -> Result<(), #sdk::__private::RuntimeFailure>,
+            ) -> Result<#sdk::__private::NativePluginInstance, #sdk::__private::RuntimeFailure> {
+                #generated_plugin::instantiate_with(context, initialize)
+            }
+        }
+
+        /// Retains this package's generated Plugin descriptor and default factory.
+        pub fn link_plugin() { #link_function(); }
 
         /// Explicit Host linkage anchor generated for this Plugin factory.
         #[doc(hidden)]
@@ -1337,13 +1368,24 @@ fn expand_plugin_struct(
                                 lifecycle,
                             ));
                         }
-                        let plugin = ::std::rc::Rc::new(super::#name::__lenso_construct(context)?);
-                        let lifecycle = super::#lifecycle_name { plugin };
-                        Ok(#sdk::__private::NativePluginInstance::with_lifecycle(
-                            Vec::new(),
-                            lifecycle,
-                        ))
+                        instantiate_with(context, &|_| Ok(()))
                     }
+                }
+
+                pub(super) fn instantiate_with(
+                    context: #sdk::__private::NativePluginFactoryContext<'_>,
+                    initialize: &dyn Fn(&mut super::#name) -> Result<(), #sdk::__private::RuntimeFailure>,
+                ) -> Result<#sdk::__private::NativePluginInstance, #sdk::__private::RuntimeFailure> {
+                    if super::#name::__LENSO_AUTHORING_VERSION != 1 {
+                        return Err(#sdk::__private::RuntimeFailure::InvalidResolvedPlan {
+                            detail: "synchronous Host initialization requires struct authoring v1".into(),
+                        });
+                    }
+                    let mut value = super::#name::__lenso_construct(context)?;
+                    initialize(&mut value)?;
+                    let plugin = ::std::rc::Rc::new(value);
+                    let lifecycle = super::#lifecycle_name { plugin };
+                    Ok(#sdk::__private::NativePluginInstance::with_lifecycle(Vec::new(), lifecycle))
                 }
 
                 pub(super) fn factory() -> ::std::rc::Rc<dyn #sdk::__private::NativePluginFactory> {
@@ -1357,6 +1399,22 @@ fn expand_plugin_struct(
                     )
                 }
             }
+
+            impl #sdk::__private::NativePluginDefinition for #name {
+                const PACKAGE_ID: &'static str = PACKAGE_ID;
+                const PACKAGE_VERSION: &'static str = PACKAGE_VERSION;
+                const RUNTIME_PROFILE: &'static str = Self::__LENSO_RUNTIME_PROFILE;
+            fn link() { #link_function(); }
+                fn instantiate_with(
+                    context: #sdk::__private::NativePluginFactoryContext<'_>,
+                    initialize: &dyn Fn(&mut Self) -> Result<(), #sdk::__private::RuntimeFailure>,
+                ) -> Result<#sdk::__private::NativePluginInstance, #sdk::__private::RuntimeFailure> {
+                    #generated_plugin::instantiate_with(context, initialize)
+                }
+            }
+
+            /// Retains this package's generated Plugin descriptor and default factory.
+            pub fn link_plugin() { #link_function(); }
 
             /// Explicit Host linkage anchor generated for this Plugin factory.
             #[doc(hidden)]

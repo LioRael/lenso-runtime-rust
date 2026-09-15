@@ -1,5 +1,4 @@
-import { handleRequest, recovery, responseLimitProof } from './runner.mjs';
-import corpus from '../../../../lenso-web/feat-workers-http-parity/tests/fixtures/http-parity-plugin/corpus.json';
+import { handleRequest, recovery, responseLimitProof, getCorpus } from './runner.mjs';
 
 let boot;
 const receipts = new Map();
@@ -50,7 +49,7 @@ export default {
     if (url.pathname === '/_g2/recovery') return Response.json(await recovery(url.origin));
     if (url.pathname === '/_g2/corpus') {
       const results = [];
-      for (const vector of corpus) {
+      for (const vector of await getCorpus()) {
         try { results.push(await examine(vector, await handleRequest(input(vector, url.origin)))); }
         catch (error) { results.push({ name: vector.name, failures: [String(error)] }); }
       }

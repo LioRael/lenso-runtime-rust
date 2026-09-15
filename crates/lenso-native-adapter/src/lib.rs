@@ -49,8 +49,9 @@ pub mod __private {
     pub use crate::authoring::{ErasedConstructionFuture, LinkedPluginConstruction};
     pub use crate::{
         __inventory, CompleteObjectLifecycle, ConstructionContext, Lifecycle, LifecycleContext,
-        LinkedNativePluginFactory, NativePluginFactory, NativePluginFactoryContext,
-        NativePluginInstance, PluginObject, RuntimeFailure, link_native_plugin,
+        LinkedNativePluginFactory, NativePluginDefinition, NativePluginFactory,
+        NativePluginFactoryContext, NativePluginInstance, PluginObject, RuntimeFailure,
+        link_native_plugin,
     };
     pub use futures;
     pub use futures::future::LocalBoxFuture;
@@ -272,6 +273,76 @@ pub trait NativePluginFactory: std::fmt::Debug + 'static {
     ) -> Result<NativePluginInstance, RuntimeFailure>;
 }
 
+/// Generated construction and endpoint projection for a struct-authored Plugin.
+///
+/// Host bindings may initialize private implementation state after ordinary
+/// configuration validation. They do not replace generated lifecycle or endpoints.
+/// Complete-object (v2) construction uses its asynchronous construction contract
+/// and rejects this synchronous initialization API.
+pub trait NativePluginDefinition: Sized + 'static {
+    const PACKAGE_ID: &'static str;
+    const PACKAGE_VERSION: &'static str;
+    const RUNTIME_PROFILE: &'static str;
+
+    /// Explicitly links the generated descriptor and default factory on targets without inventory constructors.
+    fn link();
+
+    fn instantiate_with(
+        context: NativePluginFactoryContext<'_>,
+        initialize: &dyn Fn(&mut Self) -> Result<(), RuntimeFailure>,
+    ) -> Result<NativePluginInstance, RuntimeFailure>;
+}
+
+/// Explicitly retains one generated Plugin without referring to generated symbols.
+pub fn link_plugin<P: NativePluginDefinition>() {
+    P::link();
+}
+
+/// A generated Plugin factory with event-owned private Host bindings.
+pub struct ConfiguredPluginFactory<P, F> {
+    initialize: F,
+    plugin: std::marker::PhantomData<fn() -> P>,
+}
+
+impl<P, F> std::fmt::Debug for ConfiguredPluginFactory<P, F> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredPluginFactory")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<P: NativePluginDefinition, F: Fn(&mut P) -> Result<(), RuntimeFailure> + 'static>
+    ConfiguredPluginFactory<P, F>
+{
+    pub fn new(initialize: F) -> Self {
+        Self {
+            initialize,
+            plugin: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<P: NativePluginDefinition, F: Fn(&mut P) -> Result<(), RuntimeFailure> + 'static>
+    NativePluginFactory for ConfiguredPluginFactory<P, F>
+{
+    fn package_id(&self) -> &'static str {
+        P::PACKAGE_ID
+    }
+    fn package_version(&self) -> &'static str {
+        P::PACKAGE_VERSION
+    }
+    fn runtime_profile(&self) -> &'static str {
+        P::RUNTIME_PROFILE
+    }
+    fn instantiate(
+        &self,
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        P::instantiate_with(context, &self.initialize)
+    }
+}
+
 /// Immutable Plan input supplied when a native factory creates one generation.
 #[derive(Clone, Copy, Debug)]
 pub struct NativePluginFactoryContext<'a> {
@@ -320,6 +391,8 @@ impl<'a> NativePluginFactoryContext<'a> {
 pub struct NativePluginRegistry {
     factories: Vec<Rc<dyn NativePluginFactory>>,
     resources: lenso_runtime_codec::InstanceResourceCatalog,
+    overrides: BTreeMap<String, Rc<dyn NativePluginFactory>>,
+    linked: bool,
 }
 
 type NativeInstances = BTreeMap<String, NativePluginInstance>;
@@ -352,15 +425,14 @@ impl NativePluginRegistry {
     /// Plan remains the sole authority that selects and binds Plugin Instances.
     #[must_use]
     pub fn with_linked_factories(mut self) -> Self {
-        self.factories.extend(
-            linked_factories()
-                .into_iter()
-                .map(|linked| (linked.constructor)()),
-        );
-        self.factories
-            .sort_by_key(|factory| factory.factory_identity());
-        self.factories
-            .dedup_by(|left, right| left.factory_identity() == right.factory_identity());
+        if !self.linked {
+            self.factories.extend(
+                linked_factories()
+                    .into_iter()
+                    .map(|linked| (linked.constructor)()),
+            );
+            self.linked = true;
+        }
         self
     }
 
@@ -376,7 +448,11 @@ impl NativePluginRegistry {
 
     /// Returns the exact native factories available to this registry.
     pub fn factories(&self) -> impl Iterator<Item = &dyn NativePluginFactory> {
-        self.factories.iter().map(std::convert::AsRef::as_ref)
+        self.factories
+            .iter()
+            .filter(|factory| !self.overrides.contains_key(&factory.factory_identity()))
+            .chain(self.overrides.values())
+            .map(std::convert::AsRef::as_ref)
     }
 
     /// Builds the immutable Host Catalog declared by this binary and Host policy.
@@ -403,10 +479,51 @@ impl NativePluginRegistry {
         self
     }
 
+    /// Explicitly selects an implementation for one exact linked factory identity.
+    /// Registration order is irrelevant. Missing targets, metadata mismatches,
+    /// and duplicate overrides fail before any Plugin is instantiated.
+    pub fn with_factory_override(
+        mut self,
+        factory: impl NativePluginFactory,
+    ) -> Result<Self, RuntimeFailure> {
+        let identity = factory.factory_identity();
+        if self.overrides.contains_key(&identity) {
+            return invalid(format!("duplicate factory override `{identity}`"));
+        }
+        self.overrides.insert(identity, Rc::new(factory));
+        Ok(self)
+    }
+
+    fn validate_overrides(&self) -> Result<(), RuntimeFailure> {
+        for (identity, replacement) in &self.overrides {
+            let originals: Vec<_> = self
+                .factories
+                .iter()
+                .filter(|factory| factory.factory_identity() == *identity)
+                .collect();
+            if originals.len() != 1 {
+                return invalid(format!(
+                    "factory override `{identity}` requires exactly one original"
+                ));
+            }
+            let original = &originals[0];
+            if original.package_id() != replacement.package_id()
+                || original.package_version() != replacement.package_version()
+                || original.runtime_profile() != replacement.runtime_profile()
+            {
+                return invalid(format!(
+                    "factory override `{identity}` changes package metadata"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn prepare_instances(
         &self,
         plan: &ResolvedAppPlan,
     ) -> Result<(NativeInstances, PreparedGenerations), RuntimeFailure> {
+        self.validate_overrides()?;
         let mut instances = BTreeMap::new();
         let mut generations = BTreeMap::new();
         for expected in plan
@@ -415,9 +532,8 @@ impl NativePluginRegistry {
             .filter(|instance| instance.execution_class() == &ExecutionClassId::native_rust())
         {
             let matching_factories: Vec<_> = self
-                .factories
-                .iter()
-                .filter(|factory| factory_matches(factory.as_ref(), expected))
+                .factories()
+                .filter(|factory| factory_matches(*factory, expected))
                 .collect();
             let factory = match matching_factories.as_slice() {
                 [] => {
@@ -486,6 +602,7 @@ impl NativeExecutionAdapter for NativePluginRegistry {
         plan: &ResolvedAppPlan,
         instance_key: &str,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        self.validate_overrides()?;
         let expected = plan
             .plugin_instances()
             .iter()
@@ -494,9 +611,8 @@ impl NativeExecutionAdapter for NativePluginRegistry {
                 detail: format!("unknown Plugin Instance `{instance_key}`"),
             })?;
         let matching_factories: Vec<_> = self
-            .factories
-            .iter()
-            .filter(|factory| factory_matches(factory.as_ref(), expected))
+            .factories()
+            .filter(|factory| factory_matches(*factory, expected))
             .collect();
         let factory = match matching_factories.as_slice() {
             [] => {

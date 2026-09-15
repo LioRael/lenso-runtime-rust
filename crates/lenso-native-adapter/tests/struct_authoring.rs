@@ -166,3 +166,54 @@ fn struct_plugin_derives_descriptor_factory_and_host_catalog() {
         "lenso.native-adapter"
     );
 }
+
+#[test]
+fn configured_factory_preserves_validation_and_recreates_private_state() {
+    use lenso_app_plan::{PluginInstancePlan, ResolvedAppPlan};
+    use lenso_kernel::NativeExecutionAdapter;
+    use lenso_native_adapter::ConfiguredPluginFactory;
+    use std::{cell::Cell, rc::Rc};
+    let initialized = Rc::new(Cell::new(0));
+    let observed = initialized.clone();
+    let factory = ConfiguredPluginFactory::<ExamplePlugin, _>::new(move |plugin| {
+        assert_eq!(plugin.config.name, "configured");
+        assert_eq!(plugin.config.retries, 3);
+        observed.set(observed.get() + 1);
+        Ok(())
+    });
+    // Override before linked discovery must select exactly the same implementation.
+    let registry = NativePluginRegistry::new()
+        .with_factory_override(factory)
+        .unwrap()
+        .with_linked_factories()
+        .with_linked_factories();
+    let plan = |name: &str| {
+        ResolvedAppPlan::new(
+            vec![
+                PluginInstancePlan::new("example", PACKAGE_ID)
+                    .with_configuration(serde_json::json!({"name":name,"retries":3}).to_string()),
+            ],
+            vec![],
+        )
+    };
+    assert!(registry.prepare(&plan("")).is_err());
+    assert_eq!(
+        initialized.get(),
+        0,
+        "bindings cannot bypass configuration validation"
+    );
+    registry.prepare(&plan("configured")).unwrap();
+    registry.recreate(&plan("configured"), "example").unwrap();
+    assert_eq!(
+        initialized.get(),
+        2,
+        "each generation receives fresh initialization"
+    );
+    assert_eq!(
+        registry
+            .factories()
+            .filter(|factory| factory.package_id() == PACKAGE_ID)
+            .count(),
+        1
+    );
+}

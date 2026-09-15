@@ -9,8 +9,8 @@ mod typed_extension;
 pub mod host;
 
 pub use lenso_native_adapter::{
-    Lifecycle, LifecycleContext, ManagedTasks, ManagedTasksError, PluginConfig, plugin,
-    plugin_impl, provides,
+    ConfiguredPluginFactory, Lifecycle, LifecycleContext, ManagedTasks, ManagedTasksError,
+    NativePluginDefinition, PluginConfig, link_plugin, plugin, plugin_impl, provides,
 };
 use lenso_plugin_authoring::PluginError as AuthoringPluginError;
 pub use lenso_plugin_authoring::{

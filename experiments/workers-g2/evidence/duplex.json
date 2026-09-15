@@ -1,0 +1,44 @@
+{
+  "version": "930871c0-2a02-4edf-bdcd-1faa1e5a5857",
+  "url": "https://lenso-workers-duplex-proof.lenso.workers.dev",
+  "at": "2026-09-15T03:51:14.261Z",
+  "count": 9,
+  "results": [
+    {
+      "name": "stream preserves binary bytes and reaches EOF",
+      "passed": true
+    },
+    {
+      "name": "held stream delivers bytes before completion and allows consumer cancellation",
+      "passed": true
+    },
+    {
+      "name": "WebSocket text binary empty frames subprotocol and close",
+      "passed": true
+    },
+    {
+      "name": "authorization before upgrade",
+      "passed": true
+    },
+    {
+      "name": "provider denial before upgrade",
+      "passed": true
+    },
+    {
+      "name": "origin rejected before upgrade",
+      "passed": true
+    },
+    {
+      "name": "healthy stream after cancelled and rejected sessions",
+      "passed": true
+    },
+    {
+      "name": "oversized inbound frame closes without poisoning another session",
+      "passed": true
+    },
+    {
+      "name": "abrupt peer disconnect does not poison subsequent upgrade",
+      "passed": true
+    }
+  ]
+}

@@ -2,7 +2,7 @@ import { initSync, __wbg_reset_state, probe, trap_probe, driver_probe, conforman
 import { clearTimers } from './clock.mjs';
 import module from './pkg/lenso_workers_g1_host_bg.wasm';
 
-import { createEventRunner } from '../workers-runtime/runner.mjs';
+import { createEventRunner } from '@lenso/workers-runtime/runner';
 const runner = createEventRunner({
   instantiate: () => initSync({ module }),
   resetState: __wbg_reset_state,

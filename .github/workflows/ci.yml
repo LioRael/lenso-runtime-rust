@@ -80,3 +80,17 @@ jobs:
         env:
           CARGO_TARGET_WASM32_WASIP2_RUNNER: wasmtime
         run: cargo test --locked -p lenso-wasip2-driver --target wasm32-wasip2 --test smoke
+
+  workers-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --test packages/workers-runtime/test/*.test.mjs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo check --locked -p lenso-workers-driver --target wasm32-unknown-unknown
+      - run: cargo package --locked -p lenso-workers-driver

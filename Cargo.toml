@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/lenso",
     "crates/lenso-browser-driver",
+    "crates/lenso-workers-driver",
     "crates/lenso-dylib-adapter",
     "crates/lenso-guest-sdk",
     "crates/lenso-host-distribution",

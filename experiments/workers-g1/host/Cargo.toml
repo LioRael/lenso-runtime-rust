@@ -6,6 +6,7 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 [dependencies]
+lenso-workers-driver = { version = "0.1.0", path = "../../../crates/lenso-workers-driver" }
 lenso-workers-g1-echo = { path = "../echo" }
 lenso-workers-g1-caller = { path = "../caller" }
 lenso-native-adapter.workspace = true

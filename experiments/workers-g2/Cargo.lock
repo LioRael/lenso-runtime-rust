@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "lenso"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "futures",
  "lenso-kernel",
@@ -335,6 +335,19 @@ dependencies = [
 [[package]]
 name = "lenso-capability-http-stream-endpoint"
 version = "0.1.1"
+dependencies = [
+ "futures",
+ "lenso-contract-codegen",
+ "lenso-contract-runtime",
+ "lenso-kernel",
+ "lenso-plugin-authoring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lenso-capability-websocket-endpoint"
+version = "0.1.0"
 dependencies = [
  "futures",
  "lenso-contract-codegen",
@@ -449,6 +462,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-web-duplex-fixture"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "lenso-app-plan",
+ "lenso-capability-http-stream-endpoint",
+ "lenso-capability-websocket-endpoint",
+ "lenso-kernel",
+ "lenso-native-adapter",
+]
+
+[[package]]
 name = "lenso-web-http-parity-fixture"
 version = "0.0.0"
 dependencies = [
@@ -464,6 +489,7 @@ dependencies = [
 name = "lenso-web-ingress-plugin"
 version = "0.4.2"
 dependencies = [
+ "base64",
  "bytes",
  "futures",
  "http",
@@ -471,12 +497,24 @@ dependencies = [
  "lenso-app-plan",
  "lenso-capability-http-endpoint",
  "lenso-capability-http-stream-endpoint",
+ "lenso-capability-websocket-endpoint",
  "lenso-kernel",
  "lenso-native-adapter",
  "matchit",
  "serde",
  "serde_json",
+ "sha1",
  "tokio",
+]
+
+[[package]]
+name = "lenso-workers-driver"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "lenso-kernel",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -486,10 +524,14 @@ dependencies = [
  "bytes",
  "futures",
  "http",
+ "js-sys",
+ "lenso-capability-websocket-endpoint",
  "lenso-kernel",
  "lenso-native-adapter",
+ "lenso-web-duplex-fixture",
  "lenso-web-http-parity-fixture",
  "lenso-web-ingress-plugin",
+ "lenso-workers-driver",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -753,6 +795,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -993,3 +1046,11 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[patch.unused]]
+name = "lenso-capability-http-client"
+version = "0.3.0"
+
+[[patch.unused]]
+name = "lenso-http-egress-plugin"
+version = "0.3.1"

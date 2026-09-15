@@ -8,5 +8,9 @@
   "devDependencies": {
     "wrangler": "4.107.0",
     "ws": "8.21.0"
+  },
+  "dependencies": {
+    "@lenso/workers-runtime": "0.1.0",
+    "@lenso/web-ingress-workers": "0.1.0"
   }
 }

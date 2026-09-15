@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "lenso"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "futures",
  "lenso-kernel",
@@ -451,6 +451,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-workers-driver"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "lenso-kernel",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "lenso-workers-g1-caller"
 version = "0.1.0"
 dependencies = [
@@ -480,6 +490,7 @@ dependencies = [
  "lenso-kernel",
  "lenso-native-adapter",
  "lenso-runtime-conformance",
+ "lenso-workers-driver",
  "lenso-workers-g1-caller",
  "lenso-workers-g1-echo",
  "serde_json",

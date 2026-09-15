@@ -1349,6 +1349,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-workers-driver"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "lenso-kernel",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"

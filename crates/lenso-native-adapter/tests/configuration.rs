@@ -774,3 +774,62 @@ fn plugin_impl_accepts_sync_create_and_async_stop() {
     );
     assert_eq!(sync_constructor::STOPPED.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn factory_override_is_order_independent_and_never_silently_deduplicates() {
+    use lenso_kernel::NativeExecutionAdapter;
+    let plan = ResolvedAppPlan::new(
+        vec![PluginInstancePlan::new("configured", "test.configured")],
+        vec![],
+    );
+    for override_first in [true, false] {
+        let original_calls = Rc::new(RefCell::new(Vec::new()));
+        let replacement_calls = Rc::new(RefCell::new(Vec::new()));
+        let original = RecordingFactory {
+            observed: original_calls.clone(),
+        };
+        let replacement = RecordingFactory {
+            observed: replacement_calls.clone(),
+        };
+        let registry = if override_first {
+            NativePluginRegistry::new()
+                .with_factory_override(replacement)
+                .unwrap()
+                .with_factory(original)
+        } else {
+            NativePluginRegistry::new()
+                .with_factory(original)
+                .with_factory_override(replacement)
+                .unwrap()
+        };
+        registry.prepare(&plan).unwrap();
+        assert!(original_calls.borrow().is_empty());
+        assert_eq!(replacement_calls.borrow().len(), 1);
+        assert!(
+            registry
+                .with_factory_override(RecordingFactory {
+                    observed: original_calls
+                })
+                .is_err()
+        );
+    }
+    let factory = || RecordingFactory {
+        observed: Rc::default(),
+    };
+    assert!(
+        NativePluginRegistry::new()
+            .with_factory_override(factory())
+            .unwrap()
+            .prepare(&plan)
+            .is_err()
+    );
+    // Calling linked discovery cannot hide conflicting explicit factories.
+    assert!(
+        NativePluginRegistry::new()
+            .with_factory(factory())
+            .with_factory(factory())
+            .with_linked_factories()
+            .prepare(&plan)
+            .is_err()
+    );
+}
