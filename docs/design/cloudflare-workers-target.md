@@ -27,6 +27,13 @@ slice before claiming the target supports an authenticated Marketplace.
 G0 execution evidence is now available in [the target audit](../evidence/workers-g0/README.md).
 Its pinned source baselines supersede the initial inspection below for the tested components.
 
+For mixed long sessions and short requests, the
+[W02 Host/profile decision](workers-session-host-profile.md) selects separate
+Worker scripts with independent generated Wasm/Runner/timer domains. Per-event
+execution ownership means a separate App and scope; G1 reuses one bounded Wasm
+generation within an isolate. The new mixed profile is design-only, pending
+routing, lifecycle and local/deployed qualification gates.
+
 ## Evidence baseline
 
 Runtime design starts from the checked-out release main. Auth was inspected at
@@ -143,12 +150,20 @@ subsequent request; explicit V8 isolate eviction is still unproven.
 This change is experimental until the remaining G1 qualification gates pass.
 
 Request-owned host I/O is now exercised through a scope passed explicitly to
-the Rust Host. Abandonment aborts its fetch/reader before Wasm reset, and the
-response path waits for that scope to settle. Separate HTTP requests with matching
+the Rust Host. Abandonment synchronously fences Wasm callbacks; each owning
+continuation aborts and settles its own fetch/reader. A peer must not directly
+cancel another request's native I/O. Separate HTTP requests with matching
 isolate boot IDs verify cross-request interruption; a pre-cancelled scope performs
 no fetch and does not abandon another healthy event. These are experimental Host
 probes, not a public network Capability or proof of client-disconnect propagation.
 No upstream side-effect rollback follows from local cancellation.
+
+An active session pins its generation until terminal shutdown and cleanup; short
+completions still consume cumulative admissions. The
+[W02 decision](workers-session-host-profile.md#source-grounded-diagnosis) explains
+the 96-admission mixed-workload stall and specifies separate ownership, bounded
+cleanup quarantine and acceptance tests. These follow-ups are not implemented
+or qualified by the historical G1 failure-boundary evidence above.
 
 ## HTTP consistency contract
 

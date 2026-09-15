@@ -10,6 +10,12 @@ construction hooks. Web owns HTTP, streams, WebSocket transport and their public
 Capability contracts. Auth owns each method's rules and private persistence.
 Portable Kernel policy, Plugin identities and authorization stay unchanged.
 
+The [W02 mixed-session Host/profile decision](workers-session-host-profile.md)
+selects separate short-request and session Worker deployments, each owning one
+generated bindings/Runner/clock domain. It preserves the existing public APIs
+and per-event App ownership. This is an architecture decision, not an implemented
+or qualified mixed-workload profile.
+
 ## Required delivery
 
 1. Package the event runtime and Rust Workers Driver independently of experiments.
@@ -37,6 +43,15 @@ qualification. Every target claim needs actual workerd and deployed Worker proof
 failure and recovery receipts, plus declared platform limitations. Provider SMS
 fixtures and controlled OIDC peers do not imply third-party service qualification.
 Production rollout, database migration and registry publication are separate actions.
+
+Mixed-session qualification additionally requires the
+[W02 acceptance matrix](workers-session-host-profile.md#executable-acceptance-matrix-for-implementation),
+including a held session across more than 96 short requests, route partitioning,
+capacity and cleanup bounds, peer failures and same-domain recovery. Existing
+duplex and buffered evidence does not close W02. Its
+[implementation prerequisites](workers-session-host-profile.md#staged-migration-and-exact-implementation-prerequisites)
+include transport reservation before buffering and bounded cleanup quarantine;
+these remain follow-up work, with no public API change authorized here.
 
 ## Current progress (2026-09-15)
 
