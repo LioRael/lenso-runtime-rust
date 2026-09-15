@@ -1,0 +1,23 @@
+.github/workflows/release-workers-npm.yml
+  s_3724267b9ee00e::t_4e939bb958a5a2 1-64
+docs/workers-npm-release.md
+  s_3724267b9ee00e::t_bf0f3859e33695 1-19
+packages/workers-runtime/package.json
+  s_3724267b9ee00e::t_414b7070021a50 26-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "945c0dc0716e8e125e2237884aa6a62bf6915808",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
