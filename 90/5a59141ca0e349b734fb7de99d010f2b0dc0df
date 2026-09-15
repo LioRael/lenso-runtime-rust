@@ -1,0 +1,118 @@
+packages/workers-runtime/package.json
+  s_3724267b9ee00e::t_eb36cab65cee48 1-15
+  s_3724267b9ee00e::t_165334400f8fdb 16-27
+packages/workers-runtime/scope.mjs
+  s_3724267b9ee00e::t_c1f0177abc4c70 7,11-13,29-31,115-122
+  s_3724267b9ee00e::t_eb36cab65cee48 1-6,8-10,14-28,32-114,123-124
+  s_3724267b9ee00e::t_07f2bf70b742b5 125-170
+packages/workers-runtime/test/scope.test.mjs
+  s_3724267b9ee00e::t_c1f0177abc4c70 1-112
+  s_3724267b9ee00e::t_53f58350676a6f 113-164
+docs/design/workers-runtime-api.md
+  s_3724267b9ee00e::t_eb36cab65cee48 1-47
+  s_3724267b9ee00e::t_71bfaced6e57aa 48-86
+packages/workers-runtime/index.mjs
+  s_3724267b9ee00e::t_eb36cab65cee48 1-3
+.github/workflows/ci.yml
+  s_3724267b9ee00e::t_77f44c019cac54 83-96
+Cargo.lock
+  s_3724267b9ee00e::t_4b9246edc39663 1351-1360
+Cargo.toml
+  s_3724267b9ee00e::t_e339bf7bff78a5 6
+crates/lenso-native-adapter-macros/src/lib.rs
+  s_3724267b9ee00e::t_94ced0becab753 739-741,1021-1036,1063-1078,1371-1382,1384-1388,1403-1418
+crates/lenso-native-adapter/src/lib.rs
+  s_3724267b9ee00e::t_e611b27fd6d514 52-54,276-345,394-395,428-435,451-455,482-521,526,535-536,605,614-615
+crates/lenso-native-adapter/tests/configuration.rs
+  s_3724267b9ee00e::t_b9af074956dd60 777-835
+crates/lenso-native-adapter/tests/struct_authoring.rs
+  s_3724267b9ee00e::t_4ed4fbaa08765c 169-219
+crates/lenso-workers-driver/Cargo.toml
+  s_3724267b9ee00e::t_9d28ef774be6da 1-17
+crates/lenso-workers-driver/src/lib.rs
+  s_3724267b9ee00e::t_080ed4ef4b824d 1-296
+crates/lenso/src/lib.rs
+  s_3724267b9ee00e::t_03023a436a3a78 12-13
+experiments/workers-g1/Cargo.lock
+  s_3724267b9ee00e::t_8310c15313ec76 288,453-462,493
+experiments/workers-g1/build.sh
+  s_3724267b9ee00e::t_e3f7524e1d121f 4-6
+experiments/workers-g1/clock.mjs
+  s_3724267b9ee00e::t_ddacb716856a91 1
+experiments/workers-g1/host/Cargo.toml
+  s_3724267b9ee00e::t_44d09c2ae833f6 9
+experiments/workers-g1/host/src/driver.rs
+  s_3724267b9ee00e::t_915230c6c30286 1-2
+experiments/workers-g1/package.json
+  s_3724267b9ee00e::t_c6f97ef533e586 14-16
+experiments/workers-g1/runner.mjs
+  s_3724267b9ee00e::t_7f78bac1a41fc7 5
+experiments/workers-g2/Cargo.lock
+  s_3724267b9ee00e::t_52cb9af3e0dc70 288,348-360,464-475,492,500,506,510-519,527-528,531,534,797-807,1049-1056
+experiments/workers-g2/build.sh
+  s_3724267b9ee00e::t_26970658f8f63f 4-5
+experiments/workers-g2/cancellation.mjs
+  s_3724267b9ee00e::t_184d8436057a9d 1
+experiments/workers-g2/clock.mjs
+  s_3724267b9ee00e::t_47394add94cbc7 1
+experiments/workers-g2/duplex-worker.mjs
+  s_3724267b9ee00e::t_3661a0d44bd594 1-2
+experiments/workers-g2/evidence/duplex-local.json
+  s_3724267b9ee00e::t_5354a7e5a7ea7c 1-43
+experiments/workers-g2/evidence/duplex.json
+  s_3724267b9ee00e::t_29035291567e49 1-44
+experiments/workers-g2/host/Cargo.toml
+  s_3724267b9ee00e::t_0e7516863ff69f 11-14,24-25
+experiments/workers-g2/host/src/lib.rs
+  s_3724267b9ee00e::t_43c3c2e8fbaa5a 7,132-138
+experiments/workers-g2/host/src/sessions.rs
+  s_3724267b9ee00e::t_eb88a2f08da937 1-183
+experiments/workers-g2/package.json
+  s_3724267b9ee00e::t_088783e0beddb3 11-14
+experiments/workers-g2/qualify-duplex.mjs
+  s_3724267b9ee00e::t_981ef324eb5eb4 1-174
+experiments/workers-g2/runner.mjs
+  s_3724267b9ee00e::t_4af9969c868c20 1-16,18-22,24-29,31-35,39-42,47-54,56-94
+experiments/workers-g2/smoke.mjs
+  s_3724267b9ee00e::t_4849b95776b5d1 6-7
+experiments/workers-g2/worker.mjs
+  s_3724267b9ee00e::t_44123e1851a86d 1,52
+experiments/workers-g2/wrangler.duplex.jsonc
+  s_3724267b9ee00e::t_c0f1d878766154 1-18
+experiments/workers-runtime/http.mjs
+  s_3724267b9ee00e::t_1cf46753d67ad9 1-2
+experiments/workers-runtime/runner.mjs
+  s_3724267b9ee00e::t_defb011f9f1383 1-2
+packages/workers-runtime/README.md
+  s_3724267b9ee00e::t_8b093313e2cd43 1-76
+packages/workers-runtime/build.mjs
+  s_3724267b9ee00e::t_3bc17d66bceda3 1-119
+packages/workers-runtime/clock.mjs
+  s_3724267b9ee00e::t_db2ec1bc9eea96 1-31
+packages/workers-runtime/http.mjs
+  s_3724267b9ee00e::t_7a1b47aacf42f6 1-366
+packages/workers-runtime/runner.mjs
+  s_3724267b9ee00e::t_f3945d770745ef 1-283
+packages/workers-runtime/test/http.test.mjs
+  s_3724267b9ee00e::t_5b842aab240b00 1-251
+packages/workers-runtime/test/session.test.mjs
+  s_3724267b9ee00e::t_42cf16f1edc487 1-94
+packages/workers-runtime/test/streaming.test.mjs
+  s_3724267b9ee00e::t_226bb71db822fe 1-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "905a59141ca0e349b734fb7de99d010f2b0dc0df",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
