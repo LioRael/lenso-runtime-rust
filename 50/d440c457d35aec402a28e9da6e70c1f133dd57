@@ -1,0 +1,23 @@
+packages/workers-runtime/build.mjs
+  s_3724267b9ee00e::t_cc4bc1122cdcf1 5,92
+packages/workers-runtime/package.json
+  s_3724267b9ee00e::t_45a41eb2fc9f7c 3
+packages/workers-runtime/test/build.test.mjs
+  s_3724267b9ee00e::t_1f4f29dd1f1155 1-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "50d440c457d35aec402a28e9da6e70c1f133dd57",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
