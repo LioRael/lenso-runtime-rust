@@ -94,24 +94,7 @@ impl ResponseSession {
 }
 #[wasm_bindgen]
 pub async fn open_http(input: String, scope: JsValue) -> Result<ResponseSession, JsValue> {
-    if input.len() > BODY_LIMIT * 4 + HEAD_LIMIT * 6 {
-        return Err(error("request exceeds bound"));
-    }
-    let input: HttpInput = serde_json::from_str(&input).map_err(error)?;
-    if input.body.len() > BODY_LIMIT {
-        return Err(error("body exceeds bound"));
-    }
-    let mut request = Request::builder()
-        .method(input.method.as_str())
-        .uri(input.uri.as_str())
-        .body(Bytes::from(input.body))
-        .map_err(error)?;
-    for (name, value) in input.headers {
-        request.headers_mut().append(
-            HeaderName::from_bytes(name.as_bytes()).map_err(error)?,
-            HeaderValue::from_str(&value).map_err(error)?,
-        );
-    }
+    let request = decode_request(&input).map_err(error)?;
     let ingress = WebIngressEventFactory::new();
     let config = WebIngressConfig::default()
         .with_request_limits(BODY_LIMIT, HEAD_LIMIT)

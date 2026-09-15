@@ -1,16 +1,14 @@
 use bytes::Bytes;
-use http::{HeaderName, HeaderValue, Request};
 use lenso_kernel::{CancellationToken, Kernel, ShutdownOutcome};
 use lenso_native_adapter::NativePluginRegistry;
 use lenso_web_http_parity_fixture::{HttpParityEndpointFactory, plan};
 use lenso_web_ingress_plugin::{SessionCookieConfig, WebIngressConfig, WebIngressEventFactory};
 use lenso_workers_driver::WorkersDriver;
-use serde::Deserialize;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
 
-const BODY_LIMIT: usize = 65_536;
-const HEAD_LIMIT: usize = 16_384;
+mod request;
+use request::{BODY_LIMIT, HEAD_LIMIT, decode_request};
 
 #[wasm_bindgen(raw_module = "../cancellation.mjs")]
 extern "C" {
@@ -46,35 +44,9 @@ fn error(value: impl std::fmt::Debug) -> JsValue {
     JsValue::from_str(&format!("{value:?}"))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HttpInput {
-    method: String,
-    uri: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-}
-
 #[wasm_bindgen]
 pub async fn handle_http(input: String, scope: JsValue) -> Result<String, JsValue> {
-    if input.len() > BODY_LIMIT * 4 + HEAD_LIMIT * 6 {
-        return Err(error("serialized request exceeds bound"));
-    }
-    let input: HttpInput = serde_json::from_str(&input).map_err(error)?;
-    if input.body.len() > BODY_LIMIT {
-        return Err(error("request body exceeds bound"));
-    }
-    let mut request = Request::builder()
-        .method(input.method.as_str())
-        .uri(input.uri.as_str())
-        .body(Bytes::from(input.body))
-        .map_err(error)?;
-    for (name, value) in input.headers {
-        request.headers_mut().append(
-            HeaderName::from_bytes(name.as_bytes()).map_err(error)?,
-            HeaderValue::from_str(&value).map_err(error)?,
-        );
-    }
+    let request = decode_request(&input).map_err(error)?;
     let ingress = WebIngressEventFactory::new();
     let config = WebIngressConfig::default()
         .with_session_cookie(

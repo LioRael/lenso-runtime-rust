@@ -521,6 +521,7 @@ dependencies = [
 name = "lenso-workers-g2-host"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "futures",
  "http",

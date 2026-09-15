@@ -13,7 +13,7 @@ import { createWebSocketTransport } from "@lenso/web-ingress-workers";
 import {
   createHttpHandler,
   createStreamingHttpHandler,
-} from "@lenso/workers-runtime/http";
+} from "../../packages/workers-runtime/http.mjs";
 
 const runner = createEventRunner({
   instantiate: () => initSync({ module }),
@@ -21,6 +21,7 @@ const runner = createEventRunner({
   clearTimers,
 });
 const bridgeOptions = {
+  requestBodyEncoding: "base64-v1",
   run: runner.run,
   handleHttp: handle_http,
   maxRequestBodyBytes: 65536,
@@ -69,6 +70,8 @@ export async function recovery(origin) {
 }
 
 export const handleDuplex = createStreamingHttpHandler({
+  requestBodyEncoding: "base64-v1",
+  maxRequestBodyBytes: 65536,
   open: runner.open,
   async openHttp(input, scope) {
     const response = await open_http(input, scope);

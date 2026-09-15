@@ -2,6 +2,7 @@ import { clearTimers as defaultClearTimers } from "./clock.mjs";
 import { createHttpHandler } from "./http.mjs";
 import { createEventRunner } from "./runner.mjs";
 import { createEventScope } from "./scope.mjs";
+import { validateRequestBodyEncoding } from "./request-body.mjs";
 
 const RUNNER_LIMITS = [
   "eventLimitMs",
@@ -73,11 +74,13 @@ function generatedInstantiate(bindings, wasmModule) {
 export function createWorkersHttpHost({
   bindings,
   wasmModule,
+  requestBodyEncoding = "numeric-array",
   limits = {},
   createScope,
   onReceipt,
   clearTimers = defaultClearTimers,
 } = {}) {
+  validateRequestBodyEncoding(requestBodyEncoding);
   requireObject(bindings, "bindings");
   if (typeof bindings.initSync !== "function")
     throw new TypeError("bindings.initSync must be a function");
@@ -113,6 +116,7 @@ export function createWorkersHttpHost({
   async function fetch(request, env, ctx) {
     const handler = createHttpHandler({
       ...httpLimits,
+      requestBodyEncoding,
       run: runner.run,
       handleHttp,
       createScope: () => makeScope(request, env, ctx),

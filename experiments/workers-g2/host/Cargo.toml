@@ -8,6 +8,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+base64 = "0.22.1"
 js-sys = "=0.3.104"
 lenso-web-duplex-fixture = "0.0.0"
 lenso-capability-websocket-endpoint = "0.1.0"
