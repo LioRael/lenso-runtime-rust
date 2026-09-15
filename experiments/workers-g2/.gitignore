@@ -1,3 +1,6 @@
 /pkg/
 /node_modules/
 /.wrangler/
+
+.w02/
+qualification-identity.json

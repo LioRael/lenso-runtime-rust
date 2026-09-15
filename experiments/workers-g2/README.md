@@ -115,3 +115,56 @@ The [W06 validation record](../../docs/evidence/workers-g2/request-body-encoding
 records the passing clean-source build, Rust decoder tests and both real Wasm
 execution environments. Remove generated `pkg`, Cargo targets, `node_modules`
 and `.wrangler` output when qualification is complete.
+
+## W02 local qualification
+
+The local-only proof scripts `profile-http.mjs` and `profile-session.mjs` each
+construct exactly one Runner/bindings/clock domain. `profile-mixed.mjs` is the
+separate baseline control. Route inventory is `/stream` and `/socket/{room}` for
+sessions; all other non-diagnostic paths belong to HTTP. Mismatches reject before
+admission, including profile-header spoofing. Diagnostic `/_w02/*` paths belong
+only to this disposable proof and must not be deployed as product routes.
+
+After the locked install and Wasm build above:
+
+```sh
+node prepare-qualification.mjs
+pnpm exec wrangler dev --local --config wrangler.w02.http.jsonc --persist-to .w02/state-http --port 63738 --inspector-port 9238
+pnpm exec wrangler dev --local --config wrangler.w02.session.jsonc --persist-to .w02/state-session --port 63739 --inspector-port 9239
+pnpm exec wrangler dev --local --config wrangler.w02.mixed.jsonc --persist-to .w02/state-mixed --port 63740 --inspector-port 9240
+```
+
+Run the three servers in separate terminals, then run the finite Node client:
+
+```sh
+node qualify-local.mjs --http http://127.0.0.1:63738 --session http://127.0.0.1:63739 --mixed http://127.0.0.1:63740 --case all --evidence ../../docs/evidence/workers-w02/external-local.json.gz
+```
+
+Use fresh scripts for each `all` run so the mixed baseline starts at generation
+admission zero. Case selectors are `routing`, `baseline`, `held-stream`,
+`held-websocket`, `capacity`, `cancellation`, `quarantine`, `late-reject`,
+`export-reject`, `nonclean`, and `cleanup-reject`. The final rejected-cleanup
+case deliberately leaves the session profile unavailable until a fresh isolate. All mode fails if any required receipt or assertion
+is missing. Held stream and WebSocket cases each issue 192 distinct short requests
+and require same-boot HTTP retirement while the session retains its generation.
+Stream closure uses an explicit proof signal, polled on the owner timer; it makes
+no downstream-disconnect claim. Quarantine probes hold native release behind a
+barrier while the HTTP script serves another real request.
+
+A supplementary socket-free workerd test exercises the same assertions through
+explicit test service bindings. These bindings are harness adapters, not a proposed
+production dispatcher or proof of external ingress routing:
+
+```sh
+node run-workerd-qualification.mjs ../../docs/evidence/workers-w02/workerd-test.json.gz
+```
+
+This command has a 45-second process deadline and records nonzero exits, missing
+receipts, module inventories and exact source/artifact/lock hashes. Metadata uses
+bounded 16-entry, 60-second receipt lookup; clients collect receipts as work ends.
+Counters label their observation boundary; they do not claim fleet capacity or
+platform memory peaks. The Node client uses five-second operation deadlines.
+
+Stop task-owned servers after the run and remove generated `pkg/`, `.w02/`,
+`qualification-identity.json`, `.wrangler/` and installed `node_modules/`.
+See [W02 evidence](../../docs/evidence/workers-w02/README.md) for limitations.

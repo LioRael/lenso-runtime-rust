@@ -174,3 +174,18 @@ responses. Web owns that transport and its Capability, not Runtime.
 When supplying `createScope`, configure its cleanup and operation limits in that
 factory. Passing scope limits to the Host at the same time is rejected, so a
 custom factory cannot silently ignore a Host limit.
+
+### Cleanup quarantine
+
+Abandonment synchronously fences every owner and resets generated instance guards,
+then keeps the replacement closed until every abandoned owner's cleanup confirms
+release. Only one abandoned cleanup batch can exist in a Runner. Other Runner
+realms remain independent; two Runners must never share one generated namespace.
+
+A cleanup timeout still returns `storage_cleanup_unconfirmed` within the scope's
+existing deadline. The built-in scope continues observing native settlement with
+JS-only bookkeeping. Confirmed late release can reopen the initialized replacement;
+it cannot deliver stale Wasm callbacks or change the failed receipt. A rejected
+custom cleanup, failed abort cleanup, failed reset, reused memory, or failed
+constructors keeps admission closed. Unknown release requires a new isolate or
+operator intervention. No additional public lifecycle method is required.

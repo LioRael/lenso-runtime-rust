@@ -1,3 +1,5 @@
+import { cleanupRelease } from "./cleanup.mjs";
+
 /**
  * One request's native resources and detachable Wasm continuations.
  * Invalidation is synchronous JS-only fencing; abort/settled run in the owner.
@@ -58,7 +60,12 @@ export function createEventScope(
       // Cancellation errors must be observed by bounded cleanup too.
       try {
         const result = resource.abort?.();
-        if (result !== undefined) trackNative(result);
+        if (result !== undefined)
+          trackNative(
+            Promise.resolve(result).catch(() => {
+              cleanupFailed = true;
+            }),
+          );
       } catch {
         cleanupFailed = true;
       }
@@ -146,7 +153,9 @@ export function createEventScope(
           return !cleanupFailed;
         };
         try {
-          const clean = await Promise.race([drain(), timeout]);
+          const released = drain();
+          cleanupRelease.set(scope, released);
+          const clean = await Promise.race([released, timeout]);
           if (!clean) scope.invalidate();
           return clean;
         } finally {

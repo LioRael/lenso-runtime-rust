@@ -234,7 +234,9 @@ export function transportAdmissionTests(createHandler, streaming, requestBodyEnc
     assert.equal(body.body.locked, false);
     assert.equal(body.counts().cancels, 1);
     assert.equal(f.inputs.length, 0);
+    await assert.rejects(f.runner.run(() => assert.fail("quarantined entry")), /unavailable/);
     cancelled.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     await recover(f);
   });
 
@@ -259,7 +261,8 @@ export function transportAdmissionTests(createHandler, streaming, requestBodyEnc
     settled.resolve(false);
     if (streaming) await assert.rejects(consumed, /response_stream_failed/);
     else assert.deepEqual(await (await first).json(), { error: "storage_cleanup_unconfirmed" });
-    assert.equal((await f.runner.run(() => "{}")).generation, 1);
+    await assert.rejects(f.runner.run(() => assert.fail("uncertain cleanup entry")), /unavailable/);
+    assert.equal(f.runner.generation(), 2);
   });
 
   test(`${kind}: foreign abandonment cancels preparation in its owner and fences Wasm entry`, async () => {

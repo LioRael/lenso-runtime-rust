@@ -1,10 +1,10 @@
 # Workers mixed-session Host profile decision (W02)
 
-Status: **architecture selected; implementation and qualification pending**.
+Status: **architecture selected; local implementation and qualification complete**.
 Date: 2026-09-15. Source baseline: `d7eb465baa2e668ed2378fa832aab1769965a3d9`.
-This is a design-only decision at the Runtime/Host boundary. It changes neither
+This decision is at the Runtime/Host boundary. It changes neither
 Kernel/Plan semantics nor public Capability, HTTP, stream or WebSocket contracts.
-W02 remains an implementation/qualification issue after this document.
+Production deployment and platform qualification remain separate work.
 
 ## Decision and limits of the claim
 
@@ -160,9 +160,8 @@ active capacity; count admission waiters separately, at no more than 32. Waiters
 must not start an App, buffer a body, or start Plugin/storage I/O. Body/head limits
 still apply after reservation. Rejected bodies must be cancelled in the request
 owner, with bounded cleanup and observed rejection. Release reservations exactly
-once. Current HTTP code reads bodies before `runner.run`/`open`; therefore early
-transport reservation is an implementation prerequisite, not a current guarantee.
-Coordinate with the transport-admission work rather than duplicate its gate.
+once. W01 now reserves transport capacity through Runner preparation before body reads.
+The W02 implementation preserves that gate and its regression suite.
 
 Reject active-capacity overload immediately. At generation ceiling, use only the
 existing bounded retirement wait/deadline policy; once closed for failure or
@@ -218,13 +217,13 @@ For each profile independently:
    established, recovery needs platform replacement or operator intervention;
    a timer is not proof of release.
 
-The current Runner resets immediately after abandonment fencing, reopens without
-waiting for that cleanup batch, and can rotate after an uncertain cleanup result.
-Preserve synchronous reset/instance-guard ordering; the quarantine/reopen gate is
-a required internal Runtime/Host implementation follow-up. It tightens admission without
-changing public contracts or relaxing existing deadlines. No implementation of
-that gate is claimed here. A cleanup timeout must not hold the client response
-forever even though subsequent profile admission remains closed.
+The Runner now resets immediately after abandonment fencing and quarantines
+replacement admission until the owner batch releases. Built-in scopes separately
+retain a sticky bounded settlement receipt and internal JS-only late-release
+observation. Rejected custom cleanup or failed abort/reset/initialization stays
+unavailable. A timeout does not keep the client response pending indefinitely.
+The [local W02 report](../evidence/workers-w02/README.md) records the passing
+external-socket and supplementary workerd gates; it does not qualify production deployment.
 
 The bounds limit admissions and retained generations; they do not establish an
 arbitrary Plugin graph's memory bound. A long session can allocate within its
@@ -399,6 +398,6 @@ oversized-upload limitations: report them separately; never call deployed
 disconnect proof a local pass. Missing same-boot receipts are inconclusive,
 and a harness must exit nonzero for required assertions lacking evidence.
 
-For this documentation task the fixed check is `git diff --check` plus scope
-inspection. No runtime suite, deployment, performance measurement, public API
-change or W02 implementation is claimed.
+The original design task ran documentation checks only. Follow-up W02 local
+implementation and validation are recorded in the linked evidence report. No
+deployment or public API change is claimed.

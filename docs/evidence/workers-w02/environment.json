@@ -1,0 +1,50 @@
+{
+  "schema": "w02-environment-v1",
+  "localListener": {
+    "argv": [
+      "wrangler",
+      "dev",
+      "--local",
+      "--config",
+      "experiments/workers-g2/wrangler.w02.http.jsonc",
+      "--port",
+      "63738",
+      "--inspector-port",
+      "9238"
+    ],
+    "exitCode": 1,
+    "status": "blocked",
+    "output": "\u25b2 [WARNING] Proxy environment variables detected. We'll use your proxy for fetch requests.\n\n\n\n \u26c5\ufe0f wrangler 4.107.0\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nError: listen EPERM: operation not permitted 127.0.0.1\n    at Server.setupListenHandle [as _listen2] (node:net:2306:21)\n    at listenInCluster (node:net:2437:12)\n    at node:net:2666:7\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {\n  code: 'EPERM',\n  errno: -1,\n  syscall: 'listen',\n  address: '127.0.0.1'\n}\n",
+    "coordinator": {
+      "status": "passed",
+      "ports": [
+        63838,
+        63839,
+        63840
+      ],
+      "cases": 11,
+      "evidence": "external-local.json.gz",
+      "persistence": [
+        ".w02/state-http",
+        ".w02/state-session",
+        ".w02/state-mixed"
+      ]
+    }
+  },
+  "defaultCargo": "sccache and shared target path denied; wrapper retained with temporary target and identity RUSTC_WRAPPER",
+  "requiredNetworkSuites": {
+    "status": "not-rerun-separately; W02 external matrix passed",
+    "commands": [
+      "G1 smoke.mjs",
+      "G1 io-smoke.mjs",
+      "G1 disconnect-smoke.mjs",
+      "G1 load.mjs",
+      "G1 retirement-smoke.mjs",
+      "G2 smoke.mjs (PARITY_CORPUS=fixtures/http-parity/corpus.json)",
+      "G2 limits-smoke.mjs",
+      "G2 disconnect-smoke.mjs",
+      "G2 qualify-duplex.mjs"
+    ]
+  },
+  "claim": "No socket-free or Node-mock result substitutes for these checks."
+}

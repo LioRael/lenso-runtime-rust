@@ -1,3 +1,5 @@
+import { cleanupRelease } from "./cleanup.mjs";
+
 // Product-neutral extraction of the qualified G1 generation boundary.
 // Every run owns its continuation, cancellation scope and finalizer.
 export function createEventRunner({
@@ -40,6 +42,16 @@ export function createEventRunner({
   let generation = 1;
   let unavailable = false;
   const pending = new Set();
+  // One abandoned owner batch, independent of the initialized replacement.
+  let quarantine;
+  let initialized = true;
+  function release(token) {
+    quarantine?.delete(token);
+    if (quarantine?.size === 0 && initialized) {
+      quarantine = undefined;
+      unavailable = false;
+    }
+  }
 
   // Bound retained allocation even if a dependency retains request App state.
   // Retire at the next idle boundary after the configured admission count; 96 is the hard ceiling.
@@ -47,6 +59,7 @@ export function createEventRunner({
   let queued = 0;
   function resetInstance() {
     unavailable = true;
+    initialized = false;
     clearTimers();
     const previousMemory = exports.memory;
     resetState();
@@ -55,7 +68,8 @@ export function createEventRunner({
       throw new Error("Wasm memory was reused");
     exports.__wasm_call_ctors();
     admittedCount = 0;
-    unavailable = false;
+    initialized = true;
+    unavailable = !!quarantine;
   }
   function rotate() {
     generation++;
@@ -64,6 +78,8 @@ export function createEventRunner({
   // Failure is distinct from clean retirement: reject every admitted event, then
   // rebuild. Owner-context finalizers dispose I/O after rejection.
   function abandon(cause) {
+    if (quarantine || !initialized) return;
+    quarantine = new Set([...pending].map((event) => event.cleanupToken));
     const abandoned = generation;
     const failure = new Error(
       `Wasm generation ${abandoned} abandoned: ${cause}`,
@@ -125,6 +141,7 @@ export function createEventRunner({
     const admitted = generation;
     admittedCount++;
     let event, preparation;
+    const cleanupToken = {};
     const preparationController = prepare ? new AbortController() : undefined;
     const result = new Promise((resolve, reject) => {
       const onAbort = () => {
@@ -140,6 +157,7 @@ export function createEventRunner({
         }
       };
       event = {
+        cleanupToken,
         reject,
         invalidate() {
           scope?.invalidate?.();
@@ -187,16 +205,15 @@ export function createEventRunner({
                 );
                 return;
               }
-              clearTimeout(event.timer);
-              event.timer = setTimeout(
-                () =>
-                  abandon(
-                    event.cancelling
-                      ? "cancellation deadline exceeded"
-                      : "session deadline exceeded",
-                  ),
-                event.cancelling ? cancellationLimitMs : sessionLimitMs,
-              );
+              // Late headers cannot extend the cancellation watchdog installed
+              // at the first abort. Repeated cancellation keeps that deadline too.
+              if (!event.cancelling) {
+                clearTimeout(event.timer);
+                event.timer = setTimeout(
+                  () => abandon("session deadline exceeded"),
+                  sessionLimitMs,
+                );
+              }
               opened({
                 value: value.value,
                 generation: admitted,
@@ -258,6 +275,7 @@ export function createEventRunner({
     // Register cleanup in the owning fetch context. Another event may reject this
     // promise, but it must never directly abort this request's native I/O objects.
     return result.finally(async () => {
+      let confirmed = false;
       try {
         clearTimeout(event?.timer);
         event?.dispose();
@@ -266,7 +284,15 @@ export function createEventRunner({
         if (preparation) await preparation.catch(() => {});
         if ((await scope?.settled?.()) === false)
           throw new Error("Storage completion unavailable");
+        confirmed = true;
       } catch {
+        // Even a successful export must not retire past uncertain native I/O.
+        if (admitted === generation) abandon("storage_cleanup_unconfirmed");
+        // Only our scope can establish late release after its bounded timeout.
+        // Unknown/rejected custom cleanup stays fail-closed until replacement.
+        cleanupRelease.get(scope)?.then((released) => {
+          if (released) release(cleanupToken);
+        });
         const error = new Error("storage_cleanup_unconfirmed");
         error.status = 503;
         throw error;
@@ -275,6 +301,7 @@ export function createEventRunner({
         // continuation before this event leaves the generation's pending set.
         event?.invalidate();
         pending.delete(event);
+        if (confirmed) release(cleanupToken);
         if (
           !unavailable &&
           !pending.size &&
