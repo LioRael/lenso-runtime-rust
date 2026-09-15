@@ -9,7 +9,7 @@ import {
 import module from "./pkg/lenso_workers_g2_host_bg.wasm";
 import { clearTimers } from "./clock.mjs";
 import { createEventRunner } from "../../packages/workers-runtime/runner.mjs";
-import { createWebSocketTransport } from "@lenso/web-ingress-workers";
+import { createWebSocketTransport } from "./fixtures/websocket.mjs";
 import {
   createHttpHandler,
   createStreamingHttpHandler,

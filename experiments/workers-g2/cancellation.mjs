@@ -1,1 +1,1 @@
-export { cancellation } from '@lenso/workers-runtime/http';
+export { cancellation } from '../../packages/workers-runtime/http.mjs';

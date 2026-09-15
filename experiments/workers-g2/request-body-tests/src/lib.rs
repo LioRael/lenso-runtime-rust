@@ -124,6 +124,25 @@ mod tests {
     }
 
     #[test]
+    fn encoding_version_must_be_a_string() {
+        // Serde's externally tagged unit enum also accepts this object shape.
+        // The transport contract permits only the literal string "base64-v1".
+        for encoding in [
+            json!({"base64-v1":null}),
+            json!(["base64-v1"]),
+            json!(1),
+            json!(true),
+        ] {
+            assert!(
+                decode_request(&wire(
+                    json!({"body_encoding":encoding,"body_base64":"AA=="})
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn bounds_decoded_bytes_even_when_encoded_length_fits() {
         // 65536, 65537 and 65538 share the same padded encoded length.
         for size in [BODY_LIMIT + 1, BODY_LIMIT + 2] {

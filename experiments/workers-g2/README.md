@@ -6,10 +6,13 @@ inside a real Workers Runtime Driver and Kernel App. Each HTTP event creates an
 App, waits for Ready, enters Web Ingress, and awaits clean shutdown. It is a
 disposable staging proof, not production Marketplace or Auth qualification.
 
-The local review cohort is `lenso-web/feat-workers-http-parity` beside this Runtime
-worktree. Cargo and the JS corpus import deliberately point to that worktree;
-replace them with a reviewed immutable/published cohort for distribution. No
-contract bindings are hand-edited and no Endpoint is called outside its Plan.
+The qualification fixtures are vendored under [`fixtures`](fixtures/README.md)
+from `lenso-web` commit `6611fd3af560d246e18d6e20d6963f68f1f07566`.
+Their Rust sources, HTTP corpus and small WebSocket adapter are unchanged.
+Cargo uses released Web Capability contracts and Web Ingress `0.4.3`, with
+registry checksums in `Cargo.lock`. Runtime implementations and JS transports
+come from this checkout. No sibling checkout or unpublished fixture is required.
+No contract bindings are hand-edited and no Endpoint is called outside its Plan.
 The shared bridge and generation boundary are documented in
 [`workers-runtime`](../workers-runtime/README.md).
 
@@ -79,25 +82,36 @@ existing buffered/duplex Worker with the build-time option
 or public route option. Run the existing smoke, limits and duplex suites
 sequentially for each encoding; preserve the documented disconnect limitations.
 
-After restoring the pinned G2 dependency cohort and completing a fresh build,
-also run from the repository root:
+From a clean Runtime checkout, run from the repository root:
 
 ```sh
+pnpm --dir experiments/workers-g2 install --frozen-lockfile --ignore-scripts
+npm test --prefix packages/workers-runtime
+/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo +1.94.0 \
+  check --locked --manifest-path experiments/workers-g2/Cargo.toml \
+  --target wasm32-unknown-unknown
+/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo +1.94.0 \
+  test --frozen --manifest-path experiments/workers-g2/request-body-tests/Cargo.toml
 CARGO=/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo \
-  node packages/workers-runtime/build.mjs \
-  --manifest experiments/workers-g2/Cargo.toml \
-  --package lenso-workers-g2-host --out-dir experiments/workers-g2/pkg
+  bash experiments/workers-g2/build.sh
 node --test experiments/workers-g2/request-body-wasm.test.mjs
+node experiments/workers-g2/qualify-request-body-workerd.mjs
 ```
 
-This additional suite loads the actual generated G2 Rust/Wasm module in Node,
-enters the existing Plan-bound byte echo and duplex fixtures through the current
-Runner, tests both encodings, holds a real session during overload, and injects
-malformed envelopes at both Rust entry points. It requires artifacts and fails
-if they are missing. It complements the existing workerd transport suites;
-Node cannot prove Cloudflare disconnect behavior. The duplex fixture has only
+The two qualification commands execute the same assertions against the actual
+generated G2 Rust/Wasm module in Node and workerd. They enter the existing
+Plan-bound byte echo and duplex fixtures through the current Runner, test both
+encodings, compare HTTP semantics, hold a real session during overload, and
+inject malformed envelopes at both Rust entry points. Missing artifacts fail.
+The workerd command bundles the assertions with locked Wrangler's esbuild and
+runs `workerd test` without a listening socket. Its additional `nodejs_compat`
+flag supplies Node assertions and Buffer only; the production compatibility
+flags remain unchanged. These checks complement the existing network suites;
+they do not qualify Cloudflare edge disconnect behavior. The duplex fixture has only
 GET `/stream`, so nonempty POST bodies exercise its existing 405 contract; exact
 byte echo uses the buffered fixture and the shared decoder tests.
 
 The [W06 validation record](../../docs/evidence/workers-g2/request-body-encoding.md)
-lists unresolved build/check prerequisites. No fresh G2 pass is claimed yet.
+records the passing clean-source build, Rust decoder tests and both real Wasm
+execution environments. Remove generated `pkg`, Cargo targets, `node_modules`
+and `.wrangler` output when qualification is complete.

@@ -8,14 +8,9 @@ pub(super) const BODY_LIMIT: usize = 65_536;
 pub(super) const HEAD_LIMIT: usize = 16_384;
 const ENCODED_BODY_LIMIT: usize = 4 * BODY_LIMIT.div_ceil(3);
 
-#[derive(Deserialize)]
-enum BodyEncoding {
-    #[serde(rename = "base64-v1")]
-    Base64V1,
-}
-
 // Missing fields are distinct from explicit null, including in a dual-field
-// envelope. Serde also rejects duplicate fields and unknown version values.
+// envelope. Serde rejects duplicate fields; the String type also excludes
+// externally tagged enum objects such as {"base64-v1":null}.
 fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -33,7 +28,7 @@ struct HttpInput {
     #[serde(default, deserialize_with = "present")]
     body: Option<Vec<u8>>,
     #[serde(default, deserialize_with = "present")]
-    body_encoding: Option<BodyEncoding>,
+    body_encoding: Option<String>,
     #[serde(default, deserialize_with = "present")]
     body_base64: Option<String>,
 }
@@ -47,7 +42,7 @@ pub(super) fn decode_request(input: &str) -> Result<Request<Bytes>, String> {
     let input: HttpInput = serde_json::from_str(input).map_err(|e| e.to_string())?;
     let body = match (input.body, input.body_encoding, input.body_base64) {
         (Some(body), None, None) => body,
-        (None, Some(BodyEncoding::Base64V1), Some(encoded)) => {
+        (None, Some(encoding), Some(encoded)) if encoding == "base64-v1" => {
             // Reject excessive encoded and decoded lengths before allocating a
             // decoded buffer. STANDARD requires padding and zero trailing bits.
             if encoded.len() > ENCODED_BODY_LIMIT {

@@ -1,1 +1,1 @@
-export { clock, clearTimers } from '@lenso/workers-runtime/clock';
+export { clock, clearTimers } from '../../packages/workers-runtime/clock.mjs';

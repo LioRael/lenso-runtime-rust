@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@lenso/workers-runtime':
+        specifier: link:../../packages/workers-runtime
+        version: link:../../packages/workers-runtime
     devDependencies:
       wrangler:
         specifier: 4.107.0

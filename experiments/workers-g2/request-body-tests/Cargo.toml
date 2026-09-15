@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 # Test the exact Host decoder on native Rust without the Wasm-only Driver and
-# unpublished Web business fixtures. The full G2 Wasm check remains required.
+# Web business fixture dependencies. The full G2 Wasm check remains required.
 [workspace]
 
 [dependencies]

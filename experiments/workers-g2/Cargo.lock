@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "lenso"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "futures",
  "lenso-kernel",
@@ -309,6 +309,8 @@ dependencies = [
 [[package]]
 name = "lenso-capability-http-endpoint"
 version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c711f97b34977521f0614ac45d5f831224a64de73bfc363365350ede56b2d09"
 dependencies = [
  "futures",
  "http",
@@ -325,6 +327,8 @@ dependencies = [
 [[package]]
 name = "lenso-capability-http-endpoint-macros"
 version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51ee4bb64f14f7364ee42fe573ae772e84daf6494de87b8efe5474d2dc082f2a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -335,6 +339,8 @@ dependencies = [
 [[package]]
 name = "lenso-capability-http-stream-endpoint"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54bb37b4d710aba3f9d8e6910cbcd45bf0d162d8319c9379609d045d41ef68e6"
 dependencies = [
  "futures",
  "lenso-contract-codegen",
@@ -348,6 +354,8 @@ dependencies = [
 [[package]]
 name = "lenso-capability-websocket-endpoint"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "215fdf4aa2a37987c1d536473838a8d6d741a3e08691b11371494283f848544f"
 dependencies = [
  "futures",
  "lenso-contract-codegen",
@@ -417,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-native-adapter"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "futures",
  "inventory",
@@ -431,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-native-adapter-macros"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -487,7 +495,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-web-ingress-plugin"
-version = "0.4.2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f58e9b1ae146427d16bd589f22301212185c9e8b9e823debea2673944da5769d"
 dependencies = [
  "base64",
  "bytes",
@@ -1047,11 +1057,3 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[patch.unused]]
-name = "lenso-capability-http-client"
-version = "0.3.0"
-
-[[patch.unused]]
-name = "lenso-http-egress-plugin"
-version = "0.3.1"

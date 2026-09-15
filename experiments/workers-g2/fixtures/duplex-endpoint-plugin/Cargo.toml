@@ -1,0 +1,12 @@
+[package]
+name = "lenso-web-duplex-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[dependencies]
+futures.workspace = true
+lenso-app-plan.workspace = true
+lenso-kernel.workspace = true
+lenso-native-adapter.workspace = true
+lenso-capability-http-stream-endpoint = "=0.1.1"
+lenso-capability-websocket-endpoint = "=0.1.0"
