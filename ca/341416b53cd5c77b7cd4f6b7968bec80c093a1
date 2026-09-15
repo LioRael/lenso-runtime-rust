@@ -1,0 +1,40 @@
+packages/workers-runtime/index.mjs
+  s_21258fca71be0b::t_2e07030232c2d8 4
+packages/workers-runtime/test/host.test.mjs
+  s_21258fca71be0b::t_3024f3e5868f71 73-74
+  s_21258fca71be0b::t_7b6d7b20192761 49,51-53,125-128
+  s_21258fca71be0b::t_c5719de4eb8add 115-118
+  s_21258fca71be0b::t_0bf3d7e91a2f9a 1-48,50,54-72,75-114,119-124,129-167
+  s_21258fca71be0b::t_829e3432a92eb8 168-175
+packages/workers-runtime/README.md
+  s_21258fca71be0b::t_98654217534692 45,56-57
+  s_21258fca71be0b::t_37ed96361fec8c 17,21-24,29-37,46-49,51-53,60-61
+  s_21258fca71be0b::t_dba54265f2e340 25-28
+  s_21258fca71be0b::t_f382a04b9301ec 18-20,38-44,50,58-59
+  s_21258fca71be0b::t_fa14f19a921046 54-55
+  s_21258fca71be0b::t_7209744d716f28 6,122-125
+packages/workers-runtime/host.mjs
+  s_21258fca71be0b::t_ddf8814391bef8 86
+  s_21258fca71be0b::t_ea3e03887a78f5 89
+  s_21258fca71be0b::t_9a4543fe9fff5d 1-19,25-39,48-85,87-88,90-91,93-118,125-130
+  s_21258fca71be0b::t_4cc4d1766ea384 20-24,40-47,92,119-124
+packages/workers-runtime/package.json
+  s_21258fca71be0b::t_2e07030232c2d8 9
+  s_21258fca71be0b::t_9ecb72e472fcd1 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ca341416b53cd5c77b7cd4f6b7968bec80c093a1",
+  "prompts": {},
+  "sessions": {
+    "s_21258fca71be0b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a45b-2d5b-75d1-bc5a-2923a5486851",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
