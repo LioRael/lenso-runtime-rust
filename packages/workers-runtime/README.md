@@ -3,7 +3,7 @@
 This package owns event resources, generation admission and reset, and the
 JavaScript timer domain used by the `lenso-workers-driver` Rust crate. It does
 not resolve Plugins, grant network authority, authenticate, or authorize requests.
-The new package is under qualification; no registry release is claimed.
+The buffered HTTP Host entry is available starting with version 0.1.2.
 
 Use `lenso-workers-build --manifest Cargo.toml --package my-host --out-dir pkg`
 to build a consumer Host with its locked dependency graph. It requires Rust
@@ -13,6 +13,51 @@ required. The generated module imports `@lenso/workers-runtime/clock`; the Host
 must give its runner `clearTimers` from that same module. Use one runner per
 generated module/timer domain. Multiple independent Wasm modules require separate
 timer domains and are not supported by the shared default clock export.
+
+For a buffered HTTP Host, use the high-level entry with the generated module
+namespace and its Wasm module. The scope factory is the explicit composition
+seam for Plugin and resource bindings and receives Cloudflare's request, env,
+and execution context for every request:
+
+```js
+import * as bindings from "./pkg/my_host.js";
+import wasmModule from "./pkg/my_host_bg.wasm";
+import {
+  createEventScope,
+  createWorkersHttpHost,
+} from "@lenso/workers-runtime";
+
+import { bindStorage } from "./storage.mjs";
+
+const host = createWorkersHttpHost({
+  bindings,
+  wasmModule,
+  limits: {
+    eventLimitMs: 1000,
+    maxRequestBodyBytes: 64 * 1024,
+    maxResponseBodyBytes: 64 * 1024,
+  },
+  createScope(request, env) {
+    // bindStorage is the storage owner's adapter: it tracks I/O in this scope.
+    return createEventScope(scope => ({
+      storage: bindStorage(env.DB, scope),
+    }));
+  },
+  onReceipt(result, response, request, env, ctx) {
+    response.headers.set("x-host-generation", String(result.generation));
+  },
+});
+
+export default { fetch: host.fetch };
+```
+
+The entry wires `initSync({ module: wasmModule })`, reset-state support, Wasm
+constructors, and the package timer domain. It returns `{ fetch }`. `limits`
+accepts flat runner,
+buffered HTTP, and default-scope fields; unknown limit names are rejected.
+`onReceipt` also receives the request, env, and execution context. Existing `createEventRunner`,
+`createEventScope`, and `createHttpHandler` integrations remain available for
+streaming or other Hosts that need lower-level assembly.
 
 ```js
 import { createEventScope, createEventRunner } from '@lenso/workers-runtime';
@@ -74,3 +119,7 @@ a failed generation errors an outstanding body read. The real Rust/Wasm duplex f
 receipts are in `experiments/workers-g2/evidence/duplex.json`. Supply Web's
 `createWebSocketTransport()` through `upgradeWebSocket` for authorized status-101
 responses. Web owns that transport and its Capability, not Runtime.
+
+When supplying `createScope`, configure its cleanup and operation limits in that
+factory. Passing scope limits to the Host at the same time is rejected, so a
+custom factory cannot silently ignore a Host limit.
