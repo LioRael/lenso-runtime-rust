@@ -23,5 +23,14 @@
   },
   "bin": {
     "lenso-workers-build": "./build.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LioRael/lenso-runtime-rust.git",
+    "directory": "packages/workers-runtime"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
