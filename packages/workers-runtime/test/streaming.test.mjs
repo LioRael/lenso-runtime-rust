@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createStreamingHttpHandler } from "../http.mjs";
 import { createEventRunner } from "../runner.mjs";
+import { transportAdmissionTests } from "./transport-admission.mjs";
+
+transportAdmissionTests(createStreamingHttpHandler, true);
 function fixture(read, options = {}) {
   let finish,
     reads = 0;

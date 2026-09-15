@@ -84,7 +84,7 @@ export function createEventRunner({
     }
   }
 
-  function execute(operation, { scope, signal } = {}, opened) {
+  function execute(operation, { scope, signal, prepare } = {}, opened) {
     if (signal?.aborted)
       return Promise.reject(new DOMException("Request aborted", "AbortError"));
     if (unavailable)
@@ -113,7 +113,7 @@ export function createEventRunner({
                 throw new Error("Rotation admission deadline exceeded");
               await new Promise((resolve) => setTimeout(resolve, 1));
             }
-            return await execute(operation, { scope, signal }, opened);
+            return await execute(operation, { scope, signal, prepare }, opened);
           } finally {
             queued--;
           }
@@ -124,11 +124,13 @@ export function createEventRunner({
       return Promise.reject(new Error("Event capacity exceeded"));
     const admitted = generation;
     admittedCount++;
-    let event;
+    let event, preparation;
+    const preparationController = prepare ? new AbortController() : undefined;
     const result = new Promise((resolve, reject) => {
       const onAbort = () => {
+        preparationController?.abort();
         scope?.abort();
-        if (event && !event.cancelling) {
+        if (event?.started && !event.cancelling) {
           event.cancelling = true;
           clearTimeout(event.timer);
           event.timer = setTimeout(
@@ -143,96 +145,115 @@ export function createEventRunner({
           scope?.invalidate?.();
         },
         dispose() {
-          scope?.abort();
           signal?.removeEventListener("abort", onAbort);
+          preparationController?.abort();
+          scope?.abort();
         },
-        timer: setTimeout(
-          () => abandon("event deadline exceeded"),
-          eventLimitMs,
-        ),
       };
       signal?.addEventListener("abort", onAbort, { once: true });
       if (signal?.aborted) onAbort();
       pending.add(event);
-      let pendingOperation;
-      try {
-        pendingOperation = operation();
-      } catch (error) {
-        abandon(String(error));
-        return;
-      }
-      Promise.resolve(pendingOperation).then(
-        (value) => {
-          if (!pending.has(event) || admitted !== generation) return;
-          if (opened) {
-            // Headers may leave the Host now; the generation remains admitted until
-            // the session's clean terminal receipt or a bounded failure.
-            if (
-              !value ||
-              !value.closed ||
-              typeof value.closed.then !== "function"
-            ) {
-              reject(
-                new TypeError("open operation must return { value, closed }"),
+      const start = (input) => {
+        if (!pending.has(event) || admitted !== generation) return;
+        if (signal?.aborted) {
+          reject(new DOMException("Request aborted", "AbortError"));
+          return;
+        }
+        event.started = true;
+        event.timer = setTimeout(
+          () => abandon("event deadline exceeded"),
+          eventLimitMs,
+        );
+        let pendingOperation;
+        try {
+          pendingOperation = prepare ? operation(input) : operation();
+        } catch (error) {
+          abandon(String(error));
+          return;
+        }
+        Promise.resolve(pendingOperation).then(
+          (value) => {
+            if (!pending.has(event) || admitted !== generation) return;
+            if (opened) {
+              // Headers may leave the Host now; the generation remains admitted until
+              // the session's clean terminal receipt or a bounded failure.
+              if (
+                !value ||
+                !value.closed ||
+                typeof value.closed.then !== "function"
+              ) {
+                reject(
+                  new TypeError("open operation must return { value, closed }"),
+                );
+                return;
+              }
+              clearTimeout(event.timer);
+              event.timer = setTimeout(
+                () =>
+                  abandon(
+                    event.cancelling
+                      ? "cancellation deadline exceeded"
+                      : "session deadline exceeded",
+                  ),
+                event.cancelling ? cancellationLimitMs : sessionLimitMs,
               );
-              return;
-            }
-            clearTimeout(event.timer);
-            event.timer = setTimeout(
-              () =>
-                abandon(
-                  event.cancelling
-                    ? "cancellation deadline exceeded"
-                    : "session deadline exceeded",
-                ),
-              event.cancelling ? cancellationLimitMs : sessionLimitMs,
-            );
-            opened({
-              value: value.value,
-              generation: admitted,
-              invoke(call) {
-                if (
-                  !pending.has(event) ||
-                  admitted !== generation ||
-                  scope?.closed
-                ) {
-                  throw new Error("session_closed");
-                }
-                return call();
-              },
-              cancel() {
-                if (pending.has(event) && admitted === generation) onAbort();
-              },
-            });
-            Promise.resolve(value.closed).then(
-              (receipt) => {
-                if (!pending.has(event) || admitted !== generation) return;
-                clearTimeout(event.timer);
-                if (receipt?.shutdown !== "clean")
-                  abandon("session_shutdown_unconfirmed");
-                else resolve(receipt);
-              },
-              (error) => {
-                if (admitted === generation) abandon(String(error));
-              },
-            );
-          } else {
-            clearTimeout(event.timer);
-            try {
-              resolve({
-                ...JSON.parse(value),
+              opened({
+                value: value.value,
                 generation: admitted,
-                wasm_memory_bytes: exports.memory.buffer.byteLength,
+                invoke(call) {
+                  if (
+                    !pending.has(event) ||
+                    admitted !== generation ||
+                    scope?.closed
+                  ) {
+                    throw new Error("session_closed");
+                  }
+                  return call();
+                },
+                cancel() {
+                  if (pending.has(event) && admitted === generation) onAbort();
+                },
               });
-            } catch (error) {
-              reject(error);
+              Promise.resolve(value.closed).then(
+                (receipt) => {
+                  if (!pending.has(event) || admitted !== generation) return;
+                  clearTimeout(event.timer);
+                  if (receipt?.shutdown !== "clean")
+                    abandon("session_shutdown_unconfirmed");
+                  else resolve(receipt);
+                },
+                (error) => {
+                  if (admitted === generation) abandon(String(error));
+                },
+              );
+            } else {
+              clearTimeout(event.timer);
+              try {
+                resolve({
+                  ...JSON.parse(value),
+                  generation: admitted,
+                  wasm_memory_bytes: exports.memory.buffer.byteLength,
+                });
+              } catch (error) {
+                reject(error);
+              }
             }
-          }
-        },
-        (error) => {
-          if (admitted === generation) abandon(String(error));
-        },
-      );
+          },
+          (error) => {
+            if (admitted === generation) abandon(String(error));
+          },
+        );
+      };
+      // Capacity belongs to this request before transport preparation begins.
+      // Its bounded body read has its own deadline; only Wasm entry starts the
+      // event watchdog. Transport failures do not abandon healthy peers.
+      if (prepare) {
+        preparation = Promise.resolve().then(() => {
+          if (!pending.has(event) || admitted !== generation) return;
+          return prepare(preparationController.signal);
+        });
+        preparation.then(start, reject);
+      } else start();
     });
     // Register cleanup in the owning fetch context. Another event may reject this
     // promise, but it must never directly abort this request's native I/O objects.
@@ -240,6 +261,9 @@ export function createEventRunner({
       try {
         clearTimeout(event?.timer);
         event?.dispose();
+        // Abort and drain transport I/O here, in the owner continuation, even
+        // when another request abandoned this generation during preparation.
+        if (preparation) await preparation.catch(() => {});
         if ((await scope?.settled?.()) === false)
           throw new Error("Storage completion unavailable");
       } catch {

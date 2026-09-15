@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHttpHandler } from "../http.mjs";
+import { transportAdmissionTests } from "./transport-admission.mjs";
+
+transportAdmissionTests(createHttpHandler, false);
 
 test("binary response encoding preserves bytes and enforces decoded size and canonical shape", async () => {
   async function handle(payload, limit = 4) {

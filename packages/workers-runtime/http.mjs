@@ -69,14 +69,17 @@ function responseBytes(result, limit) {
   return Uint8Array.from(result.body);
 }
 
-async function readBody(request, limit, timeoutMs) {
+function checkBodyLength(request, limit) {
   const length = request.headers.get("content-length");
   if (length !== null && /^\d+$/.test(length) && Number(length) > limit) {
     const error = new Error("payload_too_large");
     error.status = 413;
     throw error;
   }
-  if (request.signal.aborted)
+}
+
+async function readBody(request, limit, timeoutMs, signal, scope) {
+  if (signal.aborted)
     throw new DOMException("Request aborted", "AbortError");
   if (!request.body) return new Uint8Array();
   const reader = request.body.getReader();
@@ -84,7 +87,8 @@ async function readBody(request, limit, timeoutMs) {
   let abort;
   const interrupted = new Promise((_, reject) => {
     abort = () => reject(new DOMException("Request aborted", "AbortError"));
-    request.signal.addEventListener("abort", abort, { once: true });
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
     timer = setTimeout(() => {
       const error = new Error("request_body_timeout");
       error.status = 408;
@@ -118,10 +122,37 @@ async function readBody(request, limit, timeoutMs) {
     return bytes;
   } finally {
     clearTimeout(timer);
-    request.signal.removeEventListener("abort", abort);
-    if (!complete) await reader.cancel().catch(() => {});
+    signal.removeEventListener("abort", abort);
+    if (!complete) {
+      const cancelled = reader.cancel().catch(() => {});
+      // Cancellation itself can retain native I/O. The request scope owns its
+      // bounded settlement so a stalled cancel cannot retain admission forever.
+      if (scope?.trackNative) scope.trackNative(cancelled);
+      else await cancelled;
+    }
     reader.releaseLock();
   }
+}
+
+function prepareRequest(request, uri, headers, limit, timeoutMs, scope) {
+  return async (signal = request.signal) => {
+    const body = await readBody(request, limit, timeoutMs, signal, scope);
+    if (signal.aborted)
+      throw new DOMException("Request aborted", "AbortError");
+    return JSON.stringify({
+      method: request.method,
+      uri,
+      headers,
+      body: [...body],
+    });
+  };
+}
+
+function transportOperation(prepare, handle) {
+  // Custom runners may only call operation(). The package Runner supplies the
+  // prepared input, keeping Wasm entry synchronous with its generation fence.
+  return (input) =>
+    input === undefined ? prepare().then(handle) : handle(input);
 }
 
 export function createHttpHandler({
@@ -148,21 +179,19 @@ export function createHttpHandler({
         headBytes += encoder.encode(name + ": " + value).byteLength + 2;
       if (headBytes > maxRequestHeadBytes)
         return transportFailure(431, "request_header_fields_too_large");
-      const body = await readBody(
+      checkBodyLength(request, maxRequestBodyBytes);
+      const prepare = prepareRequest(
         request,
-        maxRequestBodyBytes,
-        bodyReadTimeoutMs,
-      );
-      const input = JSON.stringify({
-        method: request.method,
         uri,
         headers,
-        body: [...body],
-      });
-      const result = await run(() => handleHttp(input, scope), {
+        maxRequestBodyBytes,
+        bodyReadTimeoutMs,
         scope,
-        signal: request.signal,
-      });
+      );
+      const result = await run(
+        transportOperation(prepare, (input) => handleHttp(input, scope)),
+        { scope, signal: request.signal, prepare },
+      );
       if (result.shutdown !== "clean")
         throw new Error("HTTP App shutdown was not clean");
       const responseBody = responseBytes(result, maxResponseBodyBytes);
@@ -250,23 +279,18 @@ export function createStreamingHttpHandler({
         );
       if (headBytes > maxRequestHeadBytes)
         return transportFailure(431, "request_header_fields_too_large");
-      const body = await readBody(
+      checkBodyLength(request, maxRequestBodyBytes);
+      const prepare = prepareRequest(
         request,
+        uri,
+        headers,
         maxRequestBodyBytes,
         bodyReadTimeoutMs,
+        scope,
       );
       session = await open(
-        () =>
-          openHttp(
-            JSON.stringify({
-              method: request.method,
-              uri,
-              headers,
-              body: [...body],
-            }),
-            scope,
-          ),
-        { scope, signal: request.signal },
+        transportOperation(prepare, (input) => openHttp(input, scope)),
+        { scope, signal: request.signal, prepare },
       );
       const head = session.value;
       if (head?.status === 101 && upgradeWebSocket) {

@@ -94,6 +94,25 @@ replacement HTTP success. Route every subsequent Wasm entry through
 A cancellation must settle within `cancellationLimitMs` (default 1 s), after
 which the generation is abandoned.
 
+Both HTTP handlers reserve Runner capacity before reading the incoming body or
+serializing its byte array. Overload returns 503 and cancels the unread body in
+the request's owner context. Body preparation uses `bodyReadTimeoutMs` (default
+30 s); the event watchdog starts when Wasm execution begins. A body-read failure
+releases admission after owner cleanup without abandoning healthy peers.
+Reservations count toward the existing concurrent and generation admission
+limits, and streaming admission remains held through session closure and cleanup.
+
+For lower-level composition, `runner.run` and `runner.open` accept an optional
+`prepare(signal)` option. The Runner reserves capacity, awaits preparation, then
+passes its result to `operation(input)` after checking the generation and request
+signal again. Preparation must be bounded, honor its supplied cancellation signal,
+and perform only request-owned JavaScript transport work. Its rejection does not
+enter Wasm or abandon the generation. On abandonment, the owner aborts and drains
+preparation before scope settlement. The HTTP handlers supply this option
+automatically, including through `createWorkersHttpHost`. Custom `run`/`open`
+wrappers should forward all options to the Runner to retain these guarantees;
+operation-only implementations remain compatible but own their admission policy.
+
 Headers keep the original event startup deadline (default 1 s). After opening,
 the session has `sessionLimitMs` (default 5 min). Generation retirement waits for
 all admitted sessions. A trap or deadline abandons the entire generation,

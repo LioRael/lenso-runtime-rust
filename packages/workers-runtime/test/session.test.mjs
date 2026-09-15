@@ -92,3 +92,80 @@ test("open failure, non-clean terminal, session deadline and pre-abort are obser
     { name: "AbortError" },
   );
 });
+
+test("transport preparation waits before the hard generation ceiling and retires at idle", async () => {
+  const runtime = runner({ maxConcurrent: 2, retirementAdmissionLimit: 1 });
+  const terminal = deferred();
+  const session = await runtime.open(() => ({ value: {}, closed: terminal.promise }));
+  for (let index = 1; index < 96; index++)
+    assert.equal((await runtime.run(() => "{}")).generation, 1);
+  let preparations = 0;
+  const next = runtime.run((input) => {
+    assert.equal(input, "prepared");
+    return "{}";
+  }, {
+    prepare() {
+      preparations++;
+      return "prepared";
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(preparations, 0);
+  assert.equal(runtime.generation(), 1);
+  terminal.resolve({ shutdown: "clean" });
+  await session.closed;
+  assert.equal((await next).generation, 2);
+  assert.equal(preparations, 1);
+  assert.equal(runtime.generation(), 3);
+});
+
+test("preparation failure releases once after owner settlement without failing a peer", async () => {
+  const runtime = runner({ maxConcurrent: 2, retirementAdmissionLimit: 1 });
+  const terminal = deferred();
+  const active = runtime.run(() => terminal.promise);
+  const settling = deferred(), cleanup = deferred();
+  let aborted = 0, invalidated = 0;
+  const failed = runtime.run(() => assert.fail("Wasm entered after transport failure"), {
+    prepare() { throw new Error("transport failed"); },
+    scope: {
+      abort() { aborted++; },
+      invalidate() { invalidated++; },
+      settled() {
+        settling.resolve();
+        return cleanup.promise;
+      },
+    },
+  });
+  const rejected = assert.rejects(failed, /transport failed/);
+  await settling.promise;
+  await assert.rejects(runtime.run(() => assert.fail()), /capacity/);
+  cleanup.resolve(true);
+  await rejected;
+  assert.equal(aborted, 1);
+  assert.equal(invalidated, 1);
+  assert.equal(runtime.generation(), 1);
+  terminal.resolve("{}");
+  assert.equal((await active).generation, 1);
+  assert.equal(runtime.generation(), 2);
+});
+
+test("generation and cancellation are checked again after preparation", async () => {
+  const runtime = runner();
+  const controller = new AbortController();
+  await assert.rejects(runtime.run(() => assert.fail("cancelled Wasm entry"), {
+    signal: controller.signal,
+    prepare() {
+      controller.abort();
+      return "prepared";
+    },
+  }), { name: "AbortError" });
+  assert.equal(runtime.generation(), 1);
+  await assert.rejects(runtime.run(() => assert.fail("stale Wasm entry"), {
+    async prepare() {
+      await assert.rejects(runtime.run(() => { throw new Error("trap"); }), /abandoned/);
+      return "prepared";
+    },
+  }), /abandoned/);
+  assert.equal(runtime.generation(), 2);
+  assert.equal((await runtime.run(() => "{}")).generation, 2);
+});

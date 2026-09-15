@@ -173,3 +173,42 @@ test("late completion remains fenced by the lower-level event scope", async () =
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(callbacks, 0);
 });
+
+test("high-level Host rejects overload before reading the body and recovers", async () => {
+  let entered, finish, calls = 0, reads = 0, cancels = 0;
+  const started = new Promise((resolve) => (entered = resolve));
+  const held = new Promise((resolve) => (finish = resolve));
+  const { bindings } = generated({
+    async handle_http() {
+      calls++;
+      entered();
+      await held;
+      return JSON.stringify({ status: 200, headers: [], body: [], shutdown: "clean" });
+    },
+  });
+  const host = createWorkersHttpHost({
+    bindings,
+    wasmModule: {},
+    limits: { maxConcurrent: 1 },
+  });
+  const first = host.fetch(new Request("https://example.test/"));
+  await started;
+  try {
+    const body = new ReadableStream({
+      pull() { reads++; },
+      cancel() { cancels++; },
+    }, { highWaterMark: 0 });
+    const response = await host.fetch(new Request("https://example.test/", {
+      method: "POST", body, duplex: "half",
+    }));
+    assert.equal(response.status, 503);
+    assert.equal(reads, 0);
+    assert.equal(cancels, 1);
+    assert.equal(calls, 1);
+  } finally {
+    finish();
+    assert.equal((await first).status, 200);
+  }
+  assert.equal((await host.fetch(new Request("https://example.test/"))).status, 200);
+  assert.equal(calls, 2);
+});
