@@ -3,7 +3,6 @@ use std::{
     collections::BTreeMap,
     fmt,
     future::Future,
-    marker::PhantomData,
     pin::Pin,
     rc::Rc,
     sync::{
@@ -19,68 +18,121 @@ use futures::{future::LocalBoxFuture, task::AtomicWaker};
 use lenso_app_plan::ResolvedAppPlan;
 use lenso_kernel::{
     CancellationToken, InvocationContext, NativeRequestEndpoint, NativeRequestFuture,
-    RequestCapability, RuntimeFailure, TypedNativeRequestEndpoint,
+    RequestCapability, RuntimeFailure,
 };
 
-trait RequestTransferFactory: fmt::Debug + Send + Sync {
-    fn endpoint(&self, provider_lane: LaneRoute, epoch: Instant) -> Rc<dyn NativeRequestEndpoint>;
+type ErasedRequestFuture =
+    LocalBoxFuture<'static, Result<Result<Box<dyn Any>, Box<dyn Any>>, RuntimeFailure>>;
+type ErasedRequestInvoker =
+    Arc<dyn Fn(Box<dyn Any>, InvocationContext) -> ErasedRequestFuture + Send + Sync>;
+type RequestInvokerFactory = fn(LaneRoute, Instant, &'static str) -> ErasedRequestInvoker;
+
+#[derive(Clone)]
+struct RequestOperation {
+    operation: &'static str,
+    invoker: RequestInvokerFactory,
 }
 
-struct TypedRequestTransferFactory<C: RequestCapability> {
+/// A native request transfer endpoint assembled from one or more generated request types.
+///
+/// Generated request types for the same Capability series can have different Rust payloads
+/// while sharing one descriptor and operation set. Keeping the operation dispatch table here
+/// avoids replacing an earlier registration when a later generated type uses the same stable
+/// Capability ID.
+#[derive(Clone)]
+struct MultiRequestTransferFactory {
+    capability_id: &'static str,
+    descriptor_version: &'static str,
     operations: &'static [&'static str],
-    capability: PhantomData<fn() -> C>,
+    invokers: Vec<RequestOperation>,
 }
 
-impl<C: RequestCapability> fmt::Debug for TypedRequestTransferFactory<C> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("TypedRequestTransferFactory")
-            .field("capability", &C::ID)
-            .finish_non_exhaustive()
+impl MultiRequestTransferFactory {
+    fn new<C: RequestCapability>() -> Self {
+        Self {
+            capability_id: C::ID,
+            descriptor_version: C::DESCRIPTOR_VERSION,
+            operations: &[],
+            invokers: Vec::new(),
+        }
+    }
+
+    fn add<C>(&mut self, operations: &'static [&'static str])
+    where
+        C: RequestCapability,
+        C::Request: Send,
+        C::Response: Send,
+        C::DomainError: Send,
+    {
+        debug_assert_eq!(self.capability_id, C::ID);
+        debug_assert_eq!(self.descriptor_version, C::DESCRIPTOR_VERSION);
+
+        for operation in operations {
+            if self
+                .invokers
+                .iter()
+                .any(|registered| registered.operation == *operation)
+            {
+                continue;
+            }
+
+            let mut merged_operations = self.operations.to_vec();
+            merged_operations.push(*operation);
+            // NativeRequestEndpoint exposes a static operation slice. Registrations are built
+            // once while configuring the runner and then remain immutable for its lifetime.
+            self.operations = Box::leak(merged_operations.into_boxed_slice());
+            self.invokers.push(RequestOperation {
+                operation,
+                invoker: typed_request_invoker_factory::<C>,
+            });
+        }
     }
 }
 
-impl<C> RequestTransferFactory for TypedRequestTransferFactory<C>
+impl fmt::Debug for MultiRequestTransferFactory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MultiRequestTransferFactory")
+            .field("capability", &self.capability_id)
+            .field("descriptor_version", &self.descriptor_version)
+            .field("operations", &self.operations)
+            .field("invoker_count", &self.invokers.len())
+            .finish()
+    }
+}
+
+fn typed_request_invoker_factory<C>(
+    provider_lane: LaneRoute,
+    epoch: Instant,
+    operation: &'static str,
+) -> ErasedRequestInvoker
 where
     C: RequestCapability,
     C::Request: Send,
     C::Response: Send,
     C::DomainError: Send,
 {
-    fn endpoint(&self, provider_lane: LaneRoute, epoch: Instant) -> Rc<dyn NativeRequestEndpoint> {
-        let typed_provider_lane = provider_lane.clone();
-        let operations = self.operations;
-        Rc::new(CrossLaneRequestEndpoint::<C> {
-            operations: self.operations,
-            typed: TypedNativeRequestEndpoint::new(move |operation, request, context| {
-                let Some(operation) = operations
-                    .iter()
-                    .copied()
-                    .find(|candidate| *candidate == operation)
-                else {
-                    return Box::pin(futures::future::ready(Err(
-                        RuntimeFailure::UnknownOperation {
-                            capability: C::ID,
-                            operation: operation.to_owned(),
-                        },
-                    )));
-                };
-                invoke_cross_lane::<C>(
-                    typed_provider_lane.clone(),
-                    epoch,
-                    operation,
-                    request,
-                    context,
-                )
-            }),
+    Arc::new(move |request, context| {
+        let Ok(request) = request.downcast::<C::Request>() else {
+            return Box::pin(futures::future::ready(Err(
+                RuntimeFailure::ProtocolViolation { capability: C::ID },
+            )));
+        };
+        let invocation =
+            invoke_cross_lane::<C>(provider_lane.clone(), epoch, operation, *request, context);
+        Box::pin(async move {
+            let result = invocation.await?;
+            Ok(result
+                .map(|response| Box::new(response) as Box<dyn Any>)
+                .map_err(|error| Box::new(error) as Box<dyn Any>))
         })
-    }
+    })
 }
 
 /// Native request types registered for zero-serialization cross-lane transfer.
 #[derive(Clone, Debug, Default)]
 pub struct CrossLaneRequestCatalog {
-    factories: BTreeMap<&'static str, Arc<dyn RequestTransferFactory>>,
+    factories: BTreeMap<&'static str, MultiRequestTransferFactory>,
 }
 
 impl CrossLaneRequestCatalog {
@@ -90,6 +142,10 @@ impl CrossLaneRequestCatalog {
     }
 
     /// Registers one generated request Capability whose values are `Send`.
+    ///
+    /// Multiple generated request types may be registered for the same Capability ID. In that
+    /// case each operation is dispatched to the request type that registered it, which supports
+    /// descriptors whose operations use different Rust request and response pairs.
     #[must_use]
     pub fn with_request<C>(mut self, operations: &'static [&'static str]) -> Self
     where
@@ -98,13 +154,11 @@ impl CrossLaneRequestCatalog {
         C::Response: Send,
         C::DomainError: Send,
     {
-        self.factories.insert(
-            C::ID,
-            Arc::new(TypedRequestTransferFactory::<C> {
-                operations,
-                capability: PhantomData,
-            }),
-        );
+        let factory = self
+            .factories
+            .entry(C::ID)
+            .or_insert_with(MultiRequestTransferFactory::new::<C>);
+        factory.add::<C>(operations);
         self
     }
 
@@ -145,7 +199,7 @@ impl CrossLaneRequestCatalog {
     pub(super) fn endpoint(
         &self,
         capability_id: &str,
-        provider_lane: LaneRoute,
+        provider_lane: &LaneRoute,
         epoch: Instant,
     ) -> Option<Rc<dyn NativeRequestEndpoint>> {
         self.factories
@@ -154,41 +208,54 @@ impl CrossLaneRequestCatalog {
     }
 }
 
-struct CrossLaneRequestEndpoint<C: RequestCapability> {
-    operations: &'static [&'static str],
-    typed: TypedNativeRequestEndpoint<C>,
+impl MultiRequestTransferFactory {
+    fn endpoint(&self, provider_lane: &LaneRoute, epoch: Instant) -> Rc<dyn NativeRequestEndpoint> {
+        let invokers = self
+            .invokers
+            .iter()
+            .map(|operation| {
+                (
+                    operation.operation,
+                    (operation.invoker)(provider_lane.clone(), epoch, operation.operation),
+                )
+            })
+            .collect();
+        Rc::new(CrossLaneRequestEndpoint {
+            capability_id: self.capability_id,
+            descriptor_version: self.descriptor_version,
+            operations: self.operations,
+            invokers,
+        })
+    }
 }
 
-impl<C: RequestCapability> fmt::Debug for CrossLaneRequestEndpoint<C> {
+struct CrossLaneRequestEndpoint {
+    capability_id: &'static str,
+    descriptor_version: &'static str,
+    operations: &'static [&'static str],
+    invokers: Vec<(&'static str, ErasedRequestInvoker)>,
+}
+
+impl fmt::Debug for CrossLaneRequestEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("CrossLaneRequestEndpoint")
-            .field("capability", &C::ID)
+            .field("capability", &self.capability_id)
             .finish_non_exhaustive()
     }
 }
 
-impl<C> NativeRequestEndpoint for CrossLaneRequestEndpoint<C>
-where
-    C: RequestCapability,
-    C::Request: Send,
-    C::Response: Send,
-    C::DomainError: Send,
-{
+impl NativeRequestEndpoint for CrossLaneRequestEndpoint {
     fn capability_id(&self) -> &'static str {
-        C::ID
+        self.capability_id
     }
 
     fn descriptor_version(&self) -> &'static str {
-        C::DESCRIPTOR_VERSION
+        self.descriptor_version
     }
 
     fn operations(&self) -> &'static [&'static str] {
         self.operations
-    }
-
-    fn typed_endpoint(&self) -> Option<&dyn Any> {
-        Some(&self.typed)
     }
 
     fn invoke(
@@ -197,18 +264,19 @@ where
         request: Box<dyn Any>,
         context: InvocationContext,
     ) -> LocalBoxFuture<'static, Result<Result<Box<dyn Any>, Box<dyn Any>>, RuntimeFailure>> {
-        let Ok(request) = request.downcast::<C::Request>() else {
+        let Some((_, invoker)) = self
+            .invokers
+            .iter()
+            .find(|(registered, _)| *registered == operation)
+        else {
             return Box::pin(futures::future::ready(Err(
-                RuntimeFailure::ProtocolViolation { capability: C::ID },
+                RuntimeFailure::UnknownOperation {
+                    capability: self.capability_id,
+                    operation: operation.to_owned(),
+                },
             )));
         };
-        let invocation = self.typed.invoke(operation, *request, context);
-        Box::pin(async move {
-            let result = invocation.await?;
-            Ok(result
-                .map(|response| Box::new(response) as Box<dyn Any>)
-                .map_err(|error| Box::new(error) as Box<dyn Any>))
-        })
+        invoker(request, context)
     }
 }
 
@@ -517,9 +585,46 @@ impl Future for TransferredCancellationFuture<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Instant};
 
-    use super::TransferredCancellation;
+    use lenso_kernel::RequestCapability;
+
+    use super::{CrossLaneRequestCatalog, TransferredCancellation};
+
+    struct FirstSharedRequest;
+
+    impl RequestCapability for FirstSharedRequest {
+        type Request = String;
+        type Response = u64;
+        type DomainError = ();
+
+        const ID: &'static str = "test.shared-request@1";
+        const DESCRIPTOR_VERSION: &'static str = "1.0.0";
+    }
+
+    struct SecondSharedRequest;
+
+    impl RequestCapability for SecondSharedRequest {
+        type Request = u64;
+        type Response = String;
+        type DomainError = ();
+
+        const ID: &'static str = "test.shared-request@1";
+        const DESCRIPTOR_VERSION: &'static str = "1.0.0";
+    }
+
+    #[test]
+    fn request_catalog_merges_operations_for_shared_capability_id() {
+        let catalog = CrossLaneRequestCatalog::new()
+            .with_request::<FirstSharedRequest>(&["first"])
+            .with_request::<SecondSharedRequest>(&["second"]);
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let endpoint = catalog
+            .endpoint("test.shared-request@1", &sender.downgrade(), Instant::now())
+            .expect("shared request transfer should be registered");
+
+        assert_eq!(endpoint.operations(), &["first", "second"]);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn transferred_cancellation_observes_an_initial_signal() {

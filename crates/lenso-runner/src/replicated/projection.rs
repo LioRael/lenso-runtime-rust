@@ -319,7 +319,7 @@ impl ExecutionAdapter for LaneProxyAdapter {
                     let endpoint = self
                         .transfers
                         .requests
-                        .endpoint(descriptor.capability_id(), sender.clone(), self.epoch)
+                        .endpoint(descriptor.capability_id(), &sender, self.epoch)
                         .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
                             detail: format!(
                                 "Capability `{}` has no registered native cross-lane request transfer",
