@@ -39,6 +39,7 @@ use terminal::ReplicatedTerminalState;
 pub use transfer::CrossLaneRequestCatalog;
 
 const LANE_PROXY_EXECUTION_CLASS: &str = "lenso.native-lane-proxy@1";
+pub(super) const NATIVE_AUTHORING_V2_RUNTIME_PROFILE: &str = "lenso.native-authoring@2";
 
 /// Placement-independent controls applied by the provider lane's Runtime Driver.
 #[derive(Clone, Debug, Default)]

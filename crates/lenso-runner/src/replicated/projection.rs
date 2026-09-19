@@ -10,7 +10,10 @@ use lenso_kernel::{
     PreparedNativePlugin, PreparedStreamBinding, RuntimeFailure,
 };
 
-use super::{CrossLaneTransferCatalog, LANE_PROXY_EXECUTION_CLASS, LaneRoute};
+use super::{
+    CrossLaneTransferCatalog, LANE_PROXY_EXECUTION_CLASS, LaneRoute,
+    NATIVE_AUTHORING_V2_RUNTIME_PROFILE,
+};
 
 pub(super) fn project_lane(
     plan: &ResolvedAppPlan,
@@ -216,6 +219,23 @@ mod tests {
 
         assert_eq!(requirements, ["destination", "source"]);
     }
+
+    #[test]
+    fn lane_proxy_accepts_both_v2_native_profiles() {
+        assert!(supports_lane_proxy_runtime_profile(
+            2,
+            NATIVE_AUTHORING_V2_RUNTIME_PROFILE,
+        ));
+        assert!(supports_lane_proxy_runtime_profile(
+            2,
+            lenso_app_plan::PLUGIN_AUTHORING_V2_RUNTIME_PROFILE,
+        ));
+        assert!(!supports_lane_proxy_runtime_profile(2, "lenso.unknown@2"));
+        assert!(!supports_lane_proxy_runtime_profile(
+            1,
+            NATIVE_AUTHORING_V2_RUNTIME_PROFILE
+        ));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -242,11 +262,19 @@ impl LaneProxyAdapter {
     }
 }
 
+fn supports_lane_proxy_runtime_profile(authoring_version: u32, profile: &str) -> bool {
+    (authoring_version == 1 && profile == LANE_PROXY_EXECUTION_CLASS)
+        || (authoring_version == 2
+            && matches!(
+                profile,
+                lenso_app_plan::PLUGIN_AUTHORING_V2_RUNTIME_PROFILE
+                    | NATIVE_AUTHORING_V2_RUNTIME_PROFILE
+            ))
+}
+
 impl ExecutionAdapter for LaneProxyAdapter {
     fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
-        (authoring_version == 1 && profile == LANE_PROXY_EXECUTION_CLASS)
-            || (authoring_version == 2
-                && profile == lenso_app_plan::PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        supports_lane_proxy_runtime_profile(authoring_version, profile)
     }
 
     fn execution_class(&self) -> ExecutionClassId {
