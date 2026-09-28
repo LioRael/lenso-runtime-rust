@@ -1,5 +1,10 @@
 # Lenso Rust Runtime
 
+> **Source location:** This repository retains pre-consolidation history. New
+> Rust Runtime and Adapter work belongs in [LioRael/lenso](https://github.com/LioRael/lenso)
+> under [ADR 0077](https://github.com/LioRael/lenso/blob/main/docs/adr/0077-consolidate-the-rust-main-chain-by-language-and-product.md).
+> The description below documents this historical checkout.
+
 Rust host-side Runtime Drivers and Execution Adapters for the portable Lenso
 Kernel. Implementations are verified across the published
 `lenso-runtime-conformance` Interface; this repository does not own Plan or
